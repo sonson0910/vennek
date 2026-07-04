@@ -1,0 +1,30 @@
+{
+  "name": "vennek",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p packages/shared/tsconfig.build.json && tsc -p packages/cardano-governance-skills/tsconfig.build.json && tsc -p apps/telegram-bot/tsconfig.build.json",
+    "verify:imports": "node -e \"Promise.all([import('@vennek/shared'), import('@vennek/cardano-governance-skills'), import('@vennek/telegram-bot')]).then(() => console.log('package imports ok'))\"",
+    "health": "node apps/telegram-bot/dist/main.js --health",
+    "start:telegram": "node apps/telegram-bot/dist/main.js --poll",
+    "demo": "tsx scripts/run-demo.ts",
+    "validate:sources": "tsx scripts/validate-data-sources.ts --mode sample --write-report",
+    "validate:sources:live": "tsx scripts/validate-data-sources.ts --mode live --write-report",
+    "eval:citations": "tsx scripts/evaluate-citations.ts --write-report",
+    "staging:smoke": "tsx scripts/staging-smoke.ts",
+    "proof:fixture": "tsx scripts/create-proof-fixture.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vitest": "^4.1.9"
+  }
+}

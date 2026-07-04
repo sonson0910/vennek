@@ -1,0 +1,17 @@
+{
+  "text": "Vennek staging proof fixture for Cardano governance copilot. Human decides.",
+  "receipt": {
+    "payload": {
+      "schema": "vennek.proof.v1",
+      "content_hash": "sha256:6d40b866557eda90c615a83ec3b9699dd71a3d7bbabfd9c0d2de83a143977ad2",
+      "source_refs": [
+        "https://t.me/cardano_claw_bot"
+      ],
+      "created_at": "2026-07-04T00:00:00.000Z",
+      "agent_version": "0.1.0",
+      "report_id": "vennek-staging-proof-fixture"
+    },
+    "local_id": "proof-84a0ded828de",
+    "status": "payload-only"
+  }
+}

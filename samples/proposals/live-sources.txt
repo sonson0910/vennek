@@ -1,0 +1,33 @@
+# Mixed live validation sources for Vennek.
+# Coverage gate requires Catalyst + GovTool/governance-action + user-provided fallback + expected failure.
+# One source per line. Blank lines and comments ignored.
+
+# Catalyst proposal pages
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-off-chain-governance-via-snapshot
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/integrating-cardano-to-pairwise-and-hosting-the-cardano-awards
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-governance-and-dao-analytics-engine
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/ai-agents-for-cardano-dapps-to-scale-user-and-org-adoption
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cexplorer-governance-hub-bulk-voting-ai-reviews-and-more
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/autonomous-greenhouse-agents-with-on-chain-governance
+https://projectcatalyst.io/funds/15/cardano-open-ecosystem/wada-supported-cardano-africa-hub-expansion
+https://projectcatalyst.io/funds/15/cardano-partners-tier-1-enterprise-integrations/advancing-undp-cardano-through-institutional-integration
+https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardanoforbusiness-a-coordinated-enterprise-campaign
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/liquizone-the-liquidity-health-layer-cardano-defi-needs
+https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardano-blockchain-hackathon-2026-in-vietnam
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/innovation-first-end-to-end-peer-review-platform-on-cardano
+https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-opentimestamps-protocol-c-ots
+https://projectcatalyst.io/funds/14/cardano-open-ecosystem/project-catalyst-drep-analysis-framework
+
+# GovTool/governance-action documentation pages
+https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions
+https://docs.gov.tools/cardano-govtool/faqs/what-is-a-governance-action
+https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/view-governance-actions
+https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/types-of-governance-actions
+https://docs.gov.tools/overview/core-governance-tools
+
+# User-provided fallback text samples
+User-provided Catalyst reviewer note. Problem: reviewers need cited proposal summaries. Request: evaluate whether a governance copilot can reduce reading time. Impact: reviewers can compare evidence faster. Feasibility: pilot with real reviewers and cite all sources. Risk: citation accuracy must be human checked.
+User-provided DRep rationale note. Problem: DReps need transparent rationale drafts. Request: draft support oppose or abstain wording only after a human selects stance. Impact: public reasoning becomes more consistent. Feasibility: Telegram workflow with citations. Risk: drafts must never become vote recommendations.
+
+# Expected failure sample to prove no fabrication and explicit failure reasons
+https://127.0.0.1/vennek-expected-ssrf-failure

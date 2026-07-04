@@ -1,0 +1,17 @@
+{
+  "name": "@vennek/cardano-governance-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "dependencies": {
+    "@vennek/shared": "0.1.0"
+  }
+}

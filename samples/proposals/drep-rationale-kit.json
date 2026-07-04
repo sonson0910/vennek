@@ -1,0 +1,32 @@
+{
+  "id": "drep-rationale-kit",
+  "sourceType": "governance-action",
+  "url": "https://gov.tools/sample/drep-rationale-kit",
+  "title": "DRep Rationale Kit",
+  "body": "Problem: DReps need repeatable rationale drafting for governance actions without relying on uncited summaries. Request: a governance action asks for an open documentation and tooling kit for vote rationale templates. Impact: DReps can explain decisions with consistent caveats, source references, and human accountability. Feasibility: the proposal gives milestone dates, reusable templates, and a small maintainer team. Risk: rationale drafts may be mistaken for recommendations if the interface does not force a human-selected stance. Missing evidence: the proposal needs a stronger plan for measuring whether DReps reuse the templates.",
+  "metadata": {
+    "problem": "DReps need repeatable rationale drafting for governance actions without relying on uncited summaries.",
+    "requestedAction": "Create an open documentation and tooling kit for vote rationale templates.",
+    "impact": "DReps can explain decisions with consistent caveats, source references, and human accountability.",
+    "feasibility": "Milestone dates, reusable templates, and a small maintainer team are listed.",
+    "risks": "Drafts may be mistaken for recommendations unless stance selection remains human-controlled.",
+    "missingEvidence": "Needs a stronger measurement plan for DRep template reuse."
+  },
+  "citations": [
+    {
+      "id": "DRK-1",
+      "url": "https://gov.tools/sample/drep-rationale-kit",
+      "title": "DRep Rationale Kit",
+      "snippet": "DReps can explain decisions with consistent caveats, source references, and human accountability.",
+      "retrievedAt": "2026-07-04T00:00:00.000Z"
+    },
+    {
+      "id": "DRK-2",
+      "url": "https://gov.tools/sample/drep-rationale-kit#controls",
+      "title": "DRep Rationale Kit Controls",
+      "snippet": "Risk: rationale drafts may be mistaken for recommendations if the interface does not force a human-selected stance.",
+      "retrievedAt": "2026-07-04T00:00:00.000Z"
+    }
+  ],
+  "retrievedAt": "2026-07-04T00:00:00.000Z"
+}

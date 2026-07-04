@@ -1,0 +1,43 @@
+name: Live validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  live-validation:
+    name: Mixed live source validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Mixed live source validation
+        run: npm run validate:sources:live
+
+      - name: Optional Blockfrost integration test
+        if: ${{ secrets.BLOCKFROST_PROJECT_ID != '' && vars.BLOCKFROST_TEST_TX_HASH != '' && vars.BLOCKFROST_TEST_CONTENT_HASH != '' }}
+        env:
+          BLOCKFROST_PROJECT_ID: ${{ secrets.BLOCKFROST_PROJECT_ID }}
+          BLOCKFROST_NETWORK: ${{ vars.BLOCKFROST_NETWORK || 'preprod' }}
+          BLOCKFROST_TEST_TX_HASH: ${{ vars.BLOCKFROST_TEST_TX_HASH }}
+          BLOCKFROST_TEST_CONTENT_HASH: ${{ vars.BLOCKFROST_TEST_CONTENT_HASH }}
+        run: npm test -- --run tests/blockfrost.integration.test.ts

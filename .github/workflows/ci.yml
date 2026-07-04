@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    name: Deterministic verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Tests
+        run: npm test -- --run
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package imports
+        run: npm run verify:imports
+
+      - name: Healthcheck
+        run: npm run health
+
+      - name: Sample source validation
+        run: npm run validate:sources
+
+      - name: Citation eval
+        run: npm run eval:citations
+
+      - name: Demo smoke test
+        run: npm run demo
+
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate

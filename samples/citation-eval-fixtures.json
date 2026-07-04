@@ -1,0 +1,32 @@
+[
+  {
+    "id": "citation-eval-01",
+    "claim": "Catalyst reviewers need cited proposal summaries to reduce reading time.",
+    "citationSnippet": "Problem: reviewers need cited proposal summaries. Request: evaluate whether a governance copilot can reduce reading time.",
+    "expectedSupported": true
+  },
+  {
+    "id": "citation-eval-02",
+    "claim": "DReps need transparent rationale drafts after a human selects stance.",
+    "citationSnippet": "Problem: DReps need transparent rationale drafts. Request: draft support oppose or abstain wording only after a human selects stance.",
+    "expectedSupported": true
+  },
+  {
+    "id": "citation-eval-03",
+    "claim": "The project must not become a vote recommendation engine.",
+    "citationSnippet": "Risk: drafts must never become vote recommendations.",
+    "expectedSupported": true
+  },
+  {
+    "id": "citation-eval-04",
+    "claim": "The proposal has already achieved a 90 percent citation accuracy pilot.",
+    "citationSnippet": "Risk: citation accuracy must be human checked.",
+    "expectedSupported": false
+  },
+  {
+    "id": "citation-eval-05",
+    "claim": "The bot automatically signs Cardano transactions for proof receipts.",
+    "citationSnippet": "Proof payload only. Vennek does not sign or submit transactions.",
+    "expectedSupported": false
+  }
+]

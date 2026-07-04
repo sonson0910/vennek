@@ -1,0 +1,17 @@
+{
+  "id": "source-limited-governance-note",
+  "sourceType": "user-provided",
+  "url": "user-provided:source-limited-governance-note",
+  "title": "Source Limited Governance Note",
+  "body": "Problem: a community note describes a governance concern but omits budget, team, and measurable success criteria. Request: unclear. Impact: unclear. Feasibility: unclear. Risk: the source is incomplete and should not be treated as authoritative.",
+  "metadata": {
+    "problem": "A community note describes a governance concern but omits budget, team, and measurable success criteria.",
+    "requestedAction": "Unclear in the provided source.",
+    "impact": "Unclear in the provided source.",
+    "feasibility": "Unclear in the provided source.",
+    "risks": "The source is incomplete and should not be treated as authoritative.",
+    "missingEvidence": "Budget, team, measurable outcomes, and source provenance are missing."
+  },
+  "citations": [],
+  "retrievedAt": "2026-07-04T00:00:00.000Z"
+}

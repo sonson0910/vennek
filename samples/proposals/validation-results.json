@@ -1,0 +1,236 @@
+{
+  "mode": "live",
+  "generatedAt": "2026-07-04T11:23:25.466Z",
+  "total": 22,
+  "normalized": 21,
+  "withCitations": 21,
+  "failed": 1,
+  "sourceTypeCounts": {
+    "catalyst": 14,
+    "governance-action": 5,
+    "user-provided": 2
+  },
+  "pass": true,
+  "results": [
+    {
+      "id": "user-cb199524f24a",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-off-chain-governance-via-snapshot",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-cb199524f24a",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-off-chain-governance-via-snapshot"
+    },
+    {
+      "id": "user-c2e9ebeb51e5",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/integrating-cardano-to-pairwise-and-hosting-the-cardano-awards",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-c2e9ebeb51e5",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/integrating-cardano-to-pairwise-and-hosting-the-cardano-awards"
+    },
+    {
+      "id": "user-c5aaa87443f5",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-governance-and-dao-analytics-engine",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-c5aaa87443f5",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-governance-and-dao-analytics-engine"
+    },
+    {
+      "id": "user-5c5051e097f8",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/ai-agents-for-cardano-dapps-to-scale-user-and-org-adoption",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-5c5051e097f8",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/ai-agents-for-cardano-dapps-to-scale-user-and-org-adoption"
+    },
+    {
+      "id": "user-945c58243017",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cexplorer-governance-hub-bulk-voting-ai-reviews-and-more",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-945c58243017",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cexplorer-governance-hub-bulk-voting-ai-reviews-and-more"
+    },
+    {
+      "id": "user-6ed2aace629b",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/autonomous-greenhouse-agents-with-on-chain-governance",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-6ed2aace629b",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/autonomous-greenhouse-agents-with-on-chain-governance"
+    },
+    {
+      "id": "user-efc474df2801",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/wada-supported-cardano-africa-hub-expansion",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-efc474df2801",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/wada-supported-cardano-africa-hub-expansion"
+    },
+    {
+      "id": "user-ed55e20bfbab",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-partners-tier-1-enterprise-integrations/advancing-undp-cardano-through-institutional-integration",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-ed55e20bfbab",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-partners-tier-1-enterprise-integrations/advancing-undp-cardano-through-institutional-integration"
+    },
+    {
+      "id": "user-ef5e99074a55",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardanoforbusiness-a-coordinated-enterprise-campaign",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-ef5e99074a55",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardanoforbusiness-a-coordinated-enterprise-campaign"
+    },
+    {
+      "id": "user-12d72c184848",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/liquizone-the-liquidity-health-layer-cardano-defi-needs",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-12d72c184848",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/liquizone-the-liquidity-health-layer-cardano-defi-needs"
+    },
+    {
+      "id": "user-d0a5544a533d",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardano-blockchain-hackathon-2026-in-vietnam",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-d0a5544a533d",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-open-ecosystem/cardano-blockchain-hackathon-2026-in-vietnam"
+    },
+    {
+      "id": "user-149880539941",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/innovation-first-end-to-end-peer-review-platform-on-cardano",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-149880539941",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/innovation-first-end-to-end-peer-review-platform-on-cardano"
+    },
+    {
+      "id": "user-7e1ab0afef1d",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-opentimestamps-protocol-c-ots",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-7e1ab0afef1d",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/15/cardano-use-cases-prototype-and-launch/cardano-opentimestamps-protocol-c-ots"
+    },
+    {
+      "id": "user-4c7755315f03",
+      "sourceType": "catalyst",
+      "url": "https://projectcatalyst.io/funds/14/cardano-open-ecosystem/project-catalyst-drep-analysis-framework",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-4c7755315f03",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://projectcatalyst.io/funds/14/cardano-open-ecosystem/project-catalyst-drep-analysis-framework"
+    },
+    {
+      "id": "user-7ec7a207c305",
+      "sourceType": "governance-action",
+      "url": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-7ec7a207c305",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions"
+    },
+    {
+      "id": "user-6498684297ee",
+      "sourceType": "governance-action",
+      "url": "https://docs.gov.tools/cardano-govtool/faqs/what-is-a-governance-action",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-6498684297ee",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://docs.gov.tools/cardano-govtool/faqs/what-is-a-governance-action"
+    },
+    {
+      "id": "user-887019052909",
+      "sourceType": "governance-action",
+      "url": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/view-governance-actions",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-887019052909",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/view-governance-actions"
+    },
+    {
+      "id": "user-093f02523093",
+      "sourceType": "governance-action",
+      "url": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/types-of-governance-actions",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-093f02523093",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://docs.gov.tools/cardano-govtool/using-govtool/governance-actions/types-of-governance-actions"
+    },
+    {
+      "id": "user-afc5fbee0aff",
+      "sourceType": "governance-action",
+      "url": "https://docs.gov.tools/overview/core-governance-tools",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-afc5fbee0aff",
+      "reason": "Normalized with usable citation data.",
+      "input": "https://docs.gov.tools/overview/core-governance-tools"
+    },
+    {
+      "id": "user-2515dbd760ab",
+      "sourceType": "user-provided",
+      "url": "user-provided:84f375d4d989a5e7",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-2515dbd760ab",
+      "reason": "Normalized with usable citation data.",
+      "input": "User-provided Catalyst reviewer note. Problem: reviewers need cited proposal summaries. Request: evaluate whether a governance copilot can reduce reading time. Impact: reviewers can compare evidence faster. Feasibility: pilot with real reviewers and cite all sources. Risk: citation accuracy must be human checked."
+    },
+    {
+      "id": "user-87149874c30e",
+      "sourceType": "user-provided",
+      "url": "user-provided:c08075493bde996f",
+      "ok": true,
+      "citationCount": 1,
+      "normalizedId": "user-87149874c30e",
+      "reason": "Normalized with usable citation data.",
+      "input": "User-provided DRep rationale note. Problem: DReps need transparent rationale drafts. Request: draft support oppose or abstain wording only after a human selects stance. Impact: public reasoning becomes more consistent. Feasibility: Telegram workflow with citations. Risk: drafts must never become vote recommendations."
+    },
+    {
+      "id": "https://127.0.0.1/vennek-expected-ssrf-failure",
+      "sourceType": "user-provided",
+      "url": "https://127.0.0.1/vennek-expected-ssrf-failure",
+      "ok": false,
+      "citationCount": 0,
+      "input": "https://127.0.0.1/vennek-expected-ssrf-failure",
+      "reason": "Private, loopback, link-local, multicast, and reserved hosts are not accepted."
+    }
+  ],
+  "note": "Live validation requires >=20 entries, >=15 normalized, Catalyst + governance-action + user-provided coverage, and at least one expected failure with a reason. Source file: /mnt/Projects/elly_code/vennek/samples/proposals/live-sources.txt"
+}

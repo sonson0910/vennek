@@ -1,0 +1,17 @@
+[Unit]
+Description=Vennek Telegram Governance Copilot (user staging)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/Projects/elly_code/vennek
+EnvironmentFile=%h/.config/vennek/vennek.env
+ExecStart=/usr/bin/npm run start:telegram
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,61 @@
+{
+  "generatedAt": "2026-07-04T11:19:03.369Z",
+  "total": 5,
+  "passed": 5,
+  "failed": 0,
+  "accuracy": 1,
+  "pass": true,
+  "threshold": 0.9,
+  "results": [
+    {
+      "id": "citation-eval-01",
+      "claim": "Catalyst reviewers need cited proposal summaries to reduce reading time.",
+      "citationSnippet": "Problem: reviewers need cited proposal summaries. Request: evaluate whether a governance copilot can reduce reading time.",
+      "expectedSupported": true,
+      "predictedSupported": true,
+      "score": 0.8888888888888888,
+      "ok": true,
+      "reason": "Prediction matched expected support label."
+    },
+    {
+      "id": "citation-eval-02",
+      "claim": "DReps need transparent rationale drafts after a human selects stance.",
+      "citationSnippet": "Problem: DReps need transparent rationale drafts. Request: draft support oppose or abstain wording only after a human selects stance.",
+      "expectedSupported": true,
+      "predictedSupported": true,
+      "score": 1,
+      "ok": true,
+      "reason": "Prediction matched expected support label."
+    },
+    {
+      "id": "citation-eval-03",
+      "claim": "The project must not become a vote recommendation engine.",
+      "citationSnippet": "Risk: drafts must never become vote recommendations.",
+      "expectedSupported": true,
+      "predictedSupported": true,
+      "score": 0.4,
+      "ok": true,
+      "reason": "Prediction matched expected support label."
+    },
+    {
+      "id": "citation-eval-04",
+      "claim": "The proposal has already achieved a 90 percent citation accuracy pilot.",
+      "citationSnippet": "Risk: citation accuracy must be human checked.",
+      "expectedSupported": false,
+      "predictedSupported": false,
+      "score": 0.3333333333333333,
+      "ok": true,
+      "reason": "Prediction matched expected support label."
+    },
+    {
+      "id": "citation-eval-05",
+      "claim": "The bot automatically signs Cardano transactions for proof receipts.",
+      "citationSnippet": "Proof payload only. Vennek does not sign or submit transactions.",
+      "expectedSupported": false,
+      "predictedSupported": false,
+      "score": 0.2857142857142857,
+      "ok": true,
+      "reason": "Prediction matched expected support label."
+    }
+  ]
+}

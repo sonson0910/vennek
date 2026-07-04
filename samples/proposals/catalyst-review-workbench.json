@@ -1,0 +1,32 @@
+{
+  "id": "catalyst-review-workbench",
+  "sourceType": "catalyst",
+  "url": "https://projectcatalyst.io/sample/catalyst-review-workbench",
+  "title": "Catalyst Reviewer Workbench",
+  "body": "Problem: Catalyst reviewers spend too much time reading long proposals and manually checking evidence. Request: 180000 ADA to build an open-source reviewer workbench with source-grounded summaries, comparison rubrics, and audit logs. Impact: reviewers can triage proposals faster while preserving transparent citations. Feasibility: the team lists three milestones, TypeScript delivery experience, weekly demos, and public documentation. Risk: live Catalyst pages can change shape, so the project includes user-provided text fallback and sample fixtures. Missing evidence: pilot usefulness must be measured with real reviewers.",
+  "metadata": {
+    "problem": "Catalyst reviewers spend too much time reading long proposals and manually checking evidence.",
+    "requestedFunding": "180000 ADA for an open-source reviewer workbench.",
+    "impact": "Reviewer triage should become faster while preserving transparent citations.",
+    "feasibility": "Three milestones, TypeScript delivery experience, weekly demos, and public documentation.",
+    "risks": "Live Catalyst pages can change shape; fallback ingestion is required.",
+    "missingEvidence": "Pilot usefulness and citation accuracy need real reviewer validation."
+  },
+  "citations": [
+    {
+      "id": "CRW-1",
+      "url": "https://projectcatalyst.io/sample/catalyst-review-workbench",
+      "title": "Catalyst Reviewer Workbench",
+      "snippet": "Request: 180000 ADA to build an open-source reviewer workbench with source-grounded summaries, comparison rubrics, and audit logs.",
+      "retrievedAt": "2026-07-04T00:00:00.000Z"
+    },
+    {
+      "id": "CRW-2",
+      "url": "https://projectcatalyst.io/sample/catalyst-review-workbench#risks",
+      "title": "Catalyst Reviewer Workbench Risks",
+      "snippet": "Risk: live Catalyst pages can change shape, so the project includes user-provided text fallback and sample fixtures.",
+      "retrievedAt": "2026-07-04T00:00:00.000Z"
+    }
+  ],
+  "retrievedAt": "2026-07-04T00:00:00.000Z"
+}

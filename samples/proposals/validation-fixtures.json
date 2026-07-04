@@ -1,0 +1,202 @@
+[
+  {
+    "id": "validation-catalyst-01",
+    "sourceType": "catalyst",
+    "url": "https://projectcatalyst.io/sample/validation-01",
+    "title": "Validation Catalyst Sample 01",
+    "body": "Problem: reviewers need structured summaries. Request: build a cited review helper. Impact: faster review triage. Feasibility: milestone and team data are included. Risk: source pages may change.",
+    "metadata": { "budget": "sample budget", "team": "sample team", "milestones": "sample milestones" },
+    "citations": [{ "id": "V01-1", "url": "https://projectcatalyst.io/sample/validation-01", "title": "Validation Catalyst Sample 01", "snippet": "Request: build a cited review helper.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-catalyst-02",
+    "sourceType": "catalyst",
+    "url": "https://projectcatalyst.io/sample/validation-02",
+    "title": "Validation Catalyst Sample 02",
+    "body": "Problem: proposal evidence is scattered. Request: normalize snippets into citations. Impact: clearer reviewer notes. Feasibility: TypeScript prototype and docs. Risk: citation drift.",
+    "metadata": { "budget": "sample budget", "team": "sample team", "milestones": "sample milestones" },
+    "citations": [{ "id": "V02-1", "url": "https://projectcatalyst.io/sample/validation-02", "title": "Validation Catalyst Sample 02", "snippet": "Normalize snippets into citations.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-catalyst-03",
+    "sourceType": "catalyst",
+    "url": "https://projectcatalyst.io/sample/validation-03",
+    "title": "Validation Catalyst Sample 03",
+    "body": "Problem: reviewers need comparison consistency. Request: fixed rubric command. Impact: less ad hoc review. Feasibility: deterministic rubric. Risk: rubric may miss domain nuance.",
+    "metadata": { "budget": "sample budget", "team": "sample team", "milestones": "sample milestones" },
+    "citations": [{ "id": "V03-1", "url": "https://projectcatalyst.io/sample/validation-03", "title": "Validation Catalyst Sample 03", "snippet": "Request: fixed rubric command.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-catalyst-04",
+    "sourceType": "catalyst",
+    "url": "https://projectcatalyst.io/sample/validation-04",
+    "title": "Validation Catalyst Sample 04",
+    "body": "Problem: evidence quality varies. Request: source cache and missing-evidence flags. Impact: transparent caveats. Feasibility: fixture-backed tests. Risk: false confidence if citations are stale.",
+    "metadata": { "budget": "sample budget", "team": "sample team", "milestones": "sample milestones" },
+    "citations": [{ "id": "V04-1", "url": "https://projectcatalyst.io/sample/validation-04", "title": "Validation Catalyst Sample 04", "snippet": "Source cache and missing-evidence flags.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-catalyst-05",
+    "sourceType": "catalyst",
+    "url": "https://projectcatalyst.io/sample/validation-05",
+    "title": "Validation Catalyst Sample 05",
+    "body": "Problem: proposal bodies are long. Request: concise source-grounded sections. Impact: reviewer time savings. Feasibility: sample-first demo. Risk: live ingestion remains a blocker.",
+    "metadata": { "budget": "sample budget", "team": "sample team", "milestones": "sample milestones" },
+    "citations": [{ "id": "V05-1", "url": "https://projectcatalyst.io/sample/validation-05", "title": "Validation Catalyst Sample 05", "snippet": "Concise source-grounded sections.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-govtool-06",
+    "sourceType": "governance-action",
+    "url": "https://gov.tools/sample/validation-06",
+    "title": "Validation GovTool Sample 06",
+    "body": "Problem: DReps need rationale drafts. Request: template workflow. Impact: clearer public reasoning. Feasibility: small command surface. Risk: drafts must not choose a stance.",
+    "metadata": { "requestedAction": "sample action", "team": "sample maintainers", "milestones": "sample milestones" },
+    "citations": [{ "id": "V06-1", "url": "https://gov.tools/sample/validation-06", "title": "Validation GovTool Sample 06", "snippet": "DReps need rationale drafts.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-govtool-07",
+    "sourceType": "governance-action",
+    "url": "https://gov.tools/sample/validation-07",
+    "title": "Validation GovTool Sample 07",
+    "body": "Problem: governance actions need readable source lists. Request: sources command. Impact: auditability. Feasibility: citation rendering. Risk: missing sources must be explicit.",
+    "metadata": { "requestedAction": "sample action", "team": "sample maintainers", "milestones": "sample milestones" },
+    "citations": [{ "id": "V07-1", "url": "https://gov.tools/sample/validation-07", "title": "Validation GovTool Sample 07", "snippet": "Request: sources command.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-govtool-08",
+    "sourceType": "governance-action",
+    "url": "https://gov.tools/sample/validation-08",
+    "title": "Validation GovTool Sample 08",
+    "body": "Problem: governance summaries need caveats. Request: guardrail policy. Impact: safer review drafts. Feasibility: output guard tests. Risk: guard patterns need ongoing updates.",
+    "metadata": { "requestedAction": "sample action", "team": "sample maintainers", "milestones": "sample milestones" },
+    "citations": [{ "id": "V08-1", "url": "https://gov.tools/sample/validation-08", "title": "Validation GovTool Sample 08", "snippet": "Request: guardrail policy.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-govtool-09",
+    "sourceType": "governance-action",
+    "url": "https://gov.tools/sample/validation-09",
+    "title": "Validation GovTool Sample 09",
+    "body": "Problem: governance provenance is weak. Request: proof payload hashing. Impact: audit trail metadata. Feasibility: SHA-256 utility. Risk: external tx verification is pending.",
+    "metadata": { "requestedAction": "sample action", "team": "sample maintainers", "milestones": "sample milestones" },
+    "citations": [{ "id": "V09-1", "url": "https://gov.tools/sample/validation-09", "title": "Validation GovTool Sample 09", "snippet": "Request: proof payload hashing.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-govtool-10",
+    "sourceType": "governance-action",
+    "url": "https://gov.tools/sample/validation-10",
+    "title": "Validation GovTool Sample 10",
+    "body": "Problem: users need a Telegram path. Request: command router. Impact: demoable workflow. Feasibility: deterministic script. Risk: production bot token is external.",
+    "metadata": { "requestedAction": "sample action", "team": "sample maintainers", "milestones": "sample milestones" },
+    "citations": [{ "id": "V10-1", "url": "https://gov.tools/sample/validation-10", "title": "Validation GovTool Sample 10", "snippet": "Request: command router.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-11",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-11",
+    "title": "Validation User Sample 11",
+    "body": "Problem: pasted text may be the only source. Request: normalize text fallback. Impact: MVP still works offline. Feasibility: local parser. Risk: provenance depends on the user.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V11-1", "url": "user-provided:validation-11", "title": "Validation User Sample 11", "snippet": "Normalize text fallback.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-12",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-12",
+    "title": "Validation User Sample 12",
+    "body": "Problem: source snapshots need hashes. Request: hashing utility. Impact: reproducible receipts. Feasibility: crypto standard library. Risk: hash does not prove source truth.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V12-1", "url": "user-provided:validation-12", "title": "Validation User Sample 12", "snippet": "Hashing utility.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-13",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-13",
+    "title": "Validation User Sample 13",
+    "body": "Problem: docs need local setup steps. Request: README and architecture notes. Impact: easier reviewer testing. Feasibility: npm scripts. Risk: live integrations remain manual.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V13-1", "url": "user-provided:validation-13", "title": "Validation User Sample 13", "snippet": "README and architecture notes.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-14",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-14",
+    "title": "Validation User Sample 14",
+    "body": "Problem: command output needs consistent sections. Request: proposal command contract. Impact: predictable review notes. Feasibility: command unit tests. Risk: heuristic extraction is basic.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V14-1", "url": "user-provided:validation-14", "title": "Validation User Sample 14", "snippet": "Proposal command contract.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-15",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-15",
+    "title": "Validation User Sample 15",
+    "body": "Problem: comparisons can drift. Request: fixed rubric fields. Impact: consistent DRep review. Feasibility: deterministic scoring. Risk: score is a signal, not a decision.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V15-1", "url": "user-provided:validation-15", "title": "Validation User Sample 15", "snippet": "Fixed rubric fields.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-16",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-16",
+    "title": "Validation User Sample 16",
+    "body": "Problem: missing citations must be visible. Request: unavailable-source status. Impact: no fabricated sources. Feasibility: guard test. Risk: users may need to paste better sources.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V16-1", "url": "user-provided:validation-16", "title": "Validation User Sample 16", "snippet": "Unavailable-source status.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-17",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-17",
+    "title": "Validation User Sample 17",
+    "body": "Problem: proof receipts should be payload-only. Request: metadata schema. Impact: auditability without custody. Feasibility: local hash. Risk: external verification needs an indexer.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V17-1", "url": "user-provided:validation-17", "title": "Validation User Sample 17", "snippet": "Metadata schema.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-18",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-18",
+    "title": "Validation User Sample 18",
+    "body": "Problem: CLI demos must be repeatable. Request: run-demo script. Impact: quick local evaluation. Feasibility: sample fixtures. Risk: not a live Telegram service.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V18-1", "url": "user-provided:validation-18", "title": "Validation User Sample 18", "snippet": "Run-demo script.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-19",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-19",
+    "title": "Validation User Sample 19",
+    "body": "Problem: MVP scope can creep. Request: non-goals in docs. Impact: safer funding story. Feasibility: explicit safety policy. Risk: later phases need governance decisions.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V19-1", "url": "user-provided:validation-19", "title": "Validation User Sample 19", "snippet": "Non-goals in docs.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  },
+  {
+    "id": "validation-user-20",
+    "sourceType": "user-provided",
+    "url": "user-provided:validation-20",
+    "title": "Validation User Sample 20",
+    "body": "Problem: production blockers need reporting. Request: implementation report. Impact: clear handoff. Feasibility: command log. Risk: real token and live APIs are not included.",
+    "metadata": { "requestedAction": "sample fallback", "team": "sample user", "milestones": "sample milestones" },
+    "citations": [{ "id": "V20-1", "url": "user-provided:validation-20", "title": "Validation User Sample 20", "snippet": "Implementation report.", "retrievedAt": "2026-07-04T00:00:00.000Z" }],
+    "retrievedAt": "2026-07-04T00:00:00.000Z"
+  }
+]

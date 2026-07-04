@@ -1,0 +1,33 @@
+.codegraph/
+
+# Dependencies
+node_modules/
+
+# Build and test output
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local runtime state
+data/
+*.sqlite
+*.sqlite3
+*.db
+logs/
+*.log
+
+# Local agent planning artifacts
+.hermes/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Temp/cache
+tmp/
+temp/
+.tmp/
+.temp/
+cache/
+.cache/
