@@ -110,7 +110,7 @@ export async function verifyProofTxWithBlockfrost(input: {
   }
 
   const contentHash = typeof matchedPayload.content_hash === "string" ? matchedPayload.content_hash : undefined;
-  if (input.expectedContentHash && contentHash !== input.expectedContentHash) {
+  if (input.expectedContentHash && normalizeContentHash(contentHash) !== normalizeContentHash(input.expectedContentHash)) {
     return {
       ok: false,
       status: "failed",
@@ -172,4 +172,11 @@ function sleep(milliseconds: number): Promise<void> {
 
 function isVennekProofPayload(value: unknown): value is { schema: "vennek.proof.v1"; content_hash?: string } {
   return Boolean(value && typeof value === "object" && (value as { schema?: unknown }).schema === "vennek.proof.v1");
+}
+
+function normalizeContentHash(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.startsWith("sha256:") ? value.slice("sha256:".length) : value;
 }

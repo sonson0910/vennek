@@ -27,6 +27,21 @@ describe("Blockfrost proof verification", () => {
     expect(result.reason).toMatch(/verified via Blockfrost/i);
   });
 
+  it("accepts sha256: expected hash when on-chain metadata stores bare hex", async () => {
+    const bareHexPayload = { ...payload, content_hash: "b".repeat(64) };
+    const result = await verifyProofTxWithBlockfrost({
+      txHash,
+      expectedContentHash: payload.content_hash,
+      options: {
+        projectId: "test_project",
+        network: "preprod",
+        fetchImpl: jsonFetch(200, [{ label: "674", json_metadata: bareHexPayload }])
+      }
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("fails safely when project id is missing", async () => {
     const result = await verifyProofTxWithBlockfrost({ txHash, options: { projectId: "" } });
     expect(result.ok).toBe(false);

@@ -93,7 +93,10 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           });
         }
       } catch (error) {
-        logger("error", "telegram_polling_error", { error: error instanceof Error ? error.message : String(error) });
+        if (options.signal?.aborted) {
+          break;
+        }
+        logger("error", "telegram_polling_error", { error: sanitizeRuntimeError(error) });
         await abortableSleep(retryDelayMs, options.signal);
       }
     }
@@ -146,4 +149,10 @@ export function abortableSleep(milliseconds: number, signal?: AbortSignal): Prom
 
 function chatHash(chatId: number | string): string {
   return `chat-${sha256Hex(String(chatId)).slice(0, 12)}`;
+}
+
+function sanitizeRuntimeError(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\b\d{6,12}:[A-Za-z0-9_-]{20,}\b/g, "[redacted]")
+    .replace(/\b(token\s+)[A-Za-z0-9:_-]+\b/gi, "$1[redacted]");
 }

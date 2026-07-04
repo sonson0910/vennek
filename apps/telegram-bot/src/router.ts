@@ -30,7 +30,7 @@ export async function routeTelegramCommand(input: string, context: CommandContex
     return auditAndReturn(input, result, safeContext);
   }
 
-  if (command === "/vote-draft") {
+  if (command === "/vote-draft" || command === "/vote_draft") {
     if (parts.length < 2) {
       throw new Error("/vote-draft requires <id> <support|oppose|abstain>.");
     }
@@ -48,7 +48,7 @@ export async function routeTelegramCommand(input: string, context: CommandContex
     return auditAndReturn(input, result, safeContext);
   }
 
-  if (command === "/proof-verify") {
+  if (command === "/proof-verify" || command === "/proof_verify") {
     result = await proofVerifyCommand(rest, {
       projectId: safeContext.blockfrostProjectId,
       network: safeContext.blockfrostNetwork

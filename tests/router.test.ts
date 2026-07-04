@@ -11,6 +11,11 @@ describe("telegram router", () => {
     await expect(routeTelegramCommand("/sources catalyst-review-workbench", fixtureContext)).resolves.toMatchObject({ command: "sources", ok: true });
   });
 
+  it("routes BotFather-compatible underscore aliases", async () => {
+    await expect(routeTelegramCommand("/vote_draft drep-rationale-kit support", fixtureContext)).resolves.toMatchObject({ command: "vote-draft", ok: true });
+    await expect(routeTelegramText(`/proof_verify ${"a".repeat(64)}`, fixtureContext)).resolves.toMatch(/BLOCKFROST_PROJECT_ID/i);
+  });
+
   it("formats unknown commands as Telegram-safe errors", async () => {
     const output = await routeTelegramText("/unknown");
     expect(output).toContain("Draft analysis; human decides.");

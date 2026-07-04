@@ -49,6 +49,7 @@ describe("Telegram polling runtime", () => {
 
     expect(readTelegramOffset(root)).toBe(20);
     expect(logs.events.some((event) => event.event === "telegram_polling_error")).toBe(true);
+    expect(JSON.stringify(logs.events)).not.toContain("SECRET_TOKEN");
   });
 
   it("abortable sleep exits promptly when aborted", async () => {

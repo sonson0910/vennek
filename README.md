@@ -6,10 +6,10 @@ It provides deterministic local commands for:
 
 - `/proposal <id|url|text>`
 - `/compare <id1> <id2>`
-- `/vote-draft <id> <support|oppose|abstain>`
+- `/vote-draft <id> <support|oppose|abstain>` (`/vote_draft` Telegram menu alias)
 - `/sources <id>`
 - `/proof <text>` payload-only SHA-256 metadata
-- `/proof-verify <tx_hash> [expected_content_hash]` Blockfrost metadata verification only
+- `/proof-verify <tx_hash> [expected_content_hash]` (`/proof_verify` Telegram menu alias) Blockfrost metadata verification only
 
 ## Local Run
 

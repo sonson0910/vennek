@@ -13,13 +13,13 @@ Vennek is a source-grounded Cardano governance analysis assistant for Catalyst r
 
 - `/proposal <url_or_text_or_id>` summarizes problem, requested funding/action, impact, feasibility, risks, missing evidence, and citations.
 - `/compare <id1> <id2>` compares two proposal documents with a fixed rubric: impact, feasibility, budget/resources, evidence quality, and risk.
-- `/vote-draft <id> <support|oppose|abstain>` drafts wording for the human-selected stance only.
+- `/vote-draft <id> <support|oppose|abstain>` drafts wording for the human-selected stance only. Telegram's command menu also exposes `/vote_draft` because BotFather command names cannot contain hyphens.
 - `/sources <id>` lists source URLs, snippets, retrieval timestamp, and cache/source status.
 
 ## P1 Included in Skeleton
 
 - `/proof <text>` generates SHA-256 content hash and `vennek.proof.v1` metadata payload only.
-- `/proof-verify <tx_hash> [expected_content_hash]` verifies externally submitted `vennek.proof.v1` metadata through Blockfrost when configured.
+- `/proof-verify <tx_hash> [expected_content_hash]` verifies externally submitted `vennek.proof.v1` metadata through Blockfrost when configured. Telegram's command menu also exposes `/proof_verify` because BotFather command names cannot contain hyphens.
 
 ## Non-Goals
 
