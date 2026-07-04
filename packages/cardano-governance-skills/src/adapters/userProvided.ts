@@ -40,8 +40,9 @@ export async function fetchUserProvidedUrl(input: {
   url: string;
   sourceType?: SourceType;
   now?: Date;
+  allowedDomains?: string[];
 }): Promise<ProposalDocument> {
-  const safeUrl = await assertPublicFetchUrl(input.url);
+  const safeUrl = await assertPublicFetchUrl(input.url, input.allowedDomains);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
 
@@ -99,7 +100,7 @@ export function hostMatches(host: string, allowedDomains: string[]): boolean {
   });
 }
 
-export async function assertPublicFetchUrl(value: string): Promise<string> {
+export async function assertPublicFetchUrl(value: string, allowedDomains: string[] = []): Promise<string> {
   const url = new URL(value);
   if (url.protocol !== "https:") {
     throw new Error("Only https URLs are accepted for remote source fetching.");
@@ -110,6 +111,10 @@ export async function assertPublicFetchUrl(value: string): Promise<string> {
   }
 
   const host = url.hostname;
+  if (allowedDomains.length === 0 || !hostMatches(host, allowedDomains)) {
+    throw new Error("Remote URL source host is not on the configured allowlist. Paste text instead for untrusted sources.");
+  }
+
   const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: false });
   if (addresses.length === 0) {
     throw new Error("Source host did not resolve.");

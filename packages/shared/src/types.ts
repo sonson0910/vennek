@@ -39,6 +39,8 @@ export type CommandContext = {
   blockfrostProjectId?: string;
   /** Optional Blockfrost network; defaults to mainnet. */
   blockfrostNetwork?: "mainnet" | "preprod" | "preview";
+  /** Optional allowlist for arbitrary remote URL fetching. Keep unset for untrusted chat input. */
+  remoteFetchAllowedDomains?: string[];
 };
 
 export type CommandAuditLogEntry = {

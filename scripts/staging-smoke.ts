@@ -1,4 +1,6 @@
 import { verifyProofTxWithBlockfrost } from "@vennek/cardano-governance-skills";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 type Check = {
   name: string;
@@ -34,7 +36,15 @@ function checkDataDir(): Check {
   if (!dataDir) {
     return { name: "VENNEK_DATA_DIR", ok: false, reason: "VENNEK_DATA_DIR is required for staging persistence." };
   }
-  return { name: "VENNEK_DATA_DIR", ok: true, detail: { configured: true } };
+  try {
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const probePath = join(dataDir, `.vennek-smoke-${process.pid}.tmp`);
+    writeFileSync(probePath, "ok\n", { mode: 0o600 });
+    rmSync(probePath);
+    return { name: "VENNEK_DATA_DIR", ok: true, detail: { configured: true, writable: true } };
+  } catch (error) {
+    return { name: "VENNEK_DATA_DIR", ok: false, reason: `VENNEK_DATA_DIR is not writable: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 async function checkTelegramToken(): Promise<Check> {

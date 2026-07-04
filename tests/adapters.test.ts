@@ -30,8 +30,9 @@ describe("adapters URL classification and fetch guards", () => {
 
   it("rejects unsafe remote fetch URLs before network fetch", async () => {
     await expect(assertPublicFetchUrl("http://projectcatalyst.io/example")).rejects.toThrow(/Only https/);
-    await expect(assertPublicFetchUrl("https://user:pass@projectcatalyst.io/example")).rejects.toThrow(/Credentials/);
-    await expect(assertPublicFetchUrl("https://127.0.0.1/example")).rejects.toThrow(/Private/);
+    await expect(assertPublicFetchUrl("https://user:pass@projectcatalyst.io/example", ["projectcatalyst.io"])).rejects.toThrow(/Credentials/);
+    await expect(assertPublicFetchUrl("https://127.0.0.1/example", ["127.0.0.1"])).rejects.toThrow(/Private/);
+    await expect(assertPublicFetchUrl("https://example.com/proposal")).rejects.toThrow(/allowlist/);
   });
 
   it("detects private IP address ranges", () => {

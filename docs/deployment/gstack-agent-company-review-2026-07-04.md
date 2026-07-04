@@ -106,6 +106,16 @@ Reason:
 
 Service restarts should not look like runtime incidents.
 
+### 5. Follow-up subagent findings absorbed
+
+Additional gstack company reviewers finished after the first patch landed. Their findings were triaged and the following fixes were applied:
+
+- Arbitrary remote URL fetching is now allowlist-gated; untrusted sources should be pasted as text. This reduces SSRF/DNS-rebinding risk for attacker-controlled domains.
+- `npm run staging:smoke` now verifies `VENNEK_DATA_DIR` is writable, not merely configured.
+- `deploy/vennek.env.example` now matches the system service sandbox path: `/var/lib/vennek`.
+- The dev-only preprod transaction fixture script is documented as a non-production exception to the no-custody runtime policy.
+- `SECURITY.md` and `.github/dependabot.yml` were added for vulnerability reporting and dependency/action update automation.
+
 ## Verification evidence
 
 Commands run locally:

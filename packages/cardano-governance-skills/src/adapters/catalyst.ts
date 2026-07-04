@@ -12,7 +12,7 @@ export function isCatalystUrl(value: string): boolean {
 }
 
 export async function fetchCatalystProposal(url: string, now?: Date): Promise<ProposalDocument> {
-  return fetchUserProvidedUrl({ url, sourceType: "catalyst", now });
+  return fetchUserProvidedUrl({ url, sourceType: "catalyst", now, allowedDomains: CATALYST_HOSTS });
 }
 
 export function normalizeCatalystSnapshot(input: {

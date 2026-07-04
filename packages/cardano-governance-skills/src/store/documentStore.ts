@@ -47,7 +47,7 @@ export async function resolveProposalDocument(input: string, context: CommandCon
       return fetchGovernanceAction(trimmed, context.now);
     }
 
-    return fetchUserProvidedUrl({ url: trimmed, now: context.now });
+    return fetchUserProvidedUrl({ url: trimmed, now: context.now, allowedDomains: context.remoteFetchAllowedDomains });
   }
 
   return normalizeUserProvidedText({ text: trimmed, now: context.now });

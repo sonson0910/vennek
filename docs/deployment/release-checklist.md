@@ -7,7 +7,7 @@ Use this checklist before presenting Vennek as a pilot/staging build.
 - [ ] Positioning remains: Cardano Governance Copilot for Catalyst reviewers and DReps.
 - [ ] No TapTools replacement claim.
 - [ ] No AI Agent OS claim.
-- [ ] No wallet connector, signing, auto-vote, or transaction submission.
+- [ ] No runtime wallet connector, signing, auto-vote, or transaction submission.
 - [ ] `/proof` remains payload-only.
 - [ ] `/proof-verify` only reads externally submitted metadata through Blockfrost.
 
@@ -58,7 +58,8 @@ Required result:
 - [ ] `BLOCKFROST_NETWORK` selected: `mainnet`, `preprod`, or `preview`.
 - [ ] Integration test has known tx hash containing `vennek.proof.v1` metadata.
 - [ ] `/proof-verify` verifies expected content hash.
-- [ ] No wallet/signing/submission code path exists.
+- [ ] No runtime wallet/signing/submission code path exists.
+- [ ] Dev-only preprod fixture script, if present, is excluded from deployed runtime and documented as non-production.
 
 ## Pilot Gate
 

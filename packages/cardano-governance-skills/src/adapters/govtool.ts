@@ -12,7 +12,7 @@ export function isGovToolUrl(value: string): boolean {
 }
 
 export async function fetchGovernanceAction(url: string, now?: Date): Promise<ProposalDocument> {
-  return fetchUserProvidedUrl({ url, sourceType: "governance-action", now });
+  return fetchUserProvidedUrl({ url, sourceType: "governance-action", now, allowedDomains: GOVTOOL_HOSTS });
 }
 
 export function normalizeGovernanceSnapshot(input: {

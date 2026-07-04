@@ -1,6 +1,6 @@
 {
   "mode": "live",
-  "generatedAt": "2026-07-04T11:23:25.466Z",
+  "generatedAt": "2026-07-04T13:06:19.413Z",
   "total": 22,
   "normalized": 21,
   "withCitations": 21,
@@ -229,7 +229,7 @@
       "ok": false,
       "citationCount": 0,
       "input": "https://127.0.0.1/vennek-expected-ssrf-failure",
-      "reason": "Private, loopback, link-local, multicast, and reserved hosts are not accepted."
+      "reason": "Remote URL source host is not on the configured allowlist. Paste text instead for untrusted sources."
     }
   ],
   "note": "Live validation requires >=20 entries, >=15 normalized, Catalyst + governance-action + user-provided coverage, and at least one expected failure with a reason. Source file: /mnt/Projects/elly_code/vennek/samples/proposals/live-sources.txt"
