@@ -34,10 +34,14 @@ jobs:
         run: npm run validate:sources:live
 
       - name: Optional Blockfrost integration test
-        if: ${{ secrets.BLOCKFROST_PROJECT_ID != '' && vars.BLOCKFROST_TEST_TX_HASH != '' && vars.BLOCKFROST_TEST_CONTENT_HASH != '' }}
         env:
           BLOCKFROST_PROJECT_ID: ${{ secrets.BLOCKFROST_PROJECT_ID }}
           BLOCKFROST_NETWORK: ${{ vars.BLOCKFROST_NETWORK || 'preprod' }}
           BLOCKFROST_TEST_TX_HASH: ${{ vars.BLOCKFROST_TEST_TX_HASH }}
           BLOCKFROST_TEST_CONTENT_HASH: ${{ vars.BLOCKFROST_TEST_CONTENT_HASH }}
-        run: npm test -- --run tests/blockfrost.integration.test.ts
+        run: |
+          if [ -z "$BLOCKFROST_PROJECT_ID" ] || [ -z "$BLOCKFROST_TEST_TX_HASH" ] || [ -z "$BLOCKFROST_TEST_CONTENT_HASH" ]; then
+            echo "Skipping Blockfrost integration test: staging secret/vars are not configured."
+            exit 0
+          fi
+          npm test -- --run tests/blockfrost.integration.test.ts
