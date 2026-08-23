@@ -25,7 +25,6 @@ npm run health
 npm run validate:sources
 npm run validate:sources:live
 npm run eval:citations
-npm run demo
 npm audit --audit-level=moderate
 npm audit --omit=dev --audit-level=moderate
 ```
@@ -39,8 +38,11 @@ Required result:
 - [ ] Healthcheck emits JSON.
 - [ ] Mixed live source validation passes.
 - [ ] Citation eval passes threshold.
-- [ ] Demo smoke test passes.
 - [ ] Full and production-only audits report 0 moderate+ vulnerabilities.
+
+## Demo Transcript (Informational)
+
+`npm run demo` generates a deterministic transcript for review. It is not a verification gate and does not replace tests, typecheck, build, health, source, citation, or audit checks.
 
 ## Staging Gate
 
@@ -54,8 +56,8 @@ Required result:
 - [ ] JSON logs are collected.
 - [ ] Offset persists across restart.
 - [ ] Allowed chat command is delivered and advances its offset.
-- [ ] Rejected chat advances its offset without routing or persistence.
-- [ ] Rate-limited chat advances its offset without routing or persistence.
+- [ ] Rejected chat advances its offset and emits a sanitized runtime log without command routing or command audit/cache/proof side effects.
+- [ ] Rate-limited chat advances its offset and emits a sanitized runtime log without command routing or command audit/cache/proof side effects.
 - [ ] Permanent/exhausted delivery (“poison”) advances its offset and emits only a sanitized abandoned event; cancellation preserves the offset.
 
 ## Blockfrost Gate

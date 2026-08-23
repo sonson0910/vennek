@@ -4,6 +4,8 @@ This is the minimal production runtime path for the Vennek Telegram bot.
 
 ## Required Secrets
 
+Store these values in an environment file with mode `0600` (for example `/etc/vennek/vennek.env`):
+
 ```bash
 TELEGRAM_BOT_TOKEN=...
 VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890
@@ -34,9 +36,17 @@ Expected JSON log:
 
 ## Start Polling
 
+From the repository after `npm run build`, load the `0600` environment file without echoing it and start the built runtime:
+
 ```bash
-TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 VENNEK_DATA_DIR=/var/lib/vennek node apps/telegram-bot/dist/main.js --poll
+chmod 0600 /etc/vennek/vennek.env
+set -a
+. /etc/vennek/vennek.env
+set +a
+npm run start:telegram
 ```
+
+Never put a `TELEGRAM_BOT_TOKEN` assignment in a shell command or history. For service-managed staging, use the systemd unit below with the same mode-`0600` `EnvironmentFile`.
 
 Runtime behavior:
 
@@ -44,7 +54,7 @@ Runtime behavior:
 - writes offset atomically after each skipped or successfully processed update;
 - requires the chat allowlist before routing, fetching, Blockfrost access, or persistence;
 - applies an in-memory per-chat limit of 10 updates per 60 seconds;
-- unauthorized and rate-limited updates advance the offset without routing or side effects;
+- unauthorized and rate-limited updates write the offset and a sanitized runtime log, but do not route a command or create command audit, source-cache, or proof-receipt side effects;
 - delivers with at most 3 send-only attempts; HTTP 429 is retryable, while permanent HTTP 4xx errors except 429 or an exhausted retry budget produce a sanitized `telegram_delivery_abandoned` event and advance the offset;
 - cancellation during delivery/retry preserves the offset; a send that resolves successfully is committed even if cancellation arrives immediately afterward;
 - logs structured JSON events with hashed chat IDs, not raw message text;
@@ -83,11 +93,14 @@ Use `deploy/systemd/vennek-telegram.service` for a system service or `deploy/sys
 Before starting the poller, run:
 
 ```bash
+chmod 0600 ~/.config/vennek/vennek.env
 set -a
 . ~/.config/vennek/vennek.env
 set +a
 npm run staging:smoke
 ```
+
+This loads the token without echoing it; never place a token assignment in the command line or shell history.
 
 The smoke test verifies:
 

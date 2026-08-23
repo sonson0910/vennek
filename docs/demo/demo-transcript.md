@@ -77,6 +77,6 @@ Vennek should verify externally submitted metadata through Blockfrost and return
 ## Demo Success Criteria
 
 - Viewer understands the product in under 2 minutes.
-- Every sourced claim has citations or source-unavailable status.
+- Each source-stated claim has a claim-level citation when a matching provenance span exists; otherwise it is marked `[source unavailable]`.
 - Safety boundaries are explicit.
 - The reviewer/DRep workflow feels faster than manual reading.

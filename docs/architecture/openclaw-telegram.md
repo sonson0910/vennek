@@ -13,18 +13,22 @@ const response = await routeTelegramText("/proposal catalyst-review-workbench");
 CLI mode does not require a token and remains useful for smoke checks:
 
 ```bash
-npx tsx apps/telegram-bot/src/main.ts /proposal catalyst-review-workbench
+node apps/telegram-bot/dist/main.js /proposal catalyst-review-workbench
 ```
 
 ## Telegram Polling
 
-For a minimal production polling process, set the bot token and allowlist in deployment secrets and pass `--poll`:
+For a minimal production polling process, put the bot token, allowlist, and data directory in a mode-`0600` environment file. From the repository after `npm run build`, load it without echoing the token and start the built runtime:
 
 ```bash
-TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 npx tsx apps/telegram-bot/src/main.ts --poll
+chmod 0600 /path/to/vennek.env
+set -a
+. /path/to/vennek.env
+set +a
+npm run start:telegram
 ```
 
-`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling, uses comma-separated direct/group chat IDs, and fails closed when missing or invalid. CLI and `--health` are unaffected. The process uses Telegram `getUpdates` long polling with native `fetch`, routes authorized text messages through `routeTelegramText`, and replies with `sendMessage`. Keep `TELEGRAM_BOT_TOKEN` and the allowlist in the process environment or secret manager only; do not commit or print secrets. Run one poller instance per bot token so Telegram offsets stay coherent.
+Never put a `TELEGRAM_BOT_TOKEN` assignment in a shell command or history. `VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling, uses comma-separated direct/group chat IDs, and fails closed when missing or invalid. CLI and `--health` are unaffected. The process uses Telegram `getUpdates` long polling with native `fetch`, routes authorized text messages through `routeTelegramText`, and replies with `sendMessage`. Keep the environment file in the process environment or secret manager only; do not commit or print secrets. Run one poller instance per bot token so Telegram offsets stay coherent.
 
 Credential-gated staging and operational limits remain:
 

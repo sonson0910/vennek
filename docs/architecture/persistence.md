@@ -7,15 +7,19 @@ Vennek's MVP persistence is intentionally file-backed and opt-in. It is designed
 Set a runtime data directory:
 
 ```bash
-VENNEK_DATA_DIR=/var/lib/vennek VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 TELEGRAM_BOT_TOKEN=... npx tsx apps/telegram-bot/src/main.ts --poll
+chmod 0600 /path/to/vennek.env
+set -a
+. /path/to/vennek.env
+set +a
+npm run start:telegram
 ```
 
-`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling; polling fails closed when it is absent or invalid, while CLI and health mode are unaffected.
+Put `VENNEK_DATA_DIR`, `VENNEK_TELEGRAM_ALLOWED_CHAT_IDS`, and `TELEGRAM_BOT_TOKEN` in the `0600` env file. The allowlist is required only for polling; polling fails closed when it is absent or invalid, while CLI and health mode are unaffected. Never type a token assignment into shell history.
 
 For local CLI testing:
 
 ```bash
-VENNEK_DATA_DIR=./data npx tsx apps/telegram-bot/src/main.ts /proposal https://projectcatalyst.io/...
+VENNEK_DATA_DIR=./data node apps/telegram-bot/dist/main.js /proposal https://projectcatalyst.io/...
 ```
 
 ## Directory Layout
@@ -49,9 +53,9 @@ Directories are created with mode `0700`; files are written/chmodded to `0600`. 
 
 Default retention limits are a 10 MiB `commands.jsonl` audit file plus one `.1` backup, 500 source-cache files, and 500 proof-receipt files. An oversized audit entry is rejected before writing or rotating the audit files.
 
-Pasted user text (`sourceType: user-provided` with a `user-provided:` URL) is hash-audited with redacted previews but is **not source-cached**. Public fetched sources are sanitized/clone-redacted before caching. The store never holds wallet keys, seed phrases, signing material, or custody data.
+Pasted user text (`sourceType: user-provided` with a `user-provided:` URL) is hash-audited with redacted previews but is **not source-cached**. Public fetched sources are sanitized/clone-redacted before caching. Proof-command audit previews are fully redacted; other command audit previews are bounded and heuristic-redacted but may contain unlabeled sensitive text. Never submit secrets to commands, and protect the data directory and backups with mode `0700` for directories and `0600` for files.
 
-They do **not** store wallet keys, seed phrases, private keys, or automatic transaction material because those flows are forbidden by the product safety contract.
+The store is not a secrets vault; no command should receive wallet keys, seed phrases, private keys, signing material, or custody data.
 
 ## Source Cache Policy
 

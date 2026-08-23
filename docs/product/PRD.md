@@ -27,12 +27,11 @@ No wallet risk, analytics dashboard, trading, Masumi integration, Aiken contract
 
 ## Acceptance
 
-- `npm test -- --run`, `npm run typecheck`, `npm run build`, `npm run verify:imports`, `npm run demo` pass.
+- `npm test -- --run`, `npm run typecheck`, `npm run build`, and `npm run verify:imports` pass.
 - `npm audit --audit-level=moderate` reports 0 vulnerabilities.
 - Sample source validation passes with >=20 fixtures and >=15 normalized/cited documents.
 - Live source validation passes with >=20 operator-provided real sources and >=15 normalized/cited documents; current repo covers Catalyst URLs and must be expanded with GovTool/governance-action plus user-provided fallback sources before production/funding overclaims.
-- Sourced output includes citations or explicit source-unavailable status.
-- Source-stated claims render as quoted/sourced text with claim-level citations; generated first-person rationale uses fixed, source-neutral wording.
+- Each source-stated claim renders as quoted/sourced text with a claim-level citation when a matching provenance span exists; otherwise it is marked `[source unavailable]`. Generated first-person rationale uses fixed, source-neutral wording.
 - Evidence signals are explicitly lexical keyword coverage, not evidence quality or a score.
 - Output uses human decision framing.
 - No command recommends a vote.
@@ -43,7 +42,8 @@ No wallet risk, analytics dashboard, trading, Masumi integration, Aiken contract
 
 ## Production Readiness Gates Not Yet Satisfied
 
-- File-backed audit/source/proof persistence works for MVP with private file modes and proof preview redaction; pasted user text is hash-audited/preview-redacted but not source-cached, public fetched sources are clone-redacted before caching, and no custody/signing material is stored. Defaults are a 10 MiB audit log with one backup plus 500 source and 500 proof files; oversized audit entries are rejected. High-availability production still needs SQLite/Postgres retention, backups, and monitoring.
+- File-backed audit/source/proof persistence works for MVP with private file modes; pasted user text is hash-audited/preview-redacted but not source-cached, and public fetched sources are clone-redacted before caching. Proof-command audit previews are fully redacted; other command audit previews are bounded and heuristic-redacted but may contain unlabeled sensitive text. Operators must never submit secrets to commands and must protect the data directory and backups with `0700` directories and `0600` files. Defaults are a 10 MiB audit log with one backup plus 500 source and 500 proof files; oversized audit entries are rejected. High-availability production still needs SQLite/Postgres retention, backups, and monitoring.
+- `npm run demo` generates an informational deterministic transcript; it is not a verification gate.
 - Telegram runtime now persists update offset atomically and has healthcheck/structured logs/fake-API tests; production still needs a real bot token, service supervision, and operational monitoring.
 - Citation quality has deterministic fixture evaluation; production still needs human-sampled citation accuracy during pilot.
 - Real Cardano indexer integration if `/proof` tx verification is claimed.

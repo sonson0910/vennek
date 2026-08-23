@@ -5,12 +5,12 @@ Vennek is decision support. It is not a voter, signer, wallet, exchange, or fina
 ## Required Output Contract
 
 - Include `Draft analysis; human decides.`
-- Include citations for sourced commands, or explicitly say source unavailable.
+- For each source-stated claim, include its claim-level citation when a matching provenance span exists; otherwise mark it `[source unavailable]`.
 - Preserve caveats and missing evidence.
 - Do not choose a vote stance.
 - `/vote-draft` must receive `support`, `oppose`, or `abstain` from the human.
 - Evidence signals report lexical keyword coverage only; they are not evidence quality or a score.
-- Source-stated claims are rendered as quoted/sourced text with claim-level citations.
+- Source-stated claims are rendered as quoted/sourced text with claim-level citations only when a matching provenance span exists; otherwise they are marked `[source unavailable]`.
 - Generated first-person rationale uses fixed, source-neutral wording and does not copy source directives.
 
 ## Forbidden MVP Behavior
