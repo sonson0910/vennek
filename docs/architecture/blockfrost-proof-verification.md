@@ -14,15 +14,15 @@ BLOCKFROST_NETWORK=mainnet # mainnet | preprod | preview
 ## Command
 
 ```text
-/proof-verify <tx_hash> [expected_content_hash]
+/proof-verify <tx_hash> <expected_content_hash>
 ```
 
 Behavior:
 
-- validates transaction hash format;
+- requires both a valid 64-hex transaction hash and a valid 64-hex SHA-256 `expected_content_hash`;
 - fetches `/txs/{hash}/metadata` from the configured Blockfrost network;
 - searches `json_metadata` entries for `schema: "vennek.proof.v1"`;
-- if `expected_content_hash` is provided, requires exact match;
+- succeeds only when the payload's normalized `content_hash` exactly matches the expected SHA-256 value;
 - returns verified/failed status;
 - does not use wallet keys, seed phrases, signing libraries, or transaction submission.
 

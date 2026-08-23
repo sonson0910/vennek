@@ -30,7 +30,7 @@ Vennek should show:
 - Impact comparison.
 - Feasibility comparison.
 - Budget/resources comparison.
-- Evidence quality scoring.
+- Lexical evidence signals showing keyword coverage only, not evidence quality or a score.
 - Risk comparison.
 - Citations from both items.
 

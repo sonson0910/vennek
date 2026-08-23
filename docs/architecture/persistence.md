@@ -7,8 +7,10 @@ Vennek's MVP persistence is intentionally file-backed and opt-in. It is designed
 Set a runtime data directory:
 
 ```bash
-VENNEK_DATA_DIR=/var/lib/vennek npx tsx apps/telegram-bot/src/main.ts --poll
+VENNEK_DATA_DIR=/var/lib/vennek VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 TELEGRAM_BOT_TOKEN=... npx tsx apps/telegram-bot/src/main.ts --poll
 ```
+
+`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling; polling fails closed when it is absent or invalid, while CLI and health mode are unaffected.
 
 For local CLI testing:
 

@@ -25,7 +25,8 @@ Command:
 
 Expected:
 
-- Fixed rubric: impact, feasibility, budget/resources, evidence quality, risk.
+- Fixed rubric: impact, feasibility, budget/resources, lexical evidence signals, risk.
+- Evidence signals are keyword coverage only, explicitly not evidence quality or a score.
 - Citations from both items.
 - Reminder that the human decides.
 
@@ -75,12 +76,12 @@ Expected:
 Command:
 
 ```text
-/proof-verify <tx_hash> [expected_content_hash]
+/proof-verify <tx_hash> <expected_content_hash>
 ```
 
 Expected:
 
 - Checks externally submitted transaction metadata through Blockfrost.
 - Looks for `schema: "vennek.proof.v1"`.
-- Optionally checks `content_hash` exact match.
+- Requires a valid 64-hex SHA-256 expected content hash and checks an exact match.
 - Does not sign, submit, or construct transactions.

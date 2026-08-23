@@ -18,16 +18,16 @@ npx tsx apps/telegram-bot/src/main.ts /proposal catalyst-review-workbench
 
 ## Telegram Polling
 
-For a minimal production polling process, set the bot token in deployment secrets and pass `--poll`:
+For a minimal production polling process, set the bot token and allowlist in deployment secrets and pass `--poll`:
 
 ```bash
-TELEGRAM_BOT_TOKEN=... npx tsx apps/telegram-bot/src/main.ts --poll
+TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 npx tsx apps/telegram-bot/src/main.ts --poll
 ```
 
-The process uses Telegram `getUpdates` long polling with native `fetch`, routes text messages through `routeTelegramText`, and replies with `sendMessage`. Keep `TELEGRAM_BOT_TOKEN` in the process environment or secret manager only; do not commit or print it. Run one poller instance per bot token so Telegram offsets stay coherent.
+`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling, uses comma-separated direct/group chat IDs, and fails closed when missing or invalid. CLI and `--health` are unaffected. The process uses Telegram `getUpdates` long polling with native `fetch`, routes authorized text messages through `routeTelegramText`, and replies with `sendMessage`. Keep `TELEGRAM_BOT_TOKEN` and the allowlist in the process environment or secret manager only; do not commit or print secrets. Run one poller instance per bot token so Telegram offsets stay coherent.
 
-Production binding still needs:
+Credential-gated staging and operational limits remain:
 
-- source cache persistence;
-- live source validation policy;
-- optional external transaction indexer for proof verification.
+- a real Telegram bot token and staging environment;
+- a real Blockfrost project ID and known proof transaction for `/proof-verify` staging verification;
+- service supervision and monitoring of structured runtime logs and persisted offsets.
