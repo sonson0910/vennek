@@ -2,6 +2,7 @@ import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSyn
 import { join, resolve } from "node:path";
 import {
   canonicalJson,
+  isProposalDocument,
   sha256Hex,
   type CommandAuditLogEntry,
   type CommandContext,
@@ -66,7 +67,7 @@ export function putSourceDocument(
   persistenceLimits?: Partial<PersistenceLimits>
 ): SourceCacheRecord | undefined {
   const limits = resolvePersistenceLimits(persistenceLimits);
-  if (!isPersistableDocument(document)) {
+  if (!isProposalDocument(document) || !isPersistableDocument(document)) {
     return undefined;
   }
 
@@ -240,14 +241,6 @@ function extractProofReceipt(data: unknown): ProofReceipt | undefined {
   }
   const maybe = data as Partial<ProofReceipt>;
   return typeof maybe.local_id === "string" && maybe.payload?.schema === "vennek.proof.v1" ? (maybe as ProofReceipt) : undefined;
-}
-
-function isProposalDocument(value: unknown): value is ProposalDocument {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const maybe = value as Partial<ProposalDocument>;
-  return typeof maybe.id === "string" && typeof maybe.title === "string" && typeof maybe.body === "string" && Array.isArray(maybe.citations);
 }
 
 function safePreview(value: string, command = "", maxLength = 120): string {

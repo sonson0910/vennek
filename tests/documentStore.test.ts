@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,4 +37,86 @@ describe("document store resolution", () => {
     await expect(resolveProposalDocument(file, { allowLocalFiles: true, allowedFileRoot: tmpdir(), enableFixtures: false, now })).resolves.toMatchObject({ id: "local-doc" });
     await expect(resolveProposalDocument(file, { allowLocalFiles: true, allowedFileRoot: join(dir, "nested"), enableFixtures: false, now })).rejects.toThrow(/outside the allowed file root/);
   });
+
+  it("rejects a local-file symlink before reading its outside target", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const external = mkdtempSync(join(tmpdir(), "vennek-doc-external-"));
+    const outside = join(external, "proposal.json");
+    writeFileSync(outside, JSON.stringify(validDocument("outside-target")));
+    const link = join(root, "proposal.json");
+    symlinkSync(outside, link);
+
+    await expect(resolveProposalDocument(link, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/symbolic link/);
+  });
+
+  it("rejects a parent symlink that canonicalizes outside the allowed root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const external = mkdtempSync(join(tmpdir(), "vennek-doc-external-"));
+    writeFileSync(join(external, "proposal.json"), JSON.stringify(validDocument("outside-parent")));
+    symlinkSync(external, join(root, "linked"), "dir");
+
+    await expect(resolveProposalDocument(join(root, "linked", "proposal.json"), {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/outside the allowed file root/);
+  });
+
+  it("rejects non-regular and oversized local files before parsing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const directory = join(root, "directory");
+    mkdirSync(directory);
+    await expect(resolveProposalDocument(directory, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/regular file/);
+
+    const oversized = join(root, "oversized.json");
+    writeFileSync(oversized, Buffer.alloc(2 * 1024 * 1024 + 1, 120));
+    await expect(resolveProposalDocument(oversized, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/2 MiB/);
+  });
+
+  it.each([
+    ["missing fields", { id: "missing-fields" }],
+    ["bad source type", { ...validDocument("bad-source"), sourceType: "unknown" }],
+    ["single-file array", [validDocument("array-document")]],
+    ["malformed citation", { ...validDocument("bad-citation"), citations: [{ id: "C1" }] }],
+    ["malformed metadata", { ...validDocument("bad-metadata"), metadata: [] }]
+  ])("rejects local files with %s as Invalid ProposalDocument", async (_name, content) => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const file = join(root, "proposal.json");
+    writeFileSync(file, JSON.stringify(content));
+
+    await expect(resolveProposalDocument(file, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/Invalid ProposalDocument/);
+  });
 });
+
+function validDocument(id: string) {
+  return {
+    id,
+    sourceType: "user-provided",
+    title: "Local document",
+    body: "Local body",
+    metadata: {},
+    citations: [],
+    retrievedAt: now.toISOString()
+  };
+}

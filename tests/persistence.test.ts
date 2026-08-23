@@ -68,6 +68,18 @@ describe("file-backed persistence", () => {
     expect(readAllFiles(root).join("\n")).not.toContain("DIRECT_REVIEW_SECRET_SENTINEL");
   });
 
+  it("does not persist structurally malformed documents through the direct source sink", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+
+    const record = putSourceDocument(root, {
+      ...sourceDocument("malformed-source"),
+      sourceType: "not-a-source" as ProposalDocument["sourceType"]
+    });
+
+    expect(record).toBeUndefined();
+    expect(existsSync(join(root, "source-cache"))).toBe(false);
+  });
+
   it("recursively redacts public source fields without mutating the source object", () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
     const document: ProposalDocument = {

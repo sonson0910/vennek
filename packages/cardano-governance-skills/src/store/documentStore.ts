@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
-import type { CommandContext, ProposalDocument } from "@vennek/shared";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isProposalDocument, type CommandContext, type ProposalDocument } from "@vennek/shared";
 import { isCatalystUrl, fetchCatalystProposal } from "../adapters/catalyst.js";
 import { isGovToolUrl, fetchGovernanceAction } from "../adapters/govtool.js";
 import { fetchUserProvidedUrl, normalizeUserProvidedText } from "../adapters/userProvided.js";
@@ -33,9 +33,7 @@ export async function resolveProposalDocument(input: string, context: CommandCon
   }
 
   if (context.allowLocalFiles && context.allowedFileRoot && existsSync(trimmed)) {
-    const safePath = resolveAllowedLocalPath(trimmed, context.allowedFileRoot);
-    const parsed = JSON.parse(readFileSync(safePath, "utf8")) as ProposalDocument;
-    return parsed;
+    return readLocalProposalDocument(trimmed, context.allowedFileRoot);
   }
 
   if (isUrl(trimmed)) {
@@ -58,15 +56,57 @@ function readJsonDocuments(path: string): ProposalDocument[] {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-function resolveAllowedLocalPath(path: string, root: string): string {
-  const absoluteRoot = resolve(root);
-  const absolutePath = resolve(path);
-  const rel = relative(absoluteRoot, absolutePath);
-  const withinRoot = rel !== "" && !rel.startsWith("..") && !rel.startsWith("/");
-  if (!withinRoot) {
-    throw new Error("Local file source is outside the allowed file root.");
+const MAX_LOCAL_FILE_BYTES = 2 * 1024 * 1024;
+
+function readLocalProposalDocument(path: string, root: string): ProposalDocument {
+  try {
+    const absolutePath = resolve(path);
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = realpathSync(root);
+    } catch (error) {
+      const lexicalRelative = relative(resolve(root), absolutePath);
+      if (lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+        throw new Error("Local file source is outside the allowed file root.");
+      }
+      throw error;
+    }
+
+    const linkMetadata = lstatSync(absolutePath);
+    if (linkMetadata.isSymbolicLink()) {
+      throw new Error("Local file source must be a regular file, not a symbolic link.");
+    }
+
+    const canonicalPath = realpathSync(absolutePath);
+    const rel = relative(canonicalRoot, canonicalPath);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error("Local file source is outside the allowed file root.");
+    }
+
+    const metadata = statSync(canonicalPath);
+    if (!metadata.isFile()) {
+      throw new Error("Local file source must be a regular file.");
+    }
+    if (metadata.size > MAX_LOCAL_FILE_BYTES) {
+      throw new Error("Local file source exceeds 2 MiB.");
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(canonicalPath, "utf8")) as unknown;
+    } catch {
+      throw new Error("Invalid ProposalDocument in local file source.");
+    }
+    if (!isProposalDocument(parsed)) {
+      throw new Error("Invalid ProposalDocument in local file source.");
+    }
+    return parsed;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Local file source")) {
+      throw error;
+    }
+    throw new Error(`Unable to read local file source: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return absolutePath;
 }
 
 function isUrl(value: string): boolean {
