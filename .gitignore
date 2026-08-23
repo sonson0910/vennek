@@ -18,6 +18,7 @@ logs/
 
 # Local agent planning artifacts
 .hermes/
+.worktrees/
 
 # Local environment and secrets
 .env
