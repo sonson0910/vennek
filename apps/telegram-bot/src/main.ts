@@ -1,4 +1,5 @@
 import type { CommandContext } from "@vennek/shared";
+import { parseAllowedChatIds } from "./accessControl.js";
 import { createTelegramApi, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { routeTelegramText } from "./router.js";
 import { validateRuntimeState } from "./runtimeState.js";
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
     if (!token) {
       throw new Error("TELEGRAM_BOT_TOKEN is required when --poll is passed.");
     }
+    const allowedChatIds = parseAllowedChatIds(process.env.VENNEK_TELEGRAM_ALLOWED_CHAT_IDS);
 
     const controller = new AbortController();
     const stop = (): void => controller.abort();
@@ -24,6 +26,7 @@ async function main(): Promise<void> {
     try {
       await runPolling({
         api: createTelegramApi(token, controller.signal),
+        allowedChatIds,
         context: runtimeContext(),
         logger: (level, event, fields) => logJson(level, event, fields),
         signal: controller.signal

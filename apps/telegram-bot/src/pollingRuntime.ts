@@ -1,4 +1,5 @@
 import { sha256Hex, type CommandContext } from "@vennek/shared";
+import { isAllowedChat } from "./accessControl.js";
 import { routeTelegramText } from "./router.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
 
@@ -23,6 +24,7 @@ export type RuntimeLogger = (level: RuntimeLogLevel, event: string, fields?: Rec
 
 export type PollingOptions = {
   api: TelegramApi;
+  allowedChatIds: ReadonlySet<string>;
   context?: CommandContext;
   logger?: RuntimeLogger;
   signal?: AbortSignal;
@@ -72,6 +74,17 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
             logger("info", "telegram_update_skipped", { updateId: update.update_id, offset });
+            continue;
+          }
+
+          if (!isAllowedChat(chatId, options.allowedChatIds)) {
+            offset = Math.max(offset, nextOffset);
+            writeTelegramOffset(context.persistenceRoot, offset);
+            logger("warn", "telegram_update_rejected", {
+              updateId: update.update_id,
+              chatHash: chatHash(chatId),
+              offset
+            });
             continue;
           }
 
