@@ -126,6 +126,54 @@ describe("document store resolution", () => {
     })).rejects.toThrow(/regular file inside the allowed file root/);
   });
 
+  it.each(["missing.json", "./missing.json"])("rejects missing relative local path %s instead of treating it as pasted text", async (path) => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+
+    await expect(resolveProposalDocument(path, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow("Local file source could not be accessed.");
+  });
+
+  it("rejects a missing absolute local path without leaking filesystem details", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const path = join(root, "missing.json");
+
+    await expect(resolveProposalDocument(path, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow("Local file source could not be accessed.");
+
+    try {
+      await resolveProposalDocument(path, {
+        allowLocalFiles: true,
+        allowedFileRoot: root,
+        enableFixtures: false,
+        now
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(path);
+      expect((error as Error).message).not.toContain(root);
+      expect((error as Error).message).not.toContain("ENOENT");
+    }
+  });
+
+  it("keeps plain proposal prose on the pasted-text path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+
+    await expect(resolveProposalDocument("Plain governance proposal prose", {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).resolves.toMatchObject({ sourceType: "user-provided" });
+  });
+
   it.each([
     ["missing fields", { id: "missing-fields" }],
     ["bad source type", { ...validDocument("bad-source"), sourceType: "unknown" }],

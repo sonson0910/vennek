@@ -32,7 +32,7 @@ export async function resolveProposalDocument(input: string, context: CommandCon
     return fixture;
   }
 
-  if (context.allowLocalFiles && context.allowedFileRoot && hasLocalFilesystemEntry(trimmed)) {
+  if (context.allowLocalFiles && context.allowedFileRoot && !isUrl(trimmed) && (looksLikeLocalPath(trimmed) || hasLocalFilesystemEntry(trimmed))) {
     return readLocalProposalDocument(trimmed, context.allowedFileRoot);
   }
 
@@ -57,6 +57,15 @@ function readJsonDocuments(path: string): ProposalDocument[] {
 }
 
 const MAX_LOCAL_FILE_BYTES = 2 * 1024 * 1024;
+const LOCAL_SOURCE_ACCESS_ERROR = "Local file source could not be accessed.";
+
+function looksLikeLocalPath(value: string): boolean {
+  return isAbsolute(value)
+    || value.startsWith(`.${sep}`)
+    || value.startsWith(`..${sep}`)
+    || value.includes(sep)
+    || value.toLowerCase().endsWith(".json");
+}
 
 function hasLocalFilesystemEntry(path: string): boolean {
   try {
@@ -66,7 +75,7 @@ function hasLocalFilesystemEntry(path: string): boolean {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
     }
-    throw new Error(`Unable to inspect local file source: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(LOCAL_SOURCE_ACCESS_ERROR);
   }
 }
 
@@ -81,7 +90,7 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
       if (lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
         throw new Error("Local file source is outside the allowed file root.");
       }
-      throw error;
+      throw new Error(LOCAL_SOURCE_ACCESS_ERROR);
     }
 
     if (!statSync(canonicalRoot).isDirectory()) {
@@ -110,9 +119,16 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
       throw new Error("Local file source exceeds 2 MiB.");
     }
 
+    let source: string;
+    try {
+      source = readFileSync(canonicalPath, "utf8");
+    } catch {
+      throw new Error(LOCAL_SOURCE_ACCESS_ERROR);
+    }
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(canonicalPath, "utf8")) as unknown;
+      parsed = JSON.parse(source) as unknown;
     } catch {
       throw new Error("Invalid ProposalDocument in local file source.");
     }
@@ -121,10 +137,10 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
     }
     return parsed;
   } catch (error) {
-    if (error instanceof Error && (error.message.startsWith("Local file source") || error.message.startsWith("Allowed file root"))) {
+    if (error instanceof Error && (error.message.startsWith("Local file source") || error.message.startsWith("Allowed file root") || error.message.startsWith("Invalid ProposalDocument"))) {
       throw error;
     }
-    throw new Error(`Unable to read local file source: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(LOCAL_SOURCE_ACCESS_ERROR);
   }
 }
 
