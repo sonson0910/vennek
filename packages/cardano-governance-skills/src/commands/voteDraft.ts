@@ -26,7 +26,7 @@ export async function voteDraftCommand(input: string, stance: string, context: C
     humanDecisionFrame(),
     "Human-selected stance only. Vennek is drafting wording; it is not selecting the stance.",
     "",
-    `Proposal: ${document.title}`,
+    "Proposal: source reviewed below.",
     `Selected stance: ${stanceText}`,
     `Source status: ${sourceStatus}`,
     sourceNote,
