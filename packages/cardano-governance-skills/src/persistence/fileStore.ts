@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   canonicalJson,
@@ -6,10 +6,17 @@ import {
   type CommandAuditLogEntry,
   type CommandContext,
   type CommandResult,
+  type PersistenceLimits,
   type ProofReceipt,
   type ProposalDocument,
   type SourceCacheRecord
 } from "@vennek/shared";
+
+const DEFAULT_LIMITS: PersistenceLimits = {
+  auditBytes: 10 * 1024 * 1024,
+  sourceFiles: 500,
+  proofFiles: 500
+};
 
 export function persistCommandResult(input: {
   rawInput: string;
@@ -21,6 +28,7 @@ export function persistCommandResult(input: {
   if (!root) {
     return undefined;
   }
+  const limits = resolvePersistenceLimits(input.context?.persistenceLimits);
 
   const createdAt = (input.now ?? input.context?.now ?? new Date()).toISOString();
   const outputText = input.result.text;
@@ -39,19 +47,25 @@ export function persistCommandResult(input: {
   };
 
   const directories = ensureStoreDirectories(root);
-  appendJsonLine(join(directories.auditLogs, "commands.jsonl"), entry);
+  appendJsonLine(join(directories.auditLogs, "commands.jsonl"), entry, limits.auditBytes);
   for (const document of extractDocuments(input.result.data)) {
-    putSourceDocument(root, document, createdAt);
+    putSourceDocument(root, document, createdAt, limits);
   }
   const proof = extractProofReceipt(input.result.data);
   if (proof) {
-    putProofReceipt(root, proof, createdAt);
+    putProofReceipt(root, proof, createdAt, limits);
   }
 
   return entry;
 }
 
-export function putSourceDocument(root: string, document: ProposalDocument, cachedAt = new Date().toISOString()): SourceCacheRecord | undefined {
+export function putSourceDocument(
+  root: string,
+  document: ProposalDocument,
+  cachedAt = new Date().toISOString(),
+  persistenceLimits?: Partial<PersistenceLimits>
+): SourceCacheRecord | undefined {
+  const limits = resolvePersistenceLimits(persistenceLimits);
   if (!isPersistableDocument(document)) {
     return undefined;
   }
@@ -65,16 +79,26 @@ export function putSourceDocument(root: string, document: ProposalDocument, cach
     cachedAt,
     document: storedDocument
   };
-  writeJson(join(directories.sourceCache, `${safeFileName(storedDocument.id)}-${documentHash.slice(0, 12)}.json`), record);
+  const path = join(directories.sourceCache, `${safeFileName(storedDocument.id)}-${documentHash.slice(0, 12)}.json`);
+  writeJson(path, record);
+  pruneRegularFiles(directories.sourceCache, limits.sourceFiles, path);
   return record;
 }
 
-export function putProofReceipt(root: string, receipt: ProofReceipt, cachedAt = new Date().toISOString()): void {
+export function putProofReceipt(
+  root: string,
+  receipt: ProofReceipt,
+  cachedAt = new Date().toISOString(),
+  persistenceLimits?: Partial<PersistenceLimits>
+): void {
+  const limits = resolvePersistenceLimits(persistenceLimits);
   const directories = ensureStoreDirectories(root);
-  writeJson(join(directories.proofReceipts, `${safeFileName(receipt.local_id)}.json`), {
+  const path = join(directories.proofReceipts, `${safeFileName(receipt.local_id)}.json`);
+  writeJson(path, {
     cachedAt,
     receipt
   });
+  pruneRegularFiles(directories.proofReceipts, limits.proofFiles, path);
 }
 
 export function ensureStoreDirectories(root: string): {
@@ -99,14 +123,61 @@ export function ensureStoreDirectories(root: string): {
   return directories;
 }
 
-function appendJsonLine(path: string, value: unknown): void {
-  appendFileSync(path, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+function appendJsonLine(path: string, value: unknown, maxBytes: number): void {
+  const line = `${JSON.stringify(value)}\n`;
+  rotateAuditLog(path, Buffer.byteLength(line, "utf8"), maxBytes);
+  appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
   chmodSync(path, 0o600);
+}
+
+function rotateAuditLog(path: string, incomingBytes: number, maxBytes: number): void {
+  if (!existsSync(path) || statSync(path).size + incomingBytes <= maxBytes) {
+    return;
+  }
+
+  const rotated = `${path}.1`;
+  if (existsSync(rotated)) {
+    unlinkSync(rotated);
+  }
+  renameSync(path, rotated);
 }
 
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   chmodSync(path, 0o600);
+}
+
+function pruneRegularFiles(directory: string, maxFiles: number, justWrittenPath: string): void {
+  const files = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => ({
+      name: entry.name,
+      path: join(directory, entry.name),
+      mtimeMs: statSync(join(directory, entry.name)).mtimeMs
+    }));
+
+  const justWritten = files.find((file) => file.path === justWrittenPath);
+  const newestOtherMtime = files.reduce((newest, file) => file.path === justWrittenPath ? newest : Math.max(newest, file.mtimeMs), -Infinity);
+  if (justWritten && justWritten.mtimeMs <= newestOtherMtime) {
+    const mtime = new Date(newestOtherMtime + 1);
+    utimesSync(justWritten.path, mtime, mtime);
+    justWritten.mtimeMs = mtime.getTime();
+  }
+
+  files.sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
+  for (const file of files.slice(0, Math.max(0, files.length - maxFiles))) {
+    unlinkSync(file.path);
+  }
+}
+
+function resolvePersistenceLimits(input: Partial<PersistenceLimits> = {}): PersistenceLimits {
+  const limits = { ...DEFAULT_LIMITS, ...input };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`Invalid persistence limit ${name}; expected a positive integer.`);
+    }
+  }
+  return limits;
 }
 
 function extractDocuments(data: unknown): ProposalDocument[] {

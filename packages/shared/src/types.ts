@@ -23,6 +23,12 @@ export type ProposalDocument = {
   retrievedAt: string;
 };
 
+export type PersistenceLimits = {
+  auditBytes: number;
+  sourceFiles: number;
+  proofFiles: number;
+};
+
 export type CommandContext = {
   now?: Date;
   sampleRoot?: string;
@@ -35,6 +41,8 @@ export type CommandContext = {
   allowedFileRoot?: string;
   /** Optional durable runtime data directory for audit logs, source cache, and proof receipts. */
   persistenceRoot?: string;
+  /** Optional bounds for durable audit logs, source cache, and proof receipts. */
+  persistenceLimits?: Partial<PersistenceLimits>;
   /** Optional Blockfrost project id for payload-only proof tx verification. */
   blockfrostProjectId?: string;
   /** Optional Blockfrost network; defaults to mainnet. */

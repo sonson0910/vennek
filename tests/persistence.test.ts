@@ -3,9 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, sha256Hex, type ProposalDocument } from "@vennek/shared";
+import { canonicalJson, sha256Hex, type ProofReceipt, type ProposalDocument } from "@vennek/shared";
 import { routeTelegramCommand } from "@vennek/telegram-bot";
-import { ensureStoreDirectories, putSourceDocument } from "@vennek/cardano-governance-skills";
+import { ensureStoreDirectories, putProofReceipt, putSourceDocument } from "@vennek/cardano-governance-skills";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
 
@@ -134,7 +134,88 @@ describe("file-backed persistence", () => {
     expect(result.ok).toBe(true);
     expect(result.command).toBe("proof");
   });
+
+  it("rotates audit logs and keeps the current entry valid", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+    const context = { persistenceRoot: root, persistenceLimits: { auditBytes: 1 } };
+
+    for (let index = 0; index < 4; index += 1) {
+      await routeTelegramCommand(`/proof audit-entry-${index}`, { ...context, now });
+    }
+
+    const auditDirectory = join(root, "audit-logs");
+    expect(readdirSync(auditDirectory).sort()).toEqual(["commands.jsonl", "commands.jsonl.1"]);
+    const currentLines = readFileSync(join(auditDirectory, "commands.jsonl"), "utf8").trim().split("\n");
+    expect(currentLines).toHaveLength(1);
+    expect(() => JSON.parse(currentLines[0])).not.toThrow();
+  });
+
+  it("keeps only the newest source cache files", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+
+    for (let index = 0; index < 4; index += 1) {
+      const record = putSourceDocument(root, sourceDocument(`source-${index}`), now.toISOString(), { sourceFiles: 2 });
+      expect(record).toBeDefined();
+    }
+
+    const files = readdirSync(join(root, "source-cache"));
+    expect(files).toHaveLength(2);
+    expect(files.map((file) => JSON.parse(readFileSync(join(root, "source-cache", file), "utf8")).document.id).sort()).toEqual(["source-2", "source-3"]);
+  });
+
+  it("keeps only the newest proof receipt files", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+
+    for (let index = 0; index < 4; index += 1) {
+      putProofReceipt(root, proofReceipt(`proof-${index}`), now.toISOString(), { proofFiles: 2 });
+    }
+
+    const files = readdirSync(join(root, "proof-receipts"));
+    expect(files).toHaveLength(2);
+    expect(files.map((file) => JSON.parse(readFileSync(join(root, "proof-receipts", file), "utf8")).receipt.local_id).sort()).toEqual(["proof-2", "proof-3"]);
+  });
+
+  it("rejects invalid persistence limits before creating the target store", () => {
+    const invalidValues = [0, -1, 1.5, Number.NaN];
+
+    for (const value of invalidValues) {
+      const sourceRoot = mkdtempSync(join(tmpdir(), "vennek-store-"));
+      expect(() => putSourceDocument(sourceRoot, sourceDocument("invalid-source"), now.toISOString(), { sourceFiles: value })).toThrow();
+      expect(existsSync(join(sourceRoot, "source-cache"))).toBe(false);
+
+      const proofRoot = mkdtempSync(join(tmpdir(), "vennek-store-"));
+      expect(() => putProofReceipt(proofRoot, proofReceipt("invalid-proof"), now.toISOString(), { proofFiles: value })).toThrow();
+      expect(existsSync(join(proofRoot, "proof-receipts"))).toBe(false);
+    }
+  });
 });
+
+function sourceDocument(id: string): ProposalDocument {
+  return {
+    id,
+    sourceType: "catalyst",
+    url: `https://example.com/${id}`,
+    title: id,
+    body: `Body for ${id}`,
+    metadata: {},
+    citations: [],
+    retrievedAt: now.toISOString()
+  };
+}
+
+function proofReceipt(localId: string): ProofReceipt {
+  return {
+    local_id: localId,
+    status: "payload-only",
+    payload: {
+      schema: "vennek.proof.v1",
+      content_hash: `hash-${localId}`,
+      source_refs: [],
+      created_at: now.toISOString(),
+      agent_version: "test"
+    }
+  };
+}
 
 function statMode(path: string): string {
   return (statSync(path).mode & 0o777).toString(8);
