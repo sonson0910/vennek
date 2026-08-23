@@ -71,7 +71,7 @@ describe("Telegram polling runtime", () => {
     expect(readTelegramOffset(root)).toBe(9);
     expect(api.sentMessages).toHaveLength(0);
     expect(existsSync(join(root, "source-cache"))).toBe(false);
-    expect(existsSync(join(root, "audit"))).toBe(false);
+    expect(existsSync(join(root, "audit-logs", "commands.jsonl"))).toBe(false);
     const rejected = logs.events.find((event) => event.event === "telegram_update_rejected");
     expect(rejected).toEqual({
       level: "warn",
