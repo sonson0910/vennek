@@ -51,7 +51,11 @@ export function persistCommandResult(input: {
   return entry;
 }
 
-export function putSourceDocument(root: string, document: ProposalDocument, cachedAt = new Date().toISOString()): SourceCacheRecord {
+export function putSourceDocument(root: string, document: ProposalDocument, cachedAt = new Date().toISOString()): SourceCacheRecord | undefined {
+  if (!isPersistableDocument(document)) {
+    return undefined;
+  }
+
   const directories = ensureStoreDirectories(root);
   const storedDocument = sanitizeDocument(document);
   const documentHash = sha256Hex(canonicalJson(storedDocument));
@@ -113,7 +117,11 @@ function extractDocuments(data: unknown): ProposalDocument[] {
   const maybe = data as Record<string, unknown>;
   return [maybe.document, maybe.left, maybe.right]
     .filter(isProposalDocument)
-    .filter((document) => !(document.sourceType === "user-provided" && document.url?.startsWith("user-provided:")));
+    .filter(isPersistableDocument);
+}
+
+function isPersistableDocument(document: ProposalDocument): boolean {
+  return !(document.sourceType === "user-provided" && document.url?.startsWith("user-provided:"));
 }
 
 function sanitizeDocument(document: ProposalDocument): ProposalDocument {

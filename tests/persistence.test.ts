@@ -47,6 +47,27 @@ describe("file-backed persistence", () => {
     expect(readAllFiles(root).join("\n")).not.toContain("REVIEW_SECRET_SENTINEL");
   });
 
+  it("does not persist pasted documents through the direct source sink", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+    const directories = ensureStoreDirectories(root);
+    const document: ProposalDocument = {
+      id: "direct-pasted-source",
+      sourceType: "user-provided",
+      url: "user-provided:direct-pasted-source",
+      title: "Pasted password=DIRECT_REVIEW_SECRET_SENTINEL",
+      body: "Pasted password=DIRECT_REVIEW_SECRET_SENTINEL",
+      metadata: {},
+      citations: [],
+      retrievedAt: now.toISOString()
+    };
+
+    const record = putSourceDocument(root, document, now.toISOString());
+
+    expect(record).toBeUndefined();
+    expect(readdirSync(directories.sourceCache)).toHaveLength(0);
+    expect(readAllFiles(root).join("\n")).not.toContain("DIRECT_REVIEW_SECRET_SENTINEL");
+  });
+
   it("recursively redacts public source fields without mutating the source object", () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
     const document: ProposalDocument = {
@@ -72,6 +93,9 @@ describe("file-backed persistence", () => {
     const original = structuredClone(document);
 
     const record = putSourceDocument(root, document, now.toISOString());
+    if (!record) {
+      throw new Error("Expected public source document to be persisted");
+    }
 
     const cacheFile = readdirSync(join(root, "source-cache"))[0];
     const cached = JSON.parse(readFileSync(join(root, "source-cache", cacheFile), "utf8"));
