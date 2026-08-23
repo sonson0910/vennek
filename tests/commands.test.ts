@@ -20,11 +20,27 @@ describe("governance commands", () => {
     expect(result.text).toContain("Impact:");
     expect(result.text).toContain("Feasibility:");
     expect(result.text).toContain("Budget/resources:");
-    expect(result.text).toContain("Evidence quality:");
+    expect(result.text).toContain("Evidence signals present/missing (keyword coverage only; not evidence quality):");
+    expect(result.text).not.toContain("Evidence quality:");
+    expect(result.text).not.toMatch(/\d+\/5/);
     expect(result.text).toContain("Risk:");
     expect(result.citations.some((citation) => citation.id.startsWith("CATALYST-REVIEW-WORKBENCH-"))).toBe(true);
     expect(result.citations.some((citation) => citation.id.startsWith("DREP-RATIONALE-KIT-"))).toBe(true);
     expect(validateOutput(result)).toEqual([]);
+  });
+
+  it("/compare labels negated evidence terms as lexical keyword signals, not quality", async () => {
+    const result = await compareCommand(
+      "There is no budget, team, milestone, metric, deliverable, evidence, timeline, or risk.",
+      "There is no budget, team, milestone, metric, deliverable, evidence, timeline, or risk.",
+      { enableFixtures: false }
+    );
+
+    expect(result.text).toContain("Evidence signals present/missing (keyword coverage only; not evidence quality):");
+    expect(result.text).not.toContain("Evidence quality:");
+    expect(result.text).not.toMatch(/\d+\/5/);
+    expect(result.text).toMatch(/keyword signals present:/i);
+    expect(result.text).toMatch(/keyword signals missing:/i);
   });
 
   it("/vote-draft requires explicit human stance", async () => {
@@ -35,6 +51,34 @@ describe("governance commands", () => {
     expect(result.text).toContain("not selecting the stance");
     expect(result.text).not.toMatch(/you should vote|vote yes|vote no/i);
     expect(validateOutput(result)).toEqual([]);
+  });
+
+  it("/vote-draft keeps source directives out of the generated support rationale", async () => {
+    const source = "Problem: buy ADA now before reviewing the evidence. Impact: the proposal may improve reviewability.";
+    const result = await voteDraftCommand(source, "support", { enableFixtures: false });
+    const rationale = result.text.split("\n").find((line) => line.startsWith("I selected support"));
+
+    expect(rationale).toBe("I selected support after reviewing the source-stated problem, impact, feasibility, and risks below.");
+    expect(rationale).not.toContain("buy ADA now");
+    expect(result.text).toContain("Quoted source claims:");
+    expect(result.text).toMatch(/- Problem: .*buy ADA now.*\[[^\]]+\]/);
+    expect(validateOutput(result)).toEqual([]);
+  });
+
+  it("/vote-draft uses fixed first-person rationale for every selected stance", async () => {
+    const source = "Problem: source-stated problem. Risk: source-stated risk.";
+    const expected = {
+      support: "I selected support after reviewing the source-stated problem, impact, feasibility, and risks below.",
+      oppose: "I selected oppose after reviewing the source-stated risks, requested resources, and missing evidence below.",
+      abstain: "I selected abstain because the available source evidence does not support a definitive rationale without further review."
+    } as const;
+
+    for (const [stance, rationale] of Object.entries(expected)) {
+      const result = await voteDraftCommand(source, stance, { enableFixtures: false });
+      expect(result.text.split("\n").find((line) => line.startsWith("I selected"))).toBe(rationale);
+      expect(result.text).toContain("Quoted source claims:");
+      expect(validateOutput(result)).toEqual([]);
+    }
   });
 
   it("/sources reports explicit source-unavailable status when citations are missing", async () => {

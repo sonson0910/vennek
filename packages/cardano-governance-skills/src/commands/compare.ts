@@ -1,7 +1,7 @@
 import { hasUsableCitations, sourceStatusFor, type CommandContext, type CommandResult } from "@vennek/shared";
 import { resolveProposalDocument } from "../store/documentStore.js";
 import { assertSafeOutput, humanDecisionFrame } from "../safety/outputGuards.js";
-import { analysisCitations, analyzeDocument, evidenceScore, renderClaim, renderCitations } from "./analysis.js";
+import { analysisCitations, analyzeDocument, evidenceSignals, renderClaim, renderCitations } from "./analysis.js";
 
 export async function compareCommand(leftInput: string, rightInput: string, context: CommandContext = {}): Promise<CommandResult> {
   const left = await resolveProposalDocument(leftInput, context);
@@ -33,9 +33,9 @@ export async function compareCommand(leftInput: string, rightInput: string, cont
     `- ${left.id}: ${renderClaim(leftAnalysis.requested)}`,
     `- ${right.id}: ${renderClaim(rightAnalysis.requested)}`,
     "",
-    `Evidence quality:`,
-    `- ${left.id}: ${evidenceScore(left)}/5 based on explicit budget/team/milestone/risk/metric signals.`,
-    `- ${right.id}: ${evidenceScore(right)}/5 based on explicit budget/team/milestone/risk/metric signals.`,
+    `Evidence signals present/missing (keyword coverage only; not evidence quality):`,
+    renderEvidenceSignals(left),
+    renderEvidenceSignals(right),
     "",
     `Risk:`,
     `- ${left.id}: ${renderClaim(leftAnalysis.risks)}`,
@@ -56,4 +56,9 @@ export async function compareCommand(leftInput: string, rightInput: string, cont
     warnings: [],
     data: { left, right, leftAnalysis, rightAnalysis }
   });
+}
+
+function renderEvidenceSignals(document: Parameters<typeof evidenceSignals>[0]): string {
+  const signals = evidenceSignals(document);
+  return `- ${document.id}: keyword signals present: ${signals.present.join(", ") || "none"}; keyword signals missing: ${signals.missing.join(", ") || "none"}.`;
 }

@@ -34,11 +34,11 @@ export function renderClaim(claim: AnalyzedClaim): string {
   return `${claim.text} ${claim.citation ? `[${claim.citation.id}]` : "[source unavailable]"}`;
 }
 
-export function evidenceScore(document: ProposalDocument): number {
+export function evidenceSignals(document: ProposalDocument): { present: string[]; missing: string[] } {
   const text = `${document.body}\n${JSON.stringify(document.metadata)}`.toLowerCase();
   const signals = ["milestone", "budget", "risk", "team", "metric", "deliverable", "evidence", "timeline"];
-  const signalCount = signals.filter((signal) => text.includes(signal)).length;
-  return Math.min(5, Math.max(1, Math.round((signalCount / signals.length) * 5)));
+  const present = signals.filter((signal) => text.includes(signal));
+  return { present, missing: signals.filter((signal) => !present.includes(signal)) };
 }
 
 export function renderCitations(citations: Citation[]): string {

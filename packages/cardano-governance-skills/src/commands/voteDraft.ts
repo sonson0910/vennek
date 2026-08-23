@@ -1,7 +1,7 @@
 import { hasUsableCitations, sourceStatusFor, type CommandContext, type CommandResult, type Stance } from "@vennek/shared";
 import { resolveProposalDocument } from "../store/documentStore.js";
 import { assertSafeOutput, humanDecisionFrame } from "../safety/outputGuards.js";
-import { analyzeDocument, cite, renderCitations } from "./analysis.js";
+import { analysisCitations, analyzeDocument, cite, renderClaim, renderCitations } from "./analysis.js";
 
 const STANCES = new Set<Stance>(["support", "oppose", "abstain"]);
 
@@ -12,7 +12,7 @@ export async function voteDraftCommand(input: string, stance: string, context: C
 
   const document = await resolveProposalDocument(input, context);
   const analysis = analyzeDocument(document);
-  const citations = document.citations;
+  const citations = analysisCitations(analysis);
   const sourceStatus = sourceStatusFor(citations);
   const citationHint = cite(citations);
   const sourceNote = hasUsableCitations(citations)
@@ -20,7 +20,7 @@ export async function voteDraftCommand(input: string, stance: string, context: C
     : "Source unavailable: no retrievable citation snippets were attached.";
 
   const stanceText = stance as Stance;
-  const rationale = rationaleFor(stanceText, analysis);
+  const rationale = rationaleFor(stanceText);
 
   const text = [
     humanDecisionFrame(),
@@ -32,10 +32,17 @@ export async function voteDraftCommand(input: string, stance: string, context: C
     sourceNote,
     "",
     "Draft rationale:",
-    `${rationale} ${citationHint}`,
+    rationale,
+    "",
+    "Quoted source claims:",
+    `- Problem: ${renderClaim(analysis.problem)}`,
+    `- Requested resources/action: ${renderClaim(analysis.requested)}`,
+    `- Impact: ${renderClaim(analysis.impact)}`,
+    `- Feasibility: ${renderClaim(analysis.feasibility)}`,
+    `- Risks: ${renderClaim(analysis.risks)}`,
     "",
     "Caveats to preserve:",
-    `- Re-check missing evidence: ${analysis.missingEvidence}`,
+    "- Re-check missing evidence and the quoted source claims before submitting.",
     `- Confirm that cited claims still match the current proposal source before submitting.`,
     `- This draft should be edited by the human reviewer or DRep.`,
     "",
@@ -54,25 +61,14 @@ export async function voteDraftCommand(input: string, stance: string, context: C
   });
 }
 
-function rationaleFor(stance: Stance, analysis: ReturnType<typeof analyzeDocument>): string {
-  const problem = stripTerminalPunctuation(analysis.problem.text);
-  const impact = stripTerminalPunctuation(analysis.impact.text);
-  const feasibility = stripTerminalPunctuation(analysis.feasibility.text);
-  const risks = stripTerminalPunctuation(analysis.risks.text);
-  const missingEvidence = stripTerminalPunctuation(analysis.missingEvidence);
-  const requested = stripTerminalPunctuation(analysis.requested.text);
-
+function rationaleFor(stance: Stance): string {
   if (stance === "support") {
-    return `I selected support because the proposal's stated problem, requested action, impact claim, and feasibility evidence appear aligned enough for consideration. Key points to cite are: ${problem}; ${impact}; ${feasibility}.`;
+    return "I selected support after reviewing the source-stated problem, impact, feasibility, and risks below.";
   }
 
   if (stance === "oppose") {
-    return `I selected oppose because the proposal leaves material concerns for review. The main issues to cite are: ${risks}; missing evidence: ${missingEvidence}; requested resources/action: ${requested}.`;
+    return "I selected oppose after reviewing the source-stated risks, requested resources, and missing evidence below.";
   }
 
-  return `I selected abstain because the source gives partial evidence but leaves enough uncertainty that a definitive governance rationale should wait for more information. The main unresolved points are: ${missingEvidence}; ${risks}.`;
-}
-
-function stripTerminalPunctuation(value: string): string {
-  return value.replace(/[.!?]+$/g, "");
+  return "I selected abstain because the available source evidence does not support a definitive rationale without further review.";
 }
