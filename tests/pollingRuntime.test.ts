@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { abortableSleep, runPolling, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { describe, expect, it, vi } from "vitest";
+import { abortableSleep, runPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
@@ -59,20 +59,98 @@ describe("Telegram polling runtime", () => {
     });
   });
 
-  it("does not advance offset when sendMessage fails", async () => {
+  it("quarantines a permanent send failure without rerouting the command", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     writeTelegramOffset(root, 20, now);
     const api = fakeApi({
-      updates: [{ update_id: 20, message: { chat: { id: 12345 }, text: "/sources catalyst-review-workbench" } }],
-      sendError: new Error("send failed for token SECRET_TOKEN")
+      updates: [{ update_id: 20, message: { chat: { id: 12345 }, text: "/proof permanent-delivery" } }],
+      sendError: new TelegramApiError(403, "Forbidden")
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, enableFixtures: true, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
-    expect(readTelegramOffset(root)).toBe(20);
-    expect(logs.events.some((event) => event.event === "telegram_polling_error")).toBe(true);
-    expect(JSON.stringify(logs.events)).not.toContain("SECRET_TOKEN");
+    expect(api.sendAttempts).toBe(1);
+    expect(readTelegramOffset(root)).toBe(21);
+    expect(readFileSync(join(root, "audit-logs", "commands.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    const abandoned = logs.events.find((event) => event.event === "telegram_delivery_abandoned");
+    expect(abandoned).toMatchObject({ level: "warn", updateId: 20, status: 403, attempts: 1 });
+    expect(JSON.stringify(abandoned)).not.toContain("12345");
+    expect(JSON.stringify(abandoned)).not.toContain("permanent-delivery");
+  });
+
+  it("retries a transient send failure and routes the command once", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const api = fakeApi({
+      updates: [{ update_id: 30, message: { chat: { id: 12345 }, text: "/proof transient-delivery" } }],
+      sendErrors: [new TelegramApiError(503, "Service unavailable")]
+    });
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(api.sendAttempts).toBe(2);
+    expect(api.sentMessages).toHaveLength(1);
+    expect(readTelegramOffset(root)).toBe(31);
+    expect(readFileSync(join(root, "audit-logs", "commands.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed")).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
+  });
+
+  it("advances past exhausted delivery and processes the next update in the batch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const api = fakeApi({
+      updates: [
+        { update_id: 40, message: { chat: { id: 12345 }, text: "/proof exhausted-delivery" } },
+        { update_id: 41, message: { chat: { id: 12345 }, text: "/proof later-delivery" } }
+      ],
+      sendErrors: [
+        new TelegramApiError(503, "Service unavailable"),
+        new TelegramApiError(502, "Bad gateway"),
+        new Error("network unavailable")
+      ]
+    });
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(api.sendAttempts).toBe(4);
+    expect(api.sentMessages).toHaveLength(1);
+    expect(readTelegramOffset(root)).toBe(42);
+    expect(readFileSync(join(root, "audit-logs", "commands.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned" && event.updateId === 40 && event.attempts === 3)).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 41)).toBe(true);
+  });
+
+  it("retries 429 but quarantines other 4xx failures", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const api = fakeApi({
+      updates: [
+        { update_id: 50, message: { chat: { id: 12345 }, text: "/proof retry-after" } },
+        { update_id: 51, message: { chat: { id: 12345 }, text: "/proof permanent-client" } }
+      ],
+      sendErrors: [new TelegramApiError(429, "Too many requests"), undefined, new TelegramApiError(400, "Bad request")]
+    });
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(api.sendAttempts).toBe(3);
+    expect(api.sentMessages).toHaveLength(1);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 50)).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned" && event.updateId === 51 && event.status === 400 && event.attempts === 1)).toBe(true);
+  });
+
+  it("preserves Telegram error codes and HTTP status in TelegramApiError", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ ok: false, error_code: 429, description: "Too many requests" }) })
+      .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ ok: false, description: "Unavailable" }) })
+      .mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({ ok: true }) }));
+
+    await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 429, message: "Too many requests" });
+    await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 503, message: "Unavailable" });
+    await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 204, message: "Telegram API sendMessage failed with HTTP 204" });
+    vi.unstubAllGlobals();
   });
 
   it("rejects unauthorized chats without routing or persistence but advances offset", async () => {
@@ -209,18 +287,26 @@ describe("Telegram polling runtime", () => {
 function fakeApi(input: {
   updates: TelegramUpdate[];
   sendError?: Error;
+  sendErrors?: Array<Error | undefined>;
   onGetUpdates?: (params: { offset: number; timeout: number; allowed_updates: string[] }) => void;
-}): TelegramApi & { sentMessages: unknown[] } {
+}): TelegramApi & { sentMessages: unknown[]; sendAttempts: number } {
   const sentMessages: unknown[] = [];
+  let sendAttempts = 0;
+  const sendErrors = [...(input.sendErrors ?? [])];
   return {
     sentMessages,
+    get sendAttempts() {
+      return sendAttempts;
+    },
     async getUpdates(params) {
       input.onGetUpdates?.(params);
       return input.updates;
     },
     async sendMessage(params) {
-      if (input.sendError) {
-        throw input.sendError;
+      sendAttempts += 1;
+      const error = sendErrors.shift() ?? input.sendError;
+      if (error) {
+        throw error;
       }
       sentMessages.push(params);
       return { ok: true };

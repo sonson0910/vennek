@@ -37,8 +37,19 @@ export type PollingOptions = {
 type TelegramApiResponse<T> = {
   ok: boolean;
   result?: T;
+  error_code?: number;
   description?: string;
 };
+
+export class TelegramApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "TelegramApiError";
+    this.status = status;
+  }
+}
 
 export async function runPolling(options: PollingOptions): Promise<void> {
   const context = options.context ?? {};
@@ -103,13 +114,23 @@ export async function runPolling(options: PollingOptions): Promise<void> {
 
           const startedAt = Date.now();
           const response = await routeTelegramText(text, context);
-          await options.api.sendMessage({
+          const delivery = await deliverMessage(options.api, {
             chat_id: chatId,
             text: response,
             disable_web_page_preview: true
-          });
+          }, retryDelayMs, options.signal);
           offset = Math.max(offset, nextOffset);
           writeTelegramOffset(context.persistenceRoot, offset);
+          if (!delivery.delivered) {
+            logger("warn", "telegram_delivery_abandoned", {
+              updateId: update.update_id,
+              chatHash: chatHash(chatId),
+              ...(delivery.status === undefined ? {} : { status: delivery.status }),
+              attempts: delivery.attempts,
+              offset
+            });
+            continue;
+          }
           logger("info", "telegram_update_processed", {
             updateId: update.update_id,
             chatHash: chatHash(chatId),
@@ -138,6 +159,38 @@ export function createTelegramApi(token: string, signal?: AbortSignal): Telegram
   };
 }
 
+export type TelegramDeliveryResult =
+  | { delivered: true; attempts: number }
+  | { delivered: false; attempts: number; status?: number };
+
+export async function deliverMessage(
+  api: TelegramApi,
+  params: { chat_id: number | string; text: string; disable_web_page_preview: boolean },
+  retryDelayMs: number,
+  signal?: AbortSignal,
+  maxAttempts = 3
+): Promise<TelegramDeliveryResult> {
+  const attemptsLimit = Math.max(1, maxAttempts);
+  for (let attempts = 1; attempts <= attemptsLimit; attempts += 1) {
+    try {
+      await api.sendMessage(params);
+      return { delivered: true, attempts };
+    } catch (error) {
+      const status = error instanceof TelegramApiError ? error.status : undefined;
+      const permanent = status !== undefined && status >= 400 && status <= 499 && status !== 429;
+      if (permanent || attempts === attemptsLimit || signal?.aborted) {
+        return { delivered: false, attempts, ...(status === undefined ? {} : { status }) };
+      }
+      await abortableSleep(retryDelayMs, signal);
+      if (signal?.aborted) {
+        return { delivered: false, attempts, ...(status === undefined ? {} : { status }) };
+      }
+    }
+  }
+
+  return { delivered: false, attempts: attemptsLimit };
+}
+
 export async function telegramCall<T>(token: string, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
@@ -150,7 +203,7 @@ export async function telegramCall<T>(token: string, method: string, params: Rec
 
   const payload = (await response.json()) as TelegramApiResponse<T>;
   if (!response.ok || !payload.ok || payload.result === undefined) {
-    throw new Error(payload.description ?? `Telegram API ${method} failed with HTTP ${response.status}`);
+    throw new TelegramApiError(payload.error_code ?? response.status, payload.description ?? `Telegram API ${method} failed with HTTP ${response.status}`);
   }
 
   return payload.result;
