@@ -30,7 +30,7 @@ No wallet risk, analytics dashboard, trading, Masumi integration, Aiken contract
 - `npm test -- --run`, `npm run typecheck`, `npm run build`, and `npm run verify:imports` pass.
 - `npm audit --audit-level=moderate` reports 0 vulnerabilities.
 - Sample source validation passes with >=20 fixtures and >=15 normalized/cited documents.
-- Live source validation passes with >=20 operator-provided real sources and >=15 normalized/cited documents; current repo covers Catalyst URLs and must be expanded with GovTool/governance-action plus user-provided fallback sources before production/funding overclaims.
+- Live source validation must pass with current operator-provided sources covering Catalyst, governance-action/GovTool, and user-provided URL/text fallback plus an expected failure with a reason. The checked-in snapshot (`samples/proposals/validation-results.json`, generated 2026-07-04) passed this mixed-coverage gate; operators and release runs must rerun `npm run validate:sources:live` for current source freshness, credentials, and network conditions.
 - Each source-stated claim renders as quoted/sourced text with a claim-level citation when a matching provenance span exists; otherwise it is marked `[source unavailable]`. Generated first-person rationale uses fixed, source-neutral wording.
 - Evidence signals are explicitly lexical keyword coverage, not evidence quality or a score.
 - Output uses human decision framing.

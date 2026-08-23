@@ -31,7 +31,7 @@ npm run validate:sources:live
 npm run validate:sources:live -- --file path/to/sources.txt
 ```
 
-Live source fetching is best-effort and must never fabricate data when retrieval fails. Current live validation covers Catalyst URLs; add GovTool/governance-action and user-provided fallback coverage before production/funding claims.
+Live source fetching is best-effort and must never fabricate data when retrieval fails. The checked-in live validation snapshot (`samples/proposals/validation-results.json`, generated 2026-07-04) passed with mixed Catalyst, governance-action/GovTool, and user-provided URL/text coverage. Operators and release runs must rerun `npm run validate:sources:live` for current source freshness, credentials, and network conditions; the snapshot is not a current-availability guarantee.
 
 ## Telegram Polling
 
