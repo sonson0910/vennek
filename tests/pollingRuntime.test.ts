@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { abortableSleep, runPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { abortableSleep, createTelegramApi, runPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
@@ -147,6 +147,31 @@ describe("Telegram polling runtime", () => {
     expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
   });
 
+  it("commits a send that resolves while the signal aborts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    writeTelegramOffset(root, 80, now);
+    const controller = new AbortController();
+    let sendAttempts = 0;
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [{ update_id: 80, message: { chat: { id: 12345 }, text: "/proof send-resolved" } }];
+      },
+      async sendMessage() {
+        sendAttempts += 1;
+        controller.abort();
+        return { ok: true };
+      }
+    };
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(sendAttempts).toBe(1);
+    expect(readTelegramOffset(root)).toBe(81);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 80)).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
+  });
+
   it("advances past exhausted delivery and processes the next update in the batch", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     const api = fakeApi({
@@ -200,6 +225,42 @@ describe("Telegram polling runtime", () => {
     await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 429, message: "Too many requests" });
     await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 503, message: "Unavailable" });
     await expect(telegramCall("token", "sendMessage", {})).rejects.toMatchObject({ name: "TelegramApiError", status: 204, message: "Telegram API sendMessage failed with HTTP 204" });
+    vi.unstubAllGlobals();
+  });
+
+  it("quarantines HTTP 403 invalid JSON after one delivery attempt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, result: [{ update_id: 90, message: { chat: { id: 12345 }, text: "/proof invalid-json-403" } }] }) })
+      .mockResolvedValueOnce({ ok: false, status: 403, json: async () => { throw new Error("raw TOKEN_SECRET request body"); } });
+    vi.stubGlobal("fetch", fetchMock);
+    const logs = captureLogs();
+
+    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(readTelegramOffset(root)).toBe(91);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned" && event.updateId === 90 && event.status === 403 && event.attempts === 1)).toBe(true);
+    expect(JSON.stringify(logs.events)).not.toContain("TOKEN_SECRET");
+    expect(JSON.stringify(logs.events)).not.toContain("request body");
+    vi.unstubAllGlobals();
+  });
+
+  it("treats a 2xx invalid JSON response as transient delivery failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const malformed = { ok: true, status: 200, json: async () => { throw new Error("raw TOKEN_SECRET request body"); } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, result: [{ update_id: 100, message: { chat: { id: 12345 }, text: "/proof invalid-json-2xx" } }] }) })
+      .mockResolvedValue(malformed);
+    vi.stubGlobal("fetch", fetchMock);
+    const logs = captureLogs();
+
+    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(readTelegramOffset(root)).toBe(101);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned" && event.updateId === 100 && event.status === 200 && event.attempts === 3)).toBe(true);
+    expect(JSON.stringify(logs.events)).not.toContain("TOKEN_SECRET");
     vi.unstubAllGlobals();
   });
 

@@ -182,9 +182,6 @@ export async function deliverMessage(
   for (let attempts = 1; attempts <= TELEGRAM_DELIVERY_MAX_ATTEMPTS; attempts += 1) {
     try {
       await api.sendMessage(params);
-      if (signal?.aborted) {
-        return { delivered: false, aborted: true, attempts };
-      }
       return { delivered: true, attempts };
     } catch (error) {
       const status = error instanceof TelegramApiError ? error.status : undefined;
@@ -215,9 +212,14 @@ export async function telegramCall<T>(token: string, method: string, params: Rec
     signal
   });
 
-  const payload = (await response.json()) as TelegramApiResponse<T>;
-  if (!response.ok || !payload.ok || payload.result === undefined) {
-    throw new TelegramApiError(payload.error_code ?? response.status, payload.description ?? `Telegram API ${method} failed with HTTP ${response.status}`);
+  let payload: TelegramApiResponse<T> | null;
+  try {
+    payload = (await response.json()) as TelegramApiResponse<T>;
+  } catch {
+    throw new TelegramApiError(response.status, `Telegram API ${method} returned invalid JSON (HTTP ${response.status})`);
+  }
+  if (!payload || !response.ok || !payload.ok || payload.result === undefined) {
+    throw new TelegramApiError(payload?.error_code ?? response.status, payload?.description ?? `Telegram API ${method} failed with HTTP ${response.status}`);
   }
 
   return payload.result;
