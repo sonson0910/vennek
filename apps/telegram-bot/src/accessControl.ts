@@ -20,10 +20,10 @@ export type RateLimiter = {
 };
 
 export class FixedWindowRateLimiter implements RateLimiter {
-  private readonly windows = new Map<string, { startMs: number; count: number }>();
+  private readonly windows = new Map<string, { startedAt: number; count: number }>();
 
   constructor(private readonly limit = 10, private readonly windowMs = 60_000) {
-    if (!Number.isInteger(limit) || limit <= 0 || !Number.isInteger(windowMs) || windowMs <= 0) {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || !Number.isSafeInteger(windowMs) || windowMs <= 0) {
       throw new Error("Rate limiter limit and window must be positive integers.");
     }
   }
@@ -31,8 +31,8 @@ export class FixedWindowRateLimiter implements RateLimiter {
   allow(chatId: number | string, nowMs = Date.now()): boolean {
     const key = String(chatId);
     const window = this.windows.get(key);
-    if (!window || nowMs >= window.startMs + this.windowMs) {
-      this.windows.set(key, { startMs: nowMs, count: 1 });
+    if (!window || nowMs < window.startedAt || nowMs - window.startedAt >= this.windowMs) {
+      this.windows.set(key, { startedAt: nowMs, count: 1 });
       return true;
     }
     if (window.count >= this.limit) {

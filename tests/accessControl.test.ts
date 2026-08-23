@@ -24,6 +24,14 @@ describe("Telegram pilot access control", () => {
     expect(limiter.allow("chat456", 2)).toBe(true);
   });
 
+  it("starts a fresh window after the clock moves backward", () => {
+    const limiter = new FixedWindowRateLimiter(1, 60_000);
+
+    expect(limiter.allow("chat123", 1_000_000)).toBe(true);
+    expect(limiter.allow("chat123", 0)).toBe(true);
+    expect(limiter.allow("chat123", 1)).toBe(false);
+  });
+
   it("defaults to ten commands per chat and resets at the window boundary", () => {
     const limiter = new FixedWindowRateLimiter();
 
@@ -41,5 +49,9 @@ describe("Telegram pilot access control", () => {
     expect(() => new FixedWindowRateLimiter(2, -1)).toThrow();
     expect(() => new FixedWindowRateLimiter(1.5, 60_000)).toThrow();
     expect(() => new FixedWindowRateLimiter(2, 1.5)).toThrow();
+    expect(() => new FixedWindowRateLimiter(Number.MAX_SAFE_INTEGER + 1, 60_000)).toThrow();
+    expect(() => new FixedWindowRateLimiter(2, Number.MAX_SAFE_INTEGER + 1)).toThrow();
+    expect(() => new FixedWindowRateLimiter(Number.MAX_VALUE, 60_000)).toThrow();
+    expect(() => new FixedWindowRateLimiter(2, Number.MAX_VALUE)).toThrow();
   });
 });
