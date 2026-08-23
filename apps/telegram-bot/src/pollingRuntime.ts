@@ -137,7 +137,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           logger("info", "telegram_update_processed", {
             updateId: update.update_id,
             chatHash: chatHash(chatId),
-            command: text.split(/\s+/, 1)[0] ?? "",
+            commandHash: sha256Hex(text.split(/\s+/, 1)[0] ?? "").slice(0, 12),
             durationMs: Date.now() - startedAt,
             offset
           });

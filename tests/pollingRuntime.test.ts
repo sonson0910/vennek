@@ -26,6 +26,23 @@ describe("Telegram polling runtime", () => {
     expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.chatHash && !event.chatId)).toBe(true);
   });
 
+  it("hashes unknown command text before logging a processed update", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const sentinel = "SECRET_LOG_SENTINEL_123456789";
+    const api = fakeApi({
+      updates: [{ update_id: 2, message: { chat: { id: 12345 }, text: sentinel } }]
+    });
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(readTelegramOffset(root)).toBe(3);
+    expect(api.sentMessages).toHaveLength(1);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 2)).toBe(true);
+    expect(JSON.stringify(logs.events)).not.toContain(sentinel);
+    expect(logs.events.find((event) => event.event === "telegram_update_processed")).toMatchObject({ commandHash: expect.any(String) });
+  });
+
   it("advances offset for intentionally skipped non-text updates", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     const consumedChats: Array<number | string> = [];
