@@ -96,6 +96,76 @@ describe("adapters URL classification and fetch guards", () => {
     expect(reads).toBe(0);
   });
 
+  it("cancels a non-ok response body before throwing HTTP errors", async () => {
+    let cancelCalled = false;
+    const response = {
+      ok: false,
+      status: 503,
+      body: {
+        cancel: async () => {
+          cancelCalled = true;
+        }
+      }
+    } as unknown as Response;
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+
+    await expect(fetchUserProvidedUrl({
+      url: "https://8.8.8.8/source",
+      allowedDomains: ["8.8.8.8"]
+    })).rejects.toThrow(/HTTP 503/);
+    expect(cancelCalled).toBe(true);
+  });
+
+  it("cancels the body when the helper rejects an unsupported content-type", async () => {
+    let cancelCalled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+      }
+    }), {
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "999"
+      }
+    });
+
+    await expect(readResponseTextLimited(response, 10)).rejects.toThrow(/Unsupported content-type/);
+    expect(cancelCalled).toBe(true);
+  });
+
+  it("cancels the body when the helper rejects an oversized declaration", async () => {
+    let cancelCalled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(4));
+        controller.close();
+      },
+      cancel() {
+        cancelCalled = true;
+      }
+    }), {
+      headers: {
+        "content-type": "text/plain",
+        "content-length": "11"
+      }
+    });
+
+    await expect(readResponseTextLimited(response, 10)).rejects.toThrow(/Source body too large/);
+    expect(cancelCalled).toBe(true);
+  });
+
+  it("cancels the body when the helper rejects a missing content-type", async () => {
+    let cancelCalled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+      }
+    }));
+
+    await expect(readResponseTextLimited(response, 10)).rejects.toThrow(/content-type/i);
+    expect(cancelCalled).toBe(true);
+  });
+
   it("cancels a stream as soon as it crosses the byte limit", async () => {
     let cancelCalled = false;
     let pulls = 0;
@@ -107,7 +177,7 @@ describe("adapters URL classification and fetch guards", () => {
       cancel() {
         cancelCalled = true;
       }
-    }));
+    }), { headers: { "content-type": "text/plain" } });
 
     await expect(readResponseTextLimited(response, 10)).rejects.toThrow(/Source body too large/);
     expect(cancelCalled).toBe(true);
@@ -122,7 +192,7 @@ describe("adapters URL classification and fetch guards", () => {
         controller.enqueue(bytes.slice(1));
         controller.close();
       }
-    }));
+    }), { headers: { "content-type": "text/plain; charset=utf-8" } });
 
     await expect(readResponseTextLimited(response, bytes.byteLength)).resolves.toBe("éclair");
   });

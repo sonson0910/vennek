@@ -55,22 +55,9 @@ export async function fetchUserProvidedUrl(input: {
       }
     });
     if (!response.ok) {
+      controller.abort();
+      await cancelResponseBody(response);
       throw new Error(`HTTP ${response.status}`);
-    }
-
-    const contentTypeHeader = response.headers.get("content-type");
-    const contentType = contentTypeHeader?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-    if (!contentType || !ALLOWED_CONTENT_TYPES.includes(contentType)) {
-      if (!contentType) {
-        throw new Error("Missing content-type");
-      }
-      throw new Error(`Unsupported content-type: ${contentType}`);
-    }
-
-    const contentLengthHeader = response.headers.get("content-length");
-    const contentLength = Number(contentLengthHeader);
-    if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > MAX_FETCH_BYTES) {
-      throw new Error(`Source body too large: ${contentLength} bytes`);
     }
 
     const raw = await readResponseTextLimited(response);
@@ -94,10 +81,27 @@ export async function fetchUserProvidedUrl(input: {
 
 export async function readResponseTextLimited(response: Response, maxBytes = MAX_FETCH_BYTES): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    await cancelResponseBody(response);
     throw new Error("maxBytes must be a positive safe integer");
   }
   if (!response.body) {
     throw new Error("Source response has no body");
+  }
+
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (!contentType) {
+    await cancelResponseBody(response);
+    throw new Error("Missing content-type");
+  }
+  if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
+    await cancelResponseBody(response);
+    throw new Error(`Unsupported content-type: ${contentType}`);
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
+    await cancelResponseBody(response);
+    throw new Error(`Source body too large: ${contentLength} bytes`);
   }
 
   const reader = response.body.getReader();
@@ -112,7 +116,7 @@ export async function readResponseTextLimited(response: Response, maxBytes = MAX
       }
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        void reader.cancel().catch(() => undefined);
+        await cancelReader(reader);
         throw new Error(`Source body too large: ${totalBytes} bytes`);
       }
       text += decoder.decode(value, { stream: true });
@@ -120,6 +124,22 @@ export async function readResponseTextLimited(response: Response, maxBytes = MAX
     return text + decoder.decode();
   } finally {
     reader.releaseLock();
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Preserve the validation or HTTP error when transport cleanup fails.
+  }
+}
+
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // Preserve the size error when transport cleanup fails.
   }
 }
 
