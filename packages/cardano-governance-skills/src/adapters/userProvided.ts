@@ -58,22 +58,22 @@ export async function fetchUserProvidedUrl(input: {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-    if (contentType && !ALLOWED_CONTENT_TYPES.includes(contentType)) {
+    const contentTypeHeader = response.headers.get("content-type");
+    const contentType = contentTypeHeader?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    if (!contentType || !ALLOWED_CONTENT_TYPES.includes(contentType)) {
+      if (!contentType) {
+        throw new Error("Missing content-type");
+      }
       throw new Error(`Unsupported content-type: ${contentType}`);
     }
 
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_FETCH_BYTES) {
+    const contentLengthHeader = response.headers.get("content-length");
+    const contentLength = Number(contentLengthHeader);
+    if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > MAX_FETCH_BYTES) {
       throw new Error(`Source body too large: ${contentLength} bytes`);
     }
 
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_FETCH_BYTES) {
-      throw new Error(`Source body too large: ${buffer.byteLength} bytes`);
-    }
-
-    const raw = new TextDecoder().decode(buffer);
+    const raw = await readResponseTextLimited(response);
     const title = extractTitle(raw) ?? safeUrl;
     const text = htmlToText(raw);
     if (text.length < 40) {
@@ -89,6 +89,37 @@ export async function fetchUserProvidedUrl(input: {
     });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function readResponseTextLimited(response: Response, maxBytes = MAX_FETCH_BYTES): Promise<string> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("maxBytes must be a positive safe integer");
+  }
+  if (!response.body) {
+    throw new Error("Source response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new Error(`Source body too large: ${totalBytes} bytes`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
   }
 }
 
