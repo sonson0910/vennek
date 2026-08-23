@@ -61,12 +61,8 @@ function analyzedClaim(
     return { text: fallback };
   }
 
-  if (!hasSourceSpan(document, text)) {
-    return { text };
-  }
-
-  const url = document.url?.trim() || document.citations.find((citation) => citation.url.trim().length > 0)?.url.trim();
-  if (!url) {
+  const source = sourceMatch(document, text);
+  if (!source) {
     return { text };
   }
 
@@ -74,9 +70,9 @@ function analyzedClaim(
   const prefix = `${(normalizedId.slice(0, 31) || "SOURCE").toUpperCase()}-${sha256Hex(document.id).slice(0, 8).toUpperCase()}`;
   const citation = createCitation({
     id: `${prefix}-${field.toUpperCase()}`,
-    url,
-    title: document.title,
-    snippet: text,
+    url: source.url,
+    title: source.title,
+    snippet: source.text,
     retrievedAt: document.retrievedAt
   });
   return {
@@ -85,15 +81,27 @@ function analyzedClaim(
   };
 }
 
-function hasSourceSpan(document: ProposalDocument, text: string): boolean {
+type SourceMatch = {
+  text: string;
+  url: string;
+  title?: string;
+};
+
+function sourceMatch(document: ProposalDocument, text: string): SourceMatch | undefined {
   const normalizedText = normalizeForSearch(text);
   if (normalizeForSearch(document.body).includes(normalizedText)) {
-    return true;
+    const url = document.url?.trim();
+    if (url) {
+      return { text, url, title: document.title };
+    }
   }
 
-  return document.citations.some((citation) =>
-    hasUsableCitations([citation]) && normalizeForSearch(citation.snippet).includes(normalizedText)
+  const citation = document.citations.find((candidate) =>
+    hasUsableCitations([candidate]) && normalizeForSearch(candidate.snippet).includes(normalizedText)
   );
+  return citation
+    ? { text, url: citation.url.trim(), title: citation.title }
+    : undefined;
 }
 
 function normalizeForSearch(value: string): string {

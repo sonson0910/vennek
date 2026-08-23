@@ -168,4 +168,23 @@ describe("governance commands", () => {
     expect(result.text).toContain("[source unavailable]");
     expect(validateOutput(result)).toEqual([]);
   });
+
+  it("keeps citation provenance bound to the supporting citation", async () => {
+    const claim = "Impact claim appears only in the supporting excerpt.";
+    const document = {
+      ...normalizeUserProvidedText({ text: "Neutral body without the selected claim.", title: "Provenance test" }),
+      id: "provenance-test",
+      url: "https://wrong.example/document",
+      metadata: { impact: claim },
+      citations: [
+        { id: "A", url: "https://wrong.example/anchor", title: "Wrong anchor", snippet: "Unrelated source text.", retrievedAt: "2026-07-04T00:00:00.000Z" },
+        { id: "B", url: "https://right.example/supporting", title: "Supporting excerpt", snippet: claim, retrievedAt: "2026-07-04T00:00:00.000Z" }
+      ]
+    };
+    const result = await proposalCommand("provenance-test", { enableFixtures: false, documents: [document] });
+    const impact = result.citations.find((citation) => citation.id.endsWith("-IMPACT"));
+    expect(impact?.url).toBe("https://right.example/supporting");
+    expect(impact?.title).toBe("Supporting excerpt");
+    expect(validateOutput(result)).toEqual([]);
+  });
 });
