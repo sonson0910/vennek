@@ -1,15 +1,15 @@
 import { hasUsableCitations, sourceStatusFor, type CommandContext, type CommandResult } from "@vennek/shared";
 import { resolveProposalDocument } from "../store/documentStore.js";
 import { assertSafeOutput, humanDecisionFrame } from "../safety/outputGuards.js";
-import { analyzeDocument, cite, renderCitations } from "./analysis.js";
+import { analysisCitations, analyzeDocument, cite, renderClaim, renderCitations } from "./analysis.js";
 
 export async function proposalCommand(input: string, context: CommandContext = {}): Promise<CommandResult> {
   const document = await resolveProposalDocument(input, context);
   const analysis = analyzeDocument(document);
-  const citations = document.citations;
-  const sourceStatus = sourceStatusFor(citations);
+  const citations = analysisCitations(analysis);
+  const sourceStatus = sourceStatusFor(document.citations);
   const citationHint = cite(citations);
-  const sourceNote = hasUsableCitations(citations)
+  const sourceNote = hasUsableCitations(document.citations)
     ? `Evidence anchors: ${citationHint}`
     : "Source unavailable: no retrievable citation snippets were attached.";
 
@@ -21,11 +21,11 @@ export async function proposalCommand(input: string, context: CommandContext = {
     `Source status: ${sourceStatus}`,
     sourceNote,
     "",
-    `Problem: ${analysis.problem} ${citationHint}`,
-    `Requested funding/action: ${analysis.requested} ${citationHint}`,
-    `Impact claims: ${analysis.impact} ${citationHint}`,
-    `Feasibility: ${analysis.feasibility} ${citationHint}`,
-    `Risks: ${analysis.risks} ${citationHint}`,
+    `Source-stated problem: ${renderClaim(analysis.problem)}`,
+    `Source-stated funding/action: ${renderClaim(analysis.requested)}`,
+    `Source-stated impact: ${renderClaim(analysis.impact)}`,
+    `Source-stated feasibility: ${renderClaim(analysis.feasibility)}`,
+    `Source-stated risks: ${renderClaim(analysis.risks)}`,
     `Missing evidence to verify: ${analysis.missingEvidence}`,
     "",
     "Citations:",
