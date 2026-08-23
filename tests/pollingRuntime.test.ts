@@ -28,12 +28,35 @@ describe("Telegram polling runtime", () => {
 
   it("advances offset for intentionally skipped non-text updates", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const consumedChats: Array<number | string> = [];
     const api = fakeApi({ updates: [{ update_id: 4, message: { chat: { id: 12345 } } }] });
+    const logs = captureLogs();
+    const rateLimiter: RateLimiter = {
+      allow(chatId) {
+        consumedChats.push(chatId);
+        return true;
+      }
+    };
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({
+      api,
+      allowedChatIds: new Set(["12345"]),
+      context: { persistenceRoot: root, now },
+      logger: logs.logger,
+      rateLimiter,
+      maxCycles: 1,
+      retryDelayMs: 0
+    });
 
+    expect(consumedChats).toEqual([]);
     expect(readTelegramOffset(root)).toBe(5);
     expect(api.sentMessages).toHaveLength(0);
+    expect(logs.events.find((event) => event.event === "telegram_update_skipped")).toEqual({
+      level: "info",
+      event: "telegram_update_skipped",
+      updateId: 4,
+      offset: 5
+    });
   });
 
   it("does not advance offset when sendMessage fails", async () => {
@@ -125,6 +148,52 @@ describe("Telegram polling runtime", () => {
     });
     expect(JSON.stringify(rateLimited)).not.toContain("12345");
     expect(JSON.stringify(rateLimited)).not.toContain("/sources");
+  });
+
+  it("keeps the default rate limiter across polling cycles", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const updates = Array.from({ length: 11 }, (_, updateId) => ({
+      update_id: updateId,
+      message: { chat: { id: 12345 }, text: "/proof rate-limit-test" }
+    }));
+    const batches = [updates.slice(0, 6), updates.slice(6)];
+    const offsets: number[] = [];
+    const sentMessages: unknown[] = [];
+    let batchIndex = 0;
+    const api: TelegramApi & { sentMessages: unknown[] } = {
+      sentMessages,
+      async getUpdates(params) {
+        offsets.push(params.offset);
+        return batches[batchIndex++] ?? [];
+      },
+      async sendMessage(params) {
+        sentMessages.push(params);
+        return { ok: true };
+      }
+    };
+    const logs = captureLogs();
+
+    await runPolling({
+      api,
+      allowedChatIds: new Set(["12345"]),
+      context: { persistenceRoot: root, now },
+      logger: logs.logger,
+      maxCycles: 2,
+      retryDelayMs: 0
+    });
+
+    expect(offsets).toEqual([0, 6]);
+    expect(sentMessages).toHaveLength(10);
+    expect(readTelegramOffset(root)).toBe(11);
+    expect(logs.events.filter((event) => event.event === "telegram_update_rate_limited")).toEqual([
+      {
+        level: "warn",
+        event: "telegram_update_rate_limited",
+        updateId: 10,
+        chatHash: expect.any(String),
+        offset: 11
+      }
+    ]);
   });
 
   it("abortable sleep exits promptly when aborted", async () => {

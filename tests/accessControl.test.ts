@@ -24,6 +24,16 @@ describe("Telegram pilot access control", () => {
     expect(limiter.allow("chat456", 2)).toBe(true);
   });
 
+  it("defaults to ten commands per chat and resets at the window boundary", () => {
+    const limiter = new FixedWindowRateLimiter();
+
+    for (let index = 0; index < 10; index += 1) {
+      expect(limiter.allow("chat123", index)).toBe(true);
+    }
+    expect(limiter.allow("chat123", 10)).toBe(false);
+    expect(limiter.allow("chat123", 60_000)).toBe(true);
+  });
+
   it("rejects non-positive and non-integer settings", () => {
     expect(() => new FixedWindowRateLimiter(0, 60_000)).toThrow();
     expect(() => new FixedWindowRateLimiter(2, 0)).toThrow();
