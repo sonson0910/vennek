@@ -6,8 +6,11 @@ This is the minimal production runtime path for the Vennek Telegram bot.
 
 ```bash
 TELEGRAM_BOT_TOKEN=...
+VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890
 VENNEK_DATA_DIR=/var/lib/vennek
 ```
+
+`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only in polling mode and is a comma-separated allowlist of direct and approved group chat IDs. Polling startup fails closed when it is absent or invalid; CLI and `--health` are unaffected.
 
 Optional local demo mode:
 
@@ -32,17 +35,27 @@ Expected JSON log:
 ## Start Polling
 
 ```bash
-TELEGRAM_BOT_TOKEN=... VENNEK_DATA_DIR=/var/lib/vennek node apps/telegram-bot/dist/main.js --poll
+TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 VENNEK_DATA_DIR=/var/lib/vennek node apps/telegram-bot/dist/main.js --poll
 ```
 
 Runtime behavior:
 
 - reads last Telegram offset from `<VENNEK_DATA_DIR>/runtime/telegram-state.json`;
 - writes offset atomically after each skipped or successfully processed update;
-- does not advance offset when `sendMessage` fails;
+- requires the chat allowlist before routing, fetching, Blockfrost access, or persistence;
+- applies an in-memory per-chat limit of 10 updates per 60 seconds;
+- unauthorized and rate-limited updates advance the offset without routing or side effects;
+- delivers with at most 3 send-only attempts; HTTP 429 is retryable, while permanent HTTP 4xx errors except 429 or an exhausted retry budget produce a sanitized `telegram_delivery_abandoned` event and advance the offset;
+- cancellation during delivery/retry preserves the offset; a send that resolves successfully is committed even if cancellation arrives immediately afterward;
 - logs structured JSON events with hashed chat IDs, not raw message text;
+- abandoned-event logs contain no raw message text, and there is no persistent dead-letter queue;
 - handles `SIGTERM`/`SIGINT` via `AbortController` and abortable sleep;
 - keeps command persistence fail-open so user responses are not blocked by audit-store failures.
+
+## Source Boundaries
+
+- Remote source fetching requires HTTPS, a strict allowed MIME type, and a streaming 2 MiB byte cap.
+- Optional local file imports canonicalize the allowed root and target, reject symlinks, outside-root/non-regular files, oversized files, and invalid `ProposalDocument` schemas. Production Telegram keeps local files disabled.
 
 ## State Files
 

@@ -9,6 +9,9 @@ Vennek is decision support. It is not a voter, signer, wallet, exchange, or fina
 - Preserve caveats and missing evidence.
 - Do not choose a vote stance.
 - `/vote-draft` must receive `support`, `oppose`, or `abstain` from the human.
+- Evidence signals report lexical keyword coverage only; they are not evidence quality or a score.
+- Source-stated claims are rendered as quoted/sourced text with claim-level citations.
+- Generated first-person rationale uses fixed, source-neutral wording and does not copy source directives.
 
 ## Forbidden MVP Behavior
 
@@ -22,6 +25,8 @@ Vennek is decision support. It is not a voter, signer, wallet, exchange, or fina
 ## Proof Receipts
 
 `/proof` only hashes user-provided text and emits metadata payload. Humans submit externally if they choose. External transaction verification is a separate integration boundary.
+
+`/proof-verify` requires both `<tx_hash>` and `<expected_content_hash>`; the expected value is a 64-hex SHA-256 hash. Verification only reads externally submitted metadata and never signs, submits, or constructs a transaction.
 
 ## Dev-only Fixture Exception
 

@@ -9,7 +9,7 @@ It provides deterministic local commands for:
 - `/vote-draft <id> <support|oppose|abstain>` (`/vote_draft` Telegram menu alias)
 - `/sources <id>`
 - `/proof <text>` payload-only SHA-256 metadata
-- `/proof-verify <tx_hash> [expected_content_hash]` (`/proof_verify` Telegram menu alias) Blockfrost metadata verification only
+- `/proof-verify <tx_hash> <expected_content_hash>` (`/proof_verify` Telegram menu alias) Blockfrost metadata verification only
 
 ## Local Run
 
@@ -50,16 +50,20 @@ npm run health
 Polling mode requires a deployment secret and uses Telegram long polling:
 
 ```bash
-TELEGRAM_BOT_TOKEN=... npx tsx apps/telegram-bot/src/main.ts --poll
+TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 npx tsx apps/telegram-bot/src/main.ts --poll
 ```
+
+`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only for polling and is a comma-separated allowlist of direct/group chat IDs. Polling fails closed when it is missing or invalid; CLI and health mode are unaffected. Production polling does not route unauthorized or rate-limited updates.
 
 Enable file-backed audit/source/proof persistence with:
 
 ```bash
-VENNEK_DATA_DIR=./data TELEGRAM_BOT_TOKEN=... npx tsx apps/telegram-bot/src/main.ts --poll
+VENNEK_DATA_DIR=./data TELEGRAM_BOT_TOKEN=... VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890 npx tsx apps/telegram-bot/src/main.ts --poll
 ```
 
 Production Telegram routes do not load demo fixtures or local files by default. Demo fixtures can be enabled explicitly for local demos with `VENNEK_ENABLE_FIXTURES=true`.
+
+The comparison evidence section reports lexical keyword coverage only; it is not an evidence-quality score. Source-stated claims are rendered as quoted/sourced text with claim-level citations, while generated first-person rationale stays source-neutral.
 
 ## Safety Contract
 

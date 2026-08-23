@@ -45,11 +45,15 @@ Command audit logs store:
 
 Directories are created with mode `0700`; files are written/chmodded to `0600`. Persistence is fail-open for command UX: if the store cannot be written, the command response still returns and Vennek logs a warning.
 
+Default retention limits are a 10 MiB `commands.jsonl` audit file plus one `.1` backup, 500 source-cache files, and 500 proof-receipt files. An oversized audit entry is rejected before writing or rotating the audit files.
+
+Pasted user text (`sourceType: user-provided` with a `user-provided:` URL) is hash-audited with redacted previews but is **not source-cached**. Public fetched sources are sanitized/clone-redacted before caching. The store never holds wallet keys, seed phrases, signing material, or custody data.
+
 They do **not** store wallet keys, seed phrases, private keys, or automatic transaction material because those flows are forbidden by the product safety contract.
 
 ## Source Cache Policy
 
-When a command returns `document`, `left`, or `right` data, Vennek writes the normalized `ProposalDocument` into `source-cache/` with a content hash. This is a minimal provenance trail, not yet a production database.
+When a command returns `document`, `left`, or `right` data from a public fetched source, Vennek writes the normalized, sanitized/clone-redacted `ProposalDocument` into `source-cache/` with a content hash. User-provided pasted text is excluded from this cache.
 
 ## Proof Receipt Policy
 

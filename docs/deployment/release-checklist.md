@@ -27,6 +27,7 @@ npm run validate:sources:live
 npm run eval:citations
 npm run demo
 npm audit --audit-level=moderate
+npm audit --omit=dev --audit-level=moderate
 ```
 
 Required result:
@@ -39,11 +40,12 @@ Required result:
 - [ ] Mixed live source validation passes.
 - [ ] Citation eval passes threshold.
 - [ ] Demo smoke test passes.
-- [ ] Audit reports 0 moderate+ vulnerabilities.
+- [ ] Full and production-only audits report 0 moderate+ vulnerabilities.
 
 ## Staging Gate
 
 - [ ] `TELEGRAM_BOT_TOKEN` configured in secret manager or `0600` env file.
+- [ ] `VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` configured as the explicit direct/group allowlist.
 - [ ] `VENNEK_DATA_DIR` points to durable storage.
 - [ ] `VENNEK_ENABLE_FIXTURES=false`.
 - [ ] Exactly one poller per Telegram bot token.
@@ -51,15 +53,22 @@ Required result:
 - [ ] Systemd or process supervisor restarts on failure.
 - [ ] JSON logs are collected.
 - [ ] Offset persists across restart.
+- [ ] Allowed chat command is delivered and advances its offset.
+- [ ] Rejected chat advances its offset without routing or persistence.
+- [ ] Rate-limited chat advances its offset without routing or persistence.
+- [ ] Permanent/exhausted delivery (“poison”) advances its offset and emits only a sanitized abandoned event; cancellation preserves the offset.
 
 ## Blockfrost Gate
 
 - [ ] `BLOCKFROST_PROJECT_ID` configured.
 - [ ] `BLOCKFROST_NETWORK` selected: `mainnet`, `preprod`, or `preview`.
 - [ ] Integration test has known tx hash containing `vennek.proof.v1` metadata.
-- [ ] `/proof-verify` verifies expected content hash.
+- [ ] `/proof-verify <tx_hash> <expected_content_hash>` verifies with a valid 64-hex SHA-256 expected hash.
+- [ ] `/proof-verify` rejects an invalid expected hash.
 - [ ] No runtime wallet/signing/submission code path exists.
 - [ ] Dev-only preprod fixture script, if present, is excluded from deployed runtime and documented as non-production.
+
+Blockfrost verification and staging smoke are credential-gated checks: run them with real `BLOCKFROST_PROJECT_ID`/Telegram staging credentials, record an explicit not-verified result when credentials are absent, and do not replace the gate with a mock.
 
 ## Pilot Gate
 
