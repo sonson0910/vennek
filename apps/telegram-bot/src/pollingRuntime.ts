@@ -119,6 +119,9 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             text: response,
             disable_web_page_preview: true
           }, retryDelayMs, options.signal);
+          if (delivery.aborted) {
+            break;
+          }
           offset = Math.max(offset, nextOffset);
           writeTelegramOffset(context.persistenceRoot, offset);
           if (!delivery.delivered) {
@@ -160,35 +163,46 @@ export function createTelegramApi(token: string, signal?: AbortSignal): Telegram
 }
 
 export type TelegramDeliveryResult =
-  | { delivered: true; attempts: number }
-  | { delivered: false; attempts: number; status?: number };
+  | { delivered: true; attempts: number; aborted?: false }
+  | { delivered: false; attempts: number; aborted?: false; status?: number }
+  | { delivered: false; attempts: number; aborted: true; status?: number };
+
+const TELEGRAM_DELIVERY_MAX_ATTEMPTS = 3;
 
 export async function deliverMessage(
   api: TelegramApi,
   params: { chat_id: number | string; text: string; disable_web_page_preview: boolean },
   retryDelayMs: number,
-  signal?: AbortSignal,
-  maxAttempts = 3
+  signal?: AbortSignal
 ): Promise<TelegramDeliveryResult> {
-  const attemptsLimit = Math.max(1, maxAttempts);
-  for (let attempts = 1; attempts <= attemptsLimit; attempts += 1) {
+  if (signal?.aborted) {
+    return { delivered: false, aborted: true, attempts: 0 };
+  }
+
+  for (let attempts = 1; attempts <= TELEGRAM_DELIVERY_MAX_ATTEMPTS; attempts += 1) {
     try {
       await api.sendMessage(params);
+      if (signal?.aborted) {
+        return { delivered: false, aborted: true, attempts };
+      }
       return { delivered: true, attempts };
     } catch (error) {
       const status = error instanceof TelegramApiError ? error.status : undefined;
       const permanent = status !== undefined && status >= 400 && status <= 499 && status !== 429;
-      if (permanent || attempts === attemptsLimit || signal?.aborted) {
+      if (signal?.aborted) {
+        return { delivered: false, aborted: true, attempts, ...(status === undefined ? {} : { status }) };
+      }
+      if (permanent || attempts === TELEGRAM_DELIVERY_MAX_ATTEMPTS) {
         return { delivered: false, attempts, ...(status === undefined ? {} : { status }) };
       }
       await abortableSleep(retryDelayMs, signal);
       if (signal?.aborted) {
-        return { delivered: false, attempts, ...(status === undefined ? {} : { status }) };
+        return { delivered: false, aborted: true, attempts, ...(status === undefined ? {} : { status }) };
       }
     }
   }
 
-  return { delivered: false, attempts: attemptsLimit };
+  return { delivered: false, attempts: TELEGRAM_DELIVERY_MAX_ATTEMPTS };
 }
 
 export async function telegramCall<T>(token: string, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

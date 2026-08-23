@@ -97,6 +97,56 @@ describe("Telegram polling runtime", () => {
     expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
   });
 
+  it("stops without quarantine or offset advancement when send is aborted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    writeTelegramOffset(root, 60, now);
+    const controller = new AbortController();
+    let sendAttempts = 0;
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [{ update_id: 60, message: { chat: { id: 12345 }, text: "/proof abort-during-send" } }];
+      },
+      async sendMessage() {
+        sendAttempts += 1;
+        controller.abort();
+        throw new Error("request aborted");
+      }
+    };
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(sendAttempts).toBe(1);
+    expect(readTelegramOffset(root)).toBe(60);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
+    expect(logs.events.some((event) => event.event === "telegram_polling_error")).toBe(false);
+    expect(logs.events.some((event) => event.event === "telegram_polling_stopped")).toBe(true);
+  });
+
+  it("stops without a second send when aborted during retry sleep", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    writeTelegramOffset(root, 70, now);
+    const controller = new AbortController();
+    let sendAttempts = 0;
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [{ update_id: 70, message: { chat: { id: 12345 }, text: "/proof abort-during-retry" } }];
+      },
+      async sendMessage() {
+        sendAttempts += 1;
+        setTimeout(() => controller.abort(), 10);
+        throw new TelegramApiError(503, "Service unavailable");
+      }
+    };
+    const logs = captureLogs();
+
+    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 1_000 });
+
+    expect(sendAttempts).toBe(1);
+    expect(readTelegramOffset(root)).toBe(70);
+    expect(logs.events.some((event) => event.event === "telegram_delivery_abandoned")).toBe(false);
+  });
+
   it("advances past exhausted delivery and processes the next update in the batch", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     const api = fakeApi({
