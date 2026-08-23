@@ -13,7 +13,7 @@ describe("telegram router", () => {
 
   it("routes BotFather-compatible underscore aliases", async () => {
     await expect(routeTelegramCommand("/vote_draft drep-rationale-kit support", fixtureContext)).resolves.toMatchObject({ command: "vote-draft", ok: true });
-    await expect(routeTelegramText(`/proof_verify ${"a".repeat(64)}`, fixtureContext)).resolves.toMatch(/BLOCKFROST_PROJECT_ID/i);
+    await expect(routeTelegramText(`/proof_verify ${"a".repeat(64)}`, fixtureContext)).resolves.toMatch(/requires <tx_hash> <expected_content_hash>/i);
   });
 
   it("formats unknown commands as Telegram-safe errors", async () => {
@@ -28,7 +28,7 @@ describe("telegram router", () => {
     await expect(routeTelegramText("/vote-draft drep-rationale-kit", fixtureContext)).resolves.toMatch(/requires <id> <support\|oppose\|abstain>/i);
     await expect(routeTelegramText("/vote-draft drep-rationale-kit yes", fixtureContext)).resolves.toMatch(/human-selected stance/i);
     await expect(routeTelegramText("/proof", fixtureContext)).resolves.toMatch(/proof requires text/i);
-    await expect(routeTelegramText(`/proof-verify ${"a".repeat(64)}`, fixtureContext)).resolves.toMatch(/BLOCKFROST_PROJECT_ID/i);
+    await expect(routeTelegramText(`/proof-verify ${"a".repeat(64)}`, fixtureContext)).resolves.toMatch(/requires <tx_hash> <expected_content_hash>/i);
   });
 
   it("keeps production Telegram routes from loading demo fixtures by default", async () => {

@@ -10,6 +10,7 @@ import { verifyProofTxWithBlockfrost, type BlockfrostNetwork, type BlockfrostVer
 import { assertSafeOutput, humanDecisionFrame } from "../safety/outputGuards.js";
 
 const AGENT_VERSION = "0.1.0";
+const SHA256_PATTERN = /^(?:sha256:)?[0-9a-f]{64}$/i;
 
 export function createProofPayload(input: {
   text: string;
@@ -77,9 +78,12 @@ export async function proofVerifyCommand(input: string, options: {
   network?: BlockfrostNetwork;
   fetchImpl?: typeof fetch;
 } = {}): Promise<CommandResult> {
-  const [txHash, expectedContentHash] = input.trim().split(/\s+/);
-  if (!txHash) {
-    throw new Error("/proof-verify requires <tx_hash> [expected_content_hash].");
+  const [txHash, expectedContentHash, extra] = input.trim().split(/\s+/);
+  if (!txHash || !expectedContentHash || extra) {
+    throw new Error("/proof-verify requires <tx_hash> <expected_content_hash>.");
+  }
+  if (!SHA256_PATTERN.test(expectedContentHash)) {
+    throw new Error("Expected content hash must be a SHA-256 hex value.");
   }
 
   const result: BlockfrostVerificationResult = await verifyProofTxWithBlockfrost({

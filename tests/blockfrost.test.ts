@@ -43,7 +43,7 @@ describe("Blockfrost proof verification", () => {
   });
 
   it("fails safely when project id is missing", async () => {
-    const result = await verifyProofTxWithBlockfrost({ txHash, options: { projectId: "" } });
+    const result = await verifyProofTxWithBlockfrost({ txHash, expectedContentHash: payload.content_hash, options: { projectId: "" } });
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/BLOCKFROST_PROJECT_ID/);
   });
@@ -51,6 +51,7 @@ describe("Blockfrost proof verification", () => {
   it("fails when metadata is missing or content hash mismatches", async () => {
     await expect(verifyProofTxWithBlockfrost({
       txHash,
+      expectedContentHash: payload.content_hash,
       options: { projectId: "test_project", fetchImpl: jsonFetch(200, []) }
     })).resolves.toMatchObject({ ok: false, status: "failed" });
 
@@ -61,19 +62,62 @@ describe("Blockfrost proof verification", () => {
     })).resolves.toMatchObject({ ok: false, status: "failed" });
   });
 
+  it("rejects schema-only and malformed proof payloads", async () => {
+    for (const malformed of [
+      { schema: "vennek.proof.v1" },
+      { ...payload, content_hash: "not-a-hash" },
+      { ...payload, source_refs: "not-an-array" },
+      { ...payload, created_at: "not-a-date" },
+      { ...payload, agent_version: "" }
+    ]) {
+      await expect(verifyProofTxWithBlockfrost({
+        txHash,
+        expectedContentHash: payload.content_hash,
+        options: {
+          projectId: "test_project",
+          fetchImpl: jsonFetch(200, [{ json_metadata: malformed }])
+        }
+      })).resolves.toMatchObject({ ok: false, status: "failed" });
+    }
+  });
+
+  it("requires an expected content hash", async () => {
+    await expect(proofVerifyCommand(txHash, {
+      projectId: "test_project",
+      fetchImpl: jsonFetch(200, [{ json_metadata: payload }])
+    })).rejects.toThrow(/requires <tx_hash> <expected_content_hash>/i);
+  });
+
+  it("rejects a non-sha256 expected value", async () => {
+    await expect(proofVerifyCommand(`${txHash} same-arbitrary-string`, {
+      projectId: "test_project",
+      fetchImpl: jsonFetch(200, [{ json_metadata: { ...payload, content_hash: "same-arbitrary-string" } }])
+    })).rejects.toThrow(/SHA-256/i);
+  });
+
+  it("rejects extra proof verification arguments", async () => {
+    await expect(proofVerifyCommand(`${txHash} ${payload.content_hash} extra`, {
+      projectId: "test_project",
+      fetchImpl: jsonFetch(200, [{ json_metadata: payload }])
+    })).rejects.toThrow(/requires <tx_hash> <expected_content_hash>/i);
+  });
+
   it("fails safely on Blockfrost HTTP, network, and malformed response errors", async () => {
     await expect(verifyProofTxWithBlockfrost({
       txHash,
+      expectedContentHash: payload.content_hash,
       options: { projectId: "test_project", fetchImpl: jsonFetch(429, { error: "rate limited" }) }
     })).resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/HTTP 429/) });
 
     await expect(verifyProofTxWithBlockfrost({
       txHash,
+      expectedContentHash: payload.content_hash,
       options: { projectId: "test_project", fetchImpl: rejectingFetch(new Error("network down")) }
     })).resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/network down/) });
 
     await expect(verifyProofTxWithBlockfrost({
       txHash,
+      expectedContentHash: payload.content_hash,
       options: { projectId: "test_project", fetchImpl: jsonFetch(200, { not: "array" }) }
     })).resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/invalid JSON\/shape/) });
   });

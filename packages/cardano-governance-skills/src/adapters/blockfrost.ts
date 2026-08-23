@@ -1,4 +1,4 @@
-import type { ProofReceipt } from "@vennek/shared";
+import type { ProofPayload, ProofReceipt } from "@vennek/shared";
 
 export type BlockfrostNetwork = "mainnet" | "preprod" | "preview";
 
@@ -33,7 +33,7 @@ const BASE_URLS: Record<BlockfrostNetwork, string> = {
 
 export async function verifyProofTxWithBlockfrost(input: {
   txHash: string;
-  expectedContentHash?: string;
+  expectedContentHash: string;
   options: BlockfrostClientOptions;
 }): Promise<BlockfrostVerificationResult> {
   if (!/^[0-9a-f]{64}$/i.test(input.txHash)) {
@@ -109,8 +109,7 @@ export async function verifyProofTxWithBlockfrost(input: {
     };
   }
 
-  const contentHash = typeof matchedPayload.content_hash === "string" ? matchedPayload.content_hash : undefined;
-  if (input.expectedContentHash && normalizeContentHash(contentHash) !== normalizeContentHash(input.expectedContentHash)) {
+  if (normalizeContentHash(matchedPayload.content_hash) !== normalizeContentHash(input.expectedContentHash)) {
     return {
       ok: false,
       status: "failed",
@@ -170,13 +169,30 @@ function sleep(milliseconds: number): Promise<void> {
   return milliseconds <= 0 ? Promise.resolve() : new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
-function isVennekProofPayload(value: unknown): value is { schema: "vennek.proof.v1"; content_hash?: string } {
-  return Boolean(value && typeof value === "object" && (value as { schema?: unknown }).schema === "vennek.proof.v1");
+const SHA256_PATTERN = /^(?:sha256:)?[0-9a-f]{64}$/i;
+
+function isVennekProofPayload(value: unknown): value is ProofPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const payload = value as Partial<ProofPayload>;
+  return (
+    payload.schema === "vennek.proof.v1" &&
+    typeof payload.content_hash === "string" &&
+    SHA256_PATTERN.test(payload.content_hash) &&
+    Array.isArray(payload.source_refs) &&
+    payload.source_refs.every((reference) => typeof reference === "string") &&
+    typeof payload.created_at === "string" &&
+    !Number.isNaN(Date.parse(payload.created_at)) &&
+    typeof payload.agent_version === "string" &&
+    payload.agent_version.trim().length > 0 &&
+    (payload.report_id === undefined || typeof payload.report_id === "string")
+  );
 }
 
-function normalizeContentHash(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
+function normalizeContentHash(value: string): string {
+  if (!SHA256_PATTERN.test(value)) {
+    throw new Error("Expected content hash must be a SHA-256 hex value.");
   }
-  return value.startsWith("sha256:") ? value.slice("sha256:".length) : value;
+  return value.replace(/^sha256:/i, "").toLowerCase();
 }
