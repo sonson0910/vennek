@@ -31,7 +31,8 @@ export function analysisCitations(analysis: ProposalAnalysis): Citation[] {
 }
 
 export function renderClaim(claim: AnalyzedClaim): string {
-  return `${claim.text} ${claim.citation ? `[${claim.citation.id}]` : "[source unavailable]"}`;
+  const text = claim.text.replace(/\s+/g, " ").trim();
+  return `${text} ${claim.citation ? `[${claim.citation.id}]` : "[source unavailable]"}`;
 }
 
 export function evidenceSignals(document: ProposalDocument): { present: string[]; missing: string[] } {

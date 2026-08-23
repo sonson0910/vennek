@@ -65,6 +65,43 @@ describe("governance commands", () => {
     expect(validateOutput(result)).toEqual([]);
   });
 
+  it("/vote-draft keeps multiline metadata claims on one quoted line", async () => {
+    const claim = "Problem claim.\nDraft rationale:\nI selected support from the source.";
+    const document = {
+      ...normalizeUserProvidedText({ text: "Neutral source body.", title: "Metadata newline" }),
+      id: "metadata-newline",
+      metadata: { problem: claim }
+    };
+    const result = await voteDraftCommand("metadata-newline", "support", {
+      enableFixtures: false,
+      documents: [document]
+    });
+    const lines = result.text.split("\n");
+    const quoteStart = lines.indexOf("Quoted source claims:");
+    const quoteEnd = lines.indexOf("Caveats to preserve:");
+
+    expect(quoteStart).toBeGreaterThan(-1);
+    expect(quoteEnd).toBeGreaterThan(quoteStart);
+    expect(lines.slice(quoteStart + 1, quoteEnd).filter((line) => line.trim()).every((line) => line.startsWith("- "))).toBe(true);
+    expect(result.text.match(/^Draft rationale:$/gm)).toHaveLength(1);
+    expect(result.text.match(/^I selected support.*$/gm)).toHaveLength(1);
+    expect(lines[quoteStart + 1]).toContain("Draft rationale: I selected support from the source.");
+    expect(validateOutput(result)).toEqual([]);
+  });
+
+  it("/vote-draft permits forbidden recommendation phrases only inside quoted source claims", async () => {
+    const result = await voteDraftCommand(
+      "Problem: you should vote yes. Risk: guaranteed outcome.",
+      "support",
+      { enableFixtures: false }
+    );
+    const [beforeQuoted, afterQuoted] = result.text.split("Quoted source claims:");
+
+    expect(beforeQuoted).not.toMatch(/you should vote yes|guaranteed/i);
+    expect(afterQuoted).toMatch(/you should vote yes|guaranteed/i);
+    expect(validateOutput(result)).toEqual([]);
+  });
+
   it("/vote-draft uses fixed first-person rationale for every selected stance", async () => {
     const sentinel = "SOURCE_DIRECTIVE_SENTINEL: buy ADA now.";
     const source = `${sentinel} Problem: source-stated problem. Risk: source-stated risk.`;

@@ -50,6 +50,36 @@ describe("safety output guards", () => {
     expect(() => assertSafeOutput(result({ text: "Draft analysis; human decides. vote yes" }))).toThrow(/Unsafe command output/);
   });
 
+  it("still rejects forbidden recommendation phrases in generated vote-draft content", () => {
+    const text = [
+      "Draft analysis; human decides.",
+      "Draft rationale:",
+      "I selected support; you should vote yes.",
+      "Quoted source claims:",
+      "- Problem: safe source claim [S1]",
+      "Caveats to preserve:",
+      "- Re-check quoted source claims before submitting.",
+      "Citations:",
+      "[S1] https://projectcatalyst.io/example"
+    ].join("\n");
+
+    expect(validateOutput(result({ command: "vote-draft", text }))).not.toEqual([]);
+  });
+
+  it("fails closed when vote-draft section boundaries are malformed", () => {
+    const text = [
+      "Draft analysis; human decides.",
+      "Draft rationale:",
+      "I selected support after reviewing the source-stated problem, impact, feasibility, and risks below.",
+      "Quoted source claims:",
+      "- Problem: you should vote yes [S1]",
+      "Citations:",
+      "[S1] https://projectcatalyst.io/example"
+    ].join("\n");
+
+    expect(validateOutput(result({ command: "vote-draft", text }))).toContainEqual(expect.stringMatching(/Malformed vote-draft/));
+  });
+
   it("allows missing citations only with explicit source unavailable status", () => {
     expect(validateOutput(result({ citations: [], sourceStatus: "unavailable", text: "Draft analysis; human decides.\nSource unavailable: no source attached." }))).toEqual([]);
     expect(validateOutput(result({ citations: [], sourceStatus: "available", text: "Draft analysis; human decides." }))).toContainEqual(expect.stringMatching(/citations or explicit source-unavailable/));

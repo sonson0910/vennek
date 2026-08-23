@@ -39,8 +39,12 @@ export function validateOutput(result: CommandResult): string[] {
     }
   }
 
+  const generatedText = result.command === "vote-draft"
+    ? generatedVoteDraftText(result.text, errors)
+    : result.text;
+
   for (const pattern of FORBIDDEN_PATTERNS) {
-    if (pattern.test(result.text)) {
+    if (pattern.test(generatedText)) {
       errors.push(`Unsafe or recommendation-like phrase matched ${pattern.toString()}`);
     }
   }
@@ -59,4 +63,51 @@ export function assertSafeOutput(result: CommandResult): CommandResult {
 
 export function humanDecisionFrame(): string {
   return HUMAN_DECISION_FRAME;
+}
+
+function generatedVoteDraftText(text: string, errors: string[]): string {
+  const lines = text.split("\n");
+  const rationale = markerIndex(lines, "Draft rationale:");
+  const quotedClaims = markerIndex(lines, "Quoted source claims:");
+  const caveats = markerIndex(lines, "Caveats to preserve:");
+  const citations = markerIndex(lines, "Citations:");
+  const selected = lines.reduce<number[]>((indexes, line, index) => {
+    if (/^I selected (support|oppose|abstain)\b/.test(line)) {
+      indexes.push(index);
+    }
+    return indexes;
+  }, []);
+
+  if (
+    rationale.length !== 1 ||
+    quotedClaims.length !== 1 ||
+    caveats.length !== 1 ||
+    citations.length !== 1 ||
+    selected.length !== 1 ||
+    !(rationale[0] < selected[0] && selected[0] < quotedClaims[0] && quotedClaims[0] < caveats[0] && caveats[0] < citations[0])
+  ) {
+    errors.push("Malformed vote-draft generated/quoted section boundaries.");
+    return text;
+  }
+
+  const quoteLines = lines.slice(quotedClaims[0] + 1, caveats[0]);
+  const nonEmptyQuoteLines = quoteLines.filter((line) => line.trim().length > 0);
+  if (nonEmptyQuoteLines.length === 0 || nonEmptyQuoteLines.some((line) => !line.startsWith("- "))) {
+    errors.push("Malformed vote-draft quoted source claims section.");
+    return text;
+  }
+
+  return [
+    ...lines.slice(0, quotedClaims[0]),
+    ...lines.slice(caveats[0], citations[0])
+  ].join("\n");
+}
+
+function markerIndex(lines: string[], marker: string): number[] {
+  return lines.reduce<number[]>((indexes, line, index) => {
+    if (line === marker) {
+      indexes.push(index);
+    }
+    return indexes;
+  }, []);
 }
