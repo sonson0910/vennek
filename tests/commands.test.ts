@@ -107,4 +107,65 @@ describe("governance commands", () => {
     expect(result.text).toContain("[source unavailable]");
     expect(validateOutput(result)).toEqual([]);
   });
+
+  it("keeps short normalized ids distinct and binds each snippet to its document", async () => {
+    const left = normalizeUserProvidedText({ text: "Impact: left short-id evidence.", title: "Left" });
+    const right = normalizeUserProvidedText({ text: "Impact: right short-id evidence.", title: "Right" });
+    const result = await compareCommand("foo/bar", "foo-bar", {
+      enableFixtures: false,
+      documents: [{ ...left, id: "foo/bar" }, { ...right, id: "foo-bar" }]
+    });
+    expect(result.citations).toHaveLength(2);
+    expect(new Set(result.citations.map((citation) => citation.id)).size).toBe(2);
+    expect(result.citations.find((citation) => citation.snippet.includes("left short-id"))?.url).toBe(left.url);
+    expect(result.citations.find((citation) => citation.snippet.includes("right short-id"))?.url).toBe(right.url);
+  });
+
+  it("does not cite metadata claims absent from the source span", async () => {
+    const document = {
+      ...normalizeUserProvidedText({ text: "A neutral source body with no labeled claim.", title: "Metadata only" }),
+      id: "metadata-only",
+      metadata: { impact: "Metadata impact claim not present in the source body." }
+    };
+    const result = await proposalCommand("metadata-only", { enableFixtures: false, documents: [document] });
+    expect(result.citations.some((citation) => citation.id.endsWith("-IMPACT"))).toBe(false);
+    expect(result.text).toContain("Source-stated impact: Metadata impact claim not present in the source body. [source unavailable]");
+    expect(validateOutput(result)).toEqual([]);
+  });
+
+  it("bounds rendered supported claims to their citation snippet", async () => {
+    const longProblem = `Problem: ${"A".repeat(320)}.`;
+    const result = await proposalCommand(longProblem, { enableFixtures: false });
+    const problem = result.citations.find((citation) => citation.id.endsWith("-PROBLEM"));
+    expect(problem).toBeDefined();
+    expect(problem!.snippet.length).toBeLessThanOrEqual(260);
+    expect(result.text).toContain(`Source-stated problem: ${problem!.snippet} [${problem!.id}]`);
+  });
+
+  it("skips blank URL candidates and reports partial claim availability", async () => {
+    const leftBase = normalizeUserProvidedText({ text: "Impact: left fallback evidence.", title: "Left" });
+    const rightBase = normalizeUserProvidedText({ text: "Impact: right blank-url evidence.", title: "Right" });
+    const blankCitation = (id: string, snippet: string) => ({ id, url: " ", snippet, retrievedAt: "2026-07-04T00:00:00.000Z" });
+    const left = {
+      ...leftBase,
+      id: "left-fallback",
+      url: " ",
+      citations: [blankCitation("LEFT-BLANK", leftBase.body), { ...blankCitation("LEFT-GOOD", leftBase.body), url: "https://left.example/source" }]
+    };
+    const right = {
+      ...rightBase,
+      id: "right-blank",
+      url: " ",
+      citations: [blankCitation("RIGHT-BLANK", rightBase.body)]
+    };
+    const result = await compareCommand("left-fallback", "right-blank", {
+      enableFixtures: false,
+      documents: [left, right]
+    });
+    expect(result.sourceStatus).toBe("partial");
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0]?.url).toBe("https://left.example/source");
+    expect(result.text).toContain("[source unavailable]");
+    expect(validateOutput(result)).toEqual([]);
+  });
 });

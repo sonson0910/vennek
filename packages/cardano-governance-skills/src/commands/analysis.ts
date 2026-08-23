@@ -1,4 +1,4 @@
-import { citationIds, createCitation, renderCitationList, sha256Hex, type Citation, type ProposalDocument } from "@vennek/shared";
+import { citationIds, createCitation, hasUsableCitations, renderCitationList, sha256Hex, type Citation, type ProposalDocument } from "@vennek/shared";
 
 export type AnalyzedClaim = {
   text: string;
@@ -61,25 +61,43 @@ function analyzedClaim(
     return { text: fallback };
   }
 
-  const url = document.url ?? document.citations[0]?.url;
+  if (!hasSourceSpan(document, text)) {
+    return { text };
+  }
+
+  const url = document.url?.trim() || document.citations.find((citation) => citation.url.trim().length > 0)?.url.trim();
   if (!url) {
     return { text };
   }
 
   const normalizedId = document.id.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
-  const prefix = normalizedId.length > 40
-    ? `${normalizedId.slice(0, 31)}-${sha256Hex(document.id).slice(0, 8)}`.toUpperCase()
-    : normalizedId.slice(0, 40).toUpperCase() || "SOURCE";
+  const prefix = `${(normalizedId.slice(0, 31) || "SOURCE").toUpperCase()}-${sha256Hex(document.id).slice(0, 8).toUpperCase()}`;
+  const citation = createCitation({
+    id: `${prefix}-${field.toUpperCase()}`,
+    url,
+    title: document.title,
+    snippet: text,
+    retrievedAt: document.retrievedAt
+  });
   return {
-    text,
-    citation: createCitation({
-      id: `${prefix}-${field.toUpperCase()}`,
-      url,
-      title: document.title,
-      snippet: text,
-      retrievedAt: document.retrievedAt
-    })
+    text: citation.snippet,
+    citation
   };
+}
+
+function hasSourceSpan(document: ProposalDocument, text: string): boolean {
+  const normalizedText = normalizeForSearch(text);
+  if (normalizeForSearch(document.body).includes(normalizedText)) {
+    return true;
+  }
+
+  return document.citations.some((citation) =>
+    hasUsableCitations([citation]) && normalizeForSearch(citation.snippet).includes(normalizedText)
+  );
+}
+
+function normalizeForSearch(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function pickMetadata(document: ProposalDocument, keys: string[]): string | undefined {
