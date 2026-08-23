@@ -54,6 +54,19 @@ describe("document store resolution", () => {
     })).rejects.toThrow(/symbolic link/);
   });
 
+  it("rejects a dangling local-file symlink instead of treating it as pasted text", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const link = join(root, "dangling.json");
+    symlinkSync(join(root, "missing.json"), link);
+
+    await expect(resolveProposalDocument(link, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/symbolic link/);
+  });
+
   it("rejects a parent symlink that canonicalizes outside the allowed root", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
     const external = mkdtempSync(join(tmpdir(), "vennek-doc-external-"));
@@ -87,6 +100,30 @@ describe("document store resolution", () => {
       enableFixtures: false,
       now
     })).rejects.toThrow(/2 MiB/);
+  });
+
+  it("rejects a regular file as the allowed local-file root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+    const file = join(root, "proposal.json");
+    writeFileSync(file, JSON.stringify(validDocument("root-file")));
+
+    await expect(resolveProposalDocument(file, {
+      allowLocalFiles: true,
+      allowedFileRoot: file,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/allowed file root.*directory/i);
+  });
+
+  it("does not use the allowed root directory itself as a local document", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+
+    await expect(resolveProposalDocument(root, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).rejects.toThrow(/regular file inside the allowed file root/);
   });
 
   it.each([

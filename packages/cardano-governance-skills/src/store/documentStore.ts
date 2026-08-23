@@ -32,7 +32,7 @@ export async function resolveProposalDocument(input: string, context: CommandCon
     return fixture;
   }
 
-  if (context.allowLocalFiles && context.allowedFileRoot && existsSync(trimmed)) {
+  if (context.allowLocalFiles && context.allowedFileRoot && hasLocalFilesystemEntry(trimmed)) {
     return readLocalProposalDocument(trimmed, context.allowedFileRoot);
   }
 
@@ -58,6 +58,18 @@ function readJsonDocuments(path: string): ProposalDocument[] {
 
 const MAX_LOCAL_FILE_BYTES = 2 * 1024 * 1024;
 
+function hasLocalFilesystemEntry(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw new Error(`Unable to inspect local file source: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function readLocalProposalDocument(path: string, root: string): ProposalDocument {
   try {
     const absolutePath = resolve(path);
@@ -72,6 +84,10 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
       throw error;
     }
 
+    if (!statSync(canonicalRoot).isDirectory()) {
+      throw new Error("Allowed file root must be a directory.");
+    }
+
     const linkMetadata = lstatSync(absolutePath);
     if (linkMetadata.isSymbolicLink()) {
       throw new Error("Local file source must be a regular file, not a symbolic link.");
@@ -79,6 +95,9 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
 
     const canonicalPath = realpathSync(absolutePath);
     const rel = relative(canonicalRoot, canonicalPath);
+    if (rel === "") {
+      throw new Error("Local file source must be a regular file inside the allowed file root.");
+    }
     if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
       throw new Error("Local file source is outside the allowed file root.");
     }
@@ -102,7 +121,7 @@ function readLocalProposalDocument(path: string, root: string): ProposalDocument
     }
     return parsed;
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Local file source")) {
+    if (error instanceof Error && (error.message.startsWith("Local file source") || error.message.startsWith("Allowed file root"))) {
       throw error;
     }
     throw new Error(`Unable to read local file source: ${error instanceof Error ? error.message : String(error)}`);
