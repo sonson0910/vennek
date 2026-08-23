@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   canonicalJson,
@@ -118,6 +118,12 @@ export function ensureStoreDirectories(root: string): {
   };
   for (const directory of Object.values(directories)) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const metadata = lstatSync(directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(`Persistence path must be a real directory, not a symbolic link: ${directory}`);
+    }
+  }
+  for (const directory of Object.values(directories)) {
     chmodSync(directory, 0o700);
   }
   return directories;
@@ -125,7 +131,11 @@ export function ensureStoreDirectories(root: string): {
 
 function appendJsonLine(path: string, value: unknown, maxBytes: number): void {
   const line = `${JSON.stringify(value)}\n`;
-  rotateAuditLog(path, Buffer.byteLength(line, "utf8"), maxBytes);
+  const incomingBytes = Buffer.byteLength(line, "utf8");
+  if (incomingBytes > maxBytes) {
+    throw new Error(`Serialized audit entry exceeds audit limit of ${maxBytes} bytes.`);
+  }
+  rotateAuditLog(path, incomingBytes, maxBytes);
   appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
   chmodSync(path, 0o600);
 }

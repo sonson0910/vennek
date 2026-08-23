@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex, type ProofReceipt, type ProposalDocument } from "@vennek/shared";
 import { routeTelegramCommand } from "@vennek/telegram-bot";
-import { ensureStoreDirectories, putProofReceipt, putSourceDocument } from "@vennek/cardano-governance-skills";
+import { ensureStoreDirectories, persistCommandResult, putProofReceipt, putSourceDocument } from "@vennek/cardano-governance-skills";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
 
@@ -137,7 +137,7 @@ describe("file-backed persistence", () => {
 
   it("rotates audit logs and keeps the current entry valid", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
-    const context = { persistenceRoot: root, persistenceLimits: { auditBytes: 1 } };
+    const context = { persistenceRoot: root, persistenceLimits: { auditBytes: 700 } };
 
     for (let index = 0; index < 4; index += 1) {
       await routeTelegramCommand(`/proof audit-entry-${index}`, { ...context, now });
@@ -187,6 +187,51 @@ describe("file-backed persistence", () => {
       expect(() => putProofReceipt(proofRoot, proofReceipt("invalid-proof"), now.toISOString(), { proofFiles: value })).toThrow();
       expect(existsSync(join(proofRoot, "proof-receipts"))).toBe(false);
     }
+  });
+
+  it("rejects a symlinked source cache without touching its target", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+    const external = mkdtempSync(join(tmpdir(), "vennek-external-"));
+    const victim = join(external, "victim.json");
+    writeFileSync(victim, "keep me");
+    utimesSync(victim, new Date(0), new Date(0));
+    symlinkSync(external, join(root, "source-cache"), "dir");
+
+    expect(() => putSourceDocument(root, sourceDocument("symlink-source"), now.toISOString(), { sourceFiles: 1 })).toThrow(/symbolic link/);
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+  });
+
+  it("rejects a symlinked proof receipt directory without touching its target", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+    const external = mkdtempSync(join(tmpdir(), "vennek-external-"));
+    const victim = join(external, "victim.json");
+    writeFileSync(victim, "keep me");
+    utimesSync(victim, new Date(0), new Date(0));
+    symlinkSync(external, join(root, "proof-receipts"), "dir");
+
+    expect(() => putProofReceipt(root, proofReceipt("symlink-proof"), now.toISOString(), { proofFiles: 1 })).toThrow(/symbolic link/);
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+  });
+
+  it("rejects an oversized audit entry before writing or rotating files", () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-store-"));
+    const result = {
+      command: "proof",
+      ok: true,
+      text: "oversized output ".repeat(100),
+      citations: [],
+      sourceStatus: "available" as const,
+      warnings: []
+    };
+
+    expect(() => persistCommandResult({
+      rawInput: "/proof oversized",
+      result,
+      context: { persistenceRoot: root, persistenceLimits: { auditBytes: 1 } },
+      now
+    })).toThrow(/exceeds audit limit/);
+    expect(existsSync(join(root, "audit-logs", "commands.jsonl"))).toBe(false);
+    expect(existsSync(join(root, "audit-logs", "commands.jsonl.1"))).toBe(false);
   });
 });
 
