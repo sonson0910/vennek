@@ -14,3 +14,31 @@ export function parseAllowedChatIds(value = ""): ReadonlySet<string> {
 export function isAllowedChat(chatId: number | string, allowed: ReadonlySet<string>): boolean {
   return allowed.has(String(chatId));
 }
+
+export type RateLimiter = {
+  allow(chatId: number | string, nowMs?: number): boolean;
+};
+
+export class FixedWindowRateLimiter implements RateLimiter {
+  private readonly windows = new Map<string, { startMs: number; count: number }>();
+
+  constructor(private readonly limit = 10, private readonly windowMs = 60_000) {
+    if (!Number.isInteger(limit) || limit <= 0 || !Number.isInteger(windowMs) || windowMs <= 0) {
+      throw new Error("Rate limiter limit and window must be positive integers.");
+    }
+  }
+
+  allow(chatId: number | string, nowMs = Date.now()): boolean {
+    const key = String(chatId);
+    const window = this.windows.get(key);
+    if (!window || nowMs >= window.startMs + this.windowMs) {
+      this.windows.set(key, { startMs: nowMs, count: 1 });
+      return true;
+    }
+    if (window.count >= this.limit) {
+      return false;
+    }
+    window.count += 1;
+    return true;
+  }
+}

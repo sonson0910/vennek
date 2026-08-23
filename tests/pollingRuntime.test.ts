@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { abortableSleep, runPolling, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { abortableSleep, runPolling, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
@@ -54,20 +54,29 @@ describe("Telegram polling runtime", () => {
 
   it("rejects unauthorized chats without routing or persistence but advances offset", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const consumedChats: Array<number | string> = [];
     const api = fakeApi({
       updates: [{ update_id: 8, message: { chat: { id: 999 }, text: "/sources catalyst-review-workbench" } }]
     });
     const logs = captureLogs();
+    const rateLimiter: RateLimiter = {
+      allow(chatId) {
+        consumedChats.push(chatId);
+        return true;
+      }
+    };
 
     await runPolling({
       api,
       allowedChatIds: new Set(["123"]),
       context: { persistenceRoot: root, enableFixtures: true, now },
       logger: logs.logger,
+      rateLimiter,
       maxCycles: 1,
       retryDelayMs: 0
     });
 
+    expect(consumedChats).toEqual([]);
     expect(readTelegramOffset(root)).toBe(9);
     expect(api.sentMessages).toHaveLength(0);
     expect(existsSync(join(root, "source-cache"))).toBe(false);
@@ -82,6 +91,40 @@ describe("Telegram polling runtime", () => {
     });
     expect(JSON.stringify(rejected)).not.toContain("999");
     expect(JSON.stringify(rejected)).not.toContain("/sources");
+  });
+
+  it("rate-limits allowed chats before routing and side effects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
+    const api = fakeApi({
+      updates: [{ update_id: 12, message: { chat: { id: 12345 }, text: "/sources catalyst-review-workbench" } }]
+    });
+    const logs = captureLogs();
+    const rateLimiter: RateLimiter = { allow: () => false };
+
+    await runPolling({
+      api,
+      allowedChatIds: new Set(["12345"]),
+      context: { persistenceRoot: root, enableFixtures: true, now },
+      logger: logs.logger,
+      rateLimiter,
+      maxCycles: 1,
+      retryDelayMs: 0
+    });
+
+    expect(readTelegramOffset(root)).toBe(13);
+    expect(api.sentMessages).toHaveLength(0);
+    expect(existsSync(join(root, "source-cache"))).toBe(false);
+    expect(existsSync(join(root, "audit-logs", "commands.jsonl"))).toBe(false);
+    const rateLimited = logs.events.find((event) => event.event === "telegram_update_rate_limited");
+    expect(rateLimited).toEqual({
+      level: "warn",
+      event: "telegram_update_rate_limited",
+      updateId: 12,
+      chatHash: expect.any(String),
+      offset: 13
+    });
+    expect(JSON.stringify(rateLimited)).not.toContain("12345");
+    expect(JSON.stringify(rateLimited)).not.toContain("/sources");
   });
 
   it("abortable sleep exits promptly when aborted", async () => {

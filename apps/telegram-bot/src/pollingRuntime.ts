@@ -1,5 +1,5 @@
 import { sha256Hex, type CommandContext } from "@vennek/shared";
-import { isAllowedChat } from "./accessControl.js";
+import { FixedWindowRateLimiter, isAllowedChat, type RateLimiter } from "./accessControl.js";
 import { routeTelegramText } from "./router.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
 
@@ -31,6 +31,7 @@ export type PollingOptions = {
   pollTimeoutSeconds?: number;
   retryDelayMs?: number;
   maxCycles?: number;
+  rateLimiter?: RateLimiter;
 };
 
 type TelegramApiResponse<T> = {
@@ -44,6 +45,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
   const logger = options.logger ?? (() => undefined);
   const pollTimeoutSeconds = options.pollTimeoutSeconds ?? 50;
   const retryDelayMs = options.retryDelayMs ?? 3_000;
+  const rateLimiter = options.rateLimiter ?? new FixedWindowRateLimiter();
   let offset = readTelegramOffset(context.persistenceRoot);
   let cycles = 0;
 
@@ -81,6 +83,17 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
             logger("warn", "telegram_update_rejected", {
+              updateId: update.update_id,
+              chatHash: chatHash(chatId),
+              offset
+            });
+            continue;
+          }
+
+          if (!rateLimiter.allow(chatId)) {
+            offset = Math.max(offset, nextOffset);
+            writeTelegramOffset(context.persistenceRoot, offset);
+            logger("warn", "telegram_update_rate_limited", {
               updateId: update.update_id,
               chatHash: chatHash(chatId),
               offset
