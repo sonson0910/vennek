@@ -175,6 +175,20 @@ describe("document store resolution", () => {
   });
 
   it.each([
+    "Research/development governance proposal",
+    "Budget is 1/2 of the previous cycle"
+  ])("keeps slash-containing prose on the pasted-text path: %s", async (text) => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-doc-root-"));
+
+    await expect(resolveProposalDocument(text, {
+      allowLocalFiles: true,
+      allowedFileRoot: root,
+      enableFixtures: false,
+      now
+    })).resolves.toMatchObject({ sourceType: "user-provided" });
+  });
+
+  it.each([
     ["missing fields", { id: "missing-fields" }],
     ["bad source type", { ...validDocument("bad-source"), sourceType: "unknown" }],
     ["single-file array", [validDocument("array-document")]],

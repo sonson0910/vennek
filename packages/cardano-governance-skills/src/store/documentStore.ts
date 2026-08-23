@@ -61,9 +61,9 @@ const LOCAL_SOURCE_ACCESS_ERROR = "Local file source could not be accessed.";
 
 function looksLikeLocalPath(value: string): boolean {
   return isAbsolute(value)
-    || value.startsWith(`.${sep}`)
-    || value.startsWith(`..${sep}`)
-    || value.includes(sep)
+    || /^\.{1,2}[\\/]/.test(value)
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || /^\\\\/.test(value)
     || value.toLowerCase().endsWith(".json");
 }
 
