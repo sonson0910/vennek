@@ -73,7 +73,7 @@ describe("file-backed persistence", () => {
     const document: ProposalDocument = {
       id: "public-sensitive-source",
       sourceType: "user-provided",
-      url: "https://example.com/public-source",
+      url: "https://example.com/source?token=URL_REVIEW_SECRET_SENTINEL",
       title: "Public title password=TITLE_REVIEW_SECRET",
       body: "Public body token=BODY_REVIEW_SECRET",
       metadata: {
@@ -105,6 +105,7 @@ describe("file-backed persistence", () => {
       "BODY_REVIEW_SECRET",
       "METADATA_REVIEW_SECRET",
       "PRIVATE_REVIEW_SECRET",
+      "URL_REVIEW_SECRET_SENTINEL",
       "CITATION_URL_REVIEW_SECRET",
       "CITATION_TITLE_REVIEW_SECRET",
       "CITATION_SNIPPET_REVIEW_SECRET"

@@ -127,6 +127,7 @@ function isPersistableDocument(document: ProposalDocument): boolean {
 function sanitizeDocument(document: ProposalDocument): ProposalDocument {
   return {
     ...document,
+    ...(document.url === undefined ? {} : { url: redactSensitive(document.url) }),
     title: redactSensitive(document.title),
     body: redactSensitive(document.body),
     metadata: redactNestedStrings(document.metadata) as Record<string, unknown>,
