@@ -55,12 +55,12 @@ export async function voteDraftCommand(input: string, stance: string, context: C
 }
 
 function rationaleFor(stance: Stance, analysis: ReturnType<typeof analyzeDocument>): string {
-  const problem = stripTerminalPunctuation(analysis.problem);
-  const impact = stripTerminalPunctuation(analysis.impact);
-  const feasibility = stripTerminalPunctuation(analysis.feasibility);
-  const risks = stripTerminalPunctuation(analysis.risks);
+  const problem = stripTerminalPunctuation(analysis.problem.text);
+  const impact = stripTerminalPunctuation(analysis.impact.text);
+  const feasibility = stripTerminalPunctuation(analysis.feasibility.text);
+  const risks = stripTerminalPunctuation(analysis.risks.text);
   const missingEvidence = stripTerminalPunctuation(analysis.missingEvidence);
-  const requested = stripTerminalPunctuation(analysis.requested);
+  const requested = stripTerminalPunctuation(analysis.requested.text);
 
   if (stance === "support") {
     return `I selected support because the proposal's stated problem, requested action, impact claim, and feasibility evidence appear aligned enough for consideration. Key points to cite are: ${problem}; ${impact}; ${feasibility}.`;
