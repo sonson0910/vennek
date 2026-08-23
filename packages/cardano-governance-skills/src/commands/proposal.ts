@@ -7,9 +7,9 @@ export async function proposalCommand(input: string, context: CommandContext = {
   const document = await resolveProposalDocument(input, context);
   const analysis = analyzeDocument(document);
   const citations = analysisCitations(analysis);
-  const sourceStatus = sourceStatusFor(document.citations);
+  const sourceStatus = sourceStatusFor(citations);
   const citationHint = cite(citations);
-  const sourceNote = hasUsableCitations(document.citations)
+  const sourceNote = hasUsableCitations(citations)
     ? `Evidence anchors: ${citationHint}`
     : "Source unavailable: no retrievable citation snippets were attached.";
 

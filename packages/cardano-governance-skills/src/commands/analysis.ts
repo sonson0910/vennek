@@ -1,4 +1,4 @@
-import { citationIds, createCitation, renderCitationList, type Citation, type ProposalDocument } from "@vennek/shared";
+import { citationIds, createCitation, renderCitationList, sha256Hex, type Citation, type ProposalDocument } from "@vennek/shared";
 
 export type AnalyzedClaim = {
   text: string;
@@ -66,7 +66,10 @@ function analyzedClaim(
     return { text };
   }
 
-  const prefix = document.id.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 40).toUpperCase() || "SOURCE";
+  const normalizedId = document.id.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
+  const prefix = normalizedId.length > 40
+    ? `${normalizedId.slice(0, 31)}-${sha256Hex(document.id).slice(0, 8)}`.toUpperCase()
+    : normalizedId.slice(0, 40).toUpperCase() || "SOURCE";
   return {
     text,
     citation: createCitation({

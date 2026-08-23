@@ -64,4 +64,34 @@ describe("governance commands", () => {
     });
     expect(new Set(result.citations.map((citation) => citation.id)).size).toBe(result.citations.length);
   });
+
+  it("keeps citations distinct when long document ids share a prefix", async () => {
+    const left = normalizeUserProvidedText({ text: "Impact: left source statement is supported.", title: "Left" });
+    const right = normalizeUserProvidedText({ text: "Impact: right source statement is supported.", title: "Right" });
+    const sharedPrefix = "document-" + "x".repeat(40);
+    const leftId = `${sharedPrefix}-left`;
+    const rightId = `${sharedPrefix}-right`;
+    const result = await compareCommand(leftId, rightId, {
+      enableFixtures: false,
+      documents: [
+        { ...left, id: leftId },
+        { ...right, id: rightId }
+      ]
+    });
+    expect(result.citations).toHaveLength(2);
+    expect(new Set(result.citations.map((citation) => citation.id)).size).toBe(2);
+    expect(result.citations.find((citation) => citation.snippet.includes("left source statement"))?.url).toBe(left.url);
+    expect(result.citations.find((citation) => citation.snippet.includes("right source statement"))?.url).toBe(right.url);
+  });
+
+  it("marks a source unavailable when no analyzed claim has a citation", async () => {
+    const result = await proposalCommand("Neutral background prose without claim labels.", {
+      enableFixtures: false,
+      now: new Date("2026-07-04T00:00:00.000Z")
+    });
+    expect(result.sourceStatus).toBe("unavailable");
+    expect(result.citations).toEqual([]);
+    expect(result.text).toContain("[source unavailable]");
+    expect(validateOutput(result)).toEqual([]);
+  });
 });
