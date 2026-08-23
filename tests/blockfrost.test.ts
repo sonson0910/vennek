@@ -81,6 +81,51 @@ describe("Blockfrost proof verification", () => {
     }
   });
 
+  it("fails safely when metadata contains a null entry", async () => {
+    await expect(verifyProofTxWithBlockfrost({
+      txHash,
+      expectedContentHash: payload.content_hash,
+      options: {
+        projectId: "test_project",
+        fetchImpl: jsonFetch(200, [null])
+      }
+    })).resolves.toMatchObject({ ok: false, status: "failed" });
+  });
+
+  it("matches the expected hash when multiple proof payloads are present", async () => {
+    const firstPayload = { ...payload, content_hash: "c".repeat(64) };
+    const result = await verifyProofTxWithBlockfrost({
+      txHash,
+      expectedContentHash: payload.content_hash,
+      options: {
+        projectId: "test_project",
+        fetchImpl: jsonFetch(200, [
+          { json_metadata: firstPayload },
+          { json_metadata: payload }
+        ])
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.matchedPayload).toEqual(payload);
+  });
+
+  it("rejects malformed expected hashes before fetching metadata", async () => {
+    let fetchCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => [{ json_metadata: payload }] };
+    }) as unknown as typeof fetch;
+    const result = await verifyProofTxWithBlockfrost({
+      txHash,
+      expectedContentHash: "not-a-sha256-hash",
+      options: { projectId: "test_project", fetchImpl }
+    });
+
+    expect(result).toMatchObject({ ok: false, status: "failed", reason: expect.stringMatching(/SHA-256/i) });
+    expect(fetchCalls).toBe(0);
+  });
+
   it("requires an expected content hash", async () => {
     await expect(proofVerifyCommand(txHash, {
       projectId: "test_project",

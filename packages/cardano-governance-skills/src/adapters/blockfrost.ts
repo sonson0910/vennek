@@ -44,6 +44,15 @@ export async function verifyProofTxWithBlockfrost(input: {
       reason: "Invalid transaction hash format."
     };
   }
+  const normalizedExpectedContentHash = normalizeContentHash(input.expectedContentHash);
+  if (!normalizedExpectedContentHash) {
+    return {
+      ok: false,
+      status: "failed",
+      txHash: input.txHash,
+      reason: "Expected content hash must be a SHA-256 hex value."
+    };
+  }
   if (!input.options.projectId.trim()) {
     return {
       ok: false,
@@ -84,13 +93,13 @@ export async function verifyProofTxWithBlockfrost(input: {
     };
   }
 
-  let metadata: BlockfrostMetadataEntry[];
+  let metadata: unknown[];
   try {
     const parsed = await response.json();
     if (!Array.isArray(parsed)) {
       throw new Error("metadata response is not an array");
     }
-    metadata = parsed as BlockfrostMetadataEntry[];
+    metadata = parsed;
   } catch (error) {
     return {
       ok: false,
@@ -99,23 +108,25 @@ export async function verifyProofTxWithBlockfrost(input: {
       reason: `Blockfrost metadata response was invalid JSON/shape: ${error instanceof Error ? error.message : String(error)}.`
     };
   }
-  const matchedPayload = metadata.map((entry) => entry.json_metadata).find(isVennekProofPayload);
+  const proofPayloads = metadata
+    .map((entry) => (entry && typeof entry === "object" ? (entry as BlockfrostMetadataEntry).json_metadata : undefined))
+    .filter(isVennekProofPayload);
+  const matchedPayload = proofPayloads.find((payload) => normalizeContentHash(payload.content_hash) === normalizedExpectedContentHash);
   if (!matchedPayload) {
+    if (proofPayloads.length > 0) {
+      return {
+        ok: false,
+        status: "failed",
+        txHash: input.txHash,
+        matchedPayload: proofPayloads[0],
+        reason: "vennek.proof.v1 payload found, but content_hash does not match expected value."
+      };
+    }
     return {
       ok: false,
       status: "failed",
       txHash: input.txHash,
       reason: "No vennek.proof.v1 metadata payload found on transaction."
-    };
-  }
-
-  if (normalizeContentHash(matchedPayload.content_hash) !== normalizeContentHash(input.expectedContentHash)) {
-    return {
-      ok: false,
-      status: "failed",
-      txHash: input.txHash,
-      matchedPayload,
-      reason: "vennek.proof.v1 payload found, but content_hash does not match expected value."
     };
   }
 
@@ -190,9 +201,9 @@ function isVennekProofPayload(value: unknown): value is ProofPayload {
   );
 }
 
-function normalizeContentHash(value: string): string {
+function normalizeContentHash(value: string): string | undefined {
   if (!SHA256_PATTERN.test(value)) {
-    throw new Error("Expected content hash must be a SHA-256 hex value.");
+    return undefined;
   }
   return value.replace(/^sha256:/i, "").toLowerCase();
 }
