@@ -29,7 +29,7 @@ describe("Telegram polling runtime", () => {
   it("advances offset for intentionally skipped non-text updates", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     const consumedChats: Array<number | string> = [];
-    const api = fakeApi({ updates: [{ update_id: 4, message: { chat: { id: 12345 } } }] });
+    const api = fakeApi({ updates: [{ update_id: 4, message: { chat: { id: 999 } } }] });
     const logs = captureLogs();
     const rateLimiter: RateLimiter = {
       allow(chatId) {

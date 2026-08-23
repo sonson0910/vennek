@@ -30,7 +30,7 @@ describe("Telegram pilot access control", () => {
     for (let index = 0; index < 10; index += 1) {
       expect(limiter.allow("chat123", index)).toBe(true);
     }
-    expect(limiter.allow("chat123", 10)).toBe(false);
+    expect(limiter.allow("chat123", 59_999)).toBe(false);
     expect(limiter.allow("chat123", 60_000)).toBe(true);
   });
 
