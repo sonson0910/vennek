@@ -1,4 +1,4 @@
-import { hasUsableCitations, type CommandContext, type CommandResult } from "@vennek/shared";
+import { sourceStatusFor, type CommandContext, type CommandResult } from "@vennek/shared";
 import { resolveProposalDocument } from "../store/documentStore.js";
 import { assertSafeOutput, humanDecisionFrame } from "../safety/outputGuards.js";
 import { analysisCitations, analyzeDocument, evidenceScore, renderClaim, renderCitations } from "./analysis.js";
@@ -8,9 +8,11 @@ export async function compareCommand(leftInput: string, rightInput: string, cont
   const right = await resolveProposalDocument(rightInput, context);
   const leftAnalysis = analyzeDocument(left);
   const rightAnalysis = analyzeDocument(right);
-  const citations = [...analysisCitations(leftAnalysis), ...analysisCitations(rightAnalysis)]
+  const leftCitations = analysisCitations(leftAnalysis);
+  const rightCitations = analysisCitations(rightAnalysis);
+  const citations = [...leftCitations, ...rightCitations]
     .filter((citation, index, all) => all.findIndex((candidate) => candidate.id === citation.id) === index);
-  const sourceStatus = hasUsableCitations(left.citations) && hasUsableCitations(right.citations) ? "available" : "partial";
+  const sourceStatus = sourceStatusFor(citations, leftCitations.length > 0 && rightCitations.length > 0 ? "available" : "partial");
 
   const text = [
     humanDecisionFrame(),

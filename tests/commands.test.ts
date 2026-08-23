@@ -94,4 +94,17 @@ describe("governance commands", () => {
     expect(result.text).toContain("[source unavailable]");
     expect(validateOutput(result)).toEqual([]);
   });
+
+  it("marks a comparison unavailable when neither side has an analyzed citation", async () => {
+    const left = normalizeUserProvidedText({ text: "Neutral left background prose.", title: "Left" });
+    const right = normalizeUserProvidedText({ text: "Neutral right background prose.", title: "Right" });
+    const result = await compareCommand("left-neutral", "right-neutral", {
+      enableFixtures: false,
+      documents: [{ ...left, id: "left-neutral" }, { ...right, id: "right-neutral" }]
+    });
+    expect(result.sourceStatus).toBe("unavailable");
+    expect(result.citations).toEqual([]);
+    expect(result.text).toContain("[source unavailable]");
+    expect(validateOutput(result)).toEqual([]);
+  });
 });
