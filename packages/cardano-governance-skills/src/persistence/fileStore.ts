@@ -53,14 +53,15 @@ export function persistCommandResult(input: {
 
 export function putSourceDocument(root: string, document: ProposalDocument, cachedAt = new Date().toISOString()): SourceCacheRecord {
   const directories = ensureStoreDirectories(root);
-  const documentHash = sha256Hex(canonicalJson(document));
+  const storedDocument = sanitizeDocument(document);
+  const documentHash = sha256Hex(canonicalJson(storedDocument));
   const record: SourceCacheRecord = {
-    id: document.id,
+    id: storedDocument.id,
     documentHash: `sha256:${documentHash}`,
     cachedAt,
-    document
+    document: storedDocument
   };
-  writeJson(join(directories.sourceCache, `${safeFileName(document.id)}-${documentHash.slice(0, 12)}.json`), record);
+  writeJson(join(directories.sourceCache, `${safeFileName(storedDocument.id)}-${documentHash.slice(0, 12)}.json`), record);
   return record;
 }
 
@@ -110,7 +111,37 @@ function extractDocuments(data: unknown): ProposalDocument[] {
   }
 
   const maybe = data as Record<string, unknown>;
-  return [maybe.document, maybe.left, maybe.right].filter(isProposalDocument);
+  return [maybe.document, maybe.left, maybe.right]
+    .filter(isProposalDocument)
+    .filter((document) => !(document.sourceType === "user-provided" && document.url?.startsWith("user-provided:")));
+}
+
+function sanitizeDocument(document: ProposalDocument): ProposalDocument {
+  return {
+    ...document,
+    title: redactSensitive(document.title),
+    body: redactSensitive(document.body),
+    metadata: redactNestedStrings(document.metadata) as Record<string, unknown>,
+    citations: document.citations.map((citation) => ({
+      ...citation,
+      url: redactSensitive(citation.url),
+      ...(citation.title === undefined ? {} : { title: redactSensitive(citation.title) }),
+      snippet: redactSensitive(citation.snippet)
+    }))
+  };
+}
+
+function redactNestedStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactSensitive(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactNestedStrings);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, redactNestedStrings(nested)]));
+  }
+  return value;
 }
 
 function extractProofReceipt(data: unknown): ProofReceipt | undefined {
