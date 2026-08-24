@@ -21,6 +21,9 @@ const MAX_JSON_NODES = 256;
 const MAX_JSON_FALLBACK_WORK = 16_384;
 // Global per-message checksum cap; exhaustion is classified as recovery-like.
 const MAX_MNEMONIC_VALIDATIONS = 64;
+const MAX_FRAGMENT_COUNT = 128;
+const MAX_FRAGMENT_BYTES = 16_384;
+const MAX_FRAGMENT_TOTAL_BYTES = 64 * 1024;
 const signingKeyTypeField = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;
 const keyMaterialField = /["']?(?:cborhex|bytes)["']?\s*:\s*["']([^"']+)["']/i;
 const privateBech32Key =
@@ -273,4 +276,43 @@ export function findWalletSecret(input: string): WalletSecretKind | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * Scans bounded trusted snapshots where one secret may be split across fields.
+ * Unlike raw user input, this deliberately omits the conservative word-count fallback.
+ */
+export function findWalletSecretInFragments(
+  fragments: readonly string[],
+): WalletSecretKind | undefined {
+  try {
+    if (!Array.isArray(fragments) || fragments.length > MAX_FRAGMENT_COUNT) {
+      return "recovery-phrase";
+    }
+
+    const bounded: string[] = [];
+    let totalBytes = 0;
+    for (let index = 0; index < fragments.length; index += 1) {
+      const fragment = fragments[index];
+      if (typeof fragment !== "string") return "recovery-phrase";
+      const bytes = Buffer.byteLength(fragment, "utf8");
+      if (fragment.length > MAX_FRAGMENT_BYTES || bytes > MAX_FRAGMENT_BYTES) {
+        return "recovery-phrase";
+      }
+      totalBytes += bytes;
+      if (totalBytes + Math.max(0, bounded.length) > MAX_FRAGMENT_TOTAL_BYTES) {
+        return "recovery-phrase";
+      }
+      bounded.push(fragment);
+    }
+
+    if (bounded.length === 0) return undefined;
+    const joined = bounded.join(" ");
+    if (hasSigningKeyJson(joined) || privateBech32Key.test(joined)) {
+      return "signing-key";
+    }
+    return hasValidRecoveryPhrase(joined) ? "recovery-phrase" : undefined;
+  } catch {
+    return "recovery-phrase";
+  }
 }

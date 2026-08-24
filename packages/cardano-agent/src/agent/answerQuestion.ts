@@ -1,4 +1,7 @@
-import { findWalletSecret } from "../security/walletSecrets.js";
+import {
+  findWalletSecret,
+  findWalletSecretInFragments,
+} from "../security/walletSecrets.js";
 
 export const RETENTION_NOTICE =
   "Vennek lưu lịch sử hội thoại vô thời hạn để duy trì ngữ cảnh; dữ liệu không được dùng để huấn luyện nếu chưa có sự đồng ý riêng. Đừng gửi seed phrase hoặc private key.";
@@ -226,7 +229,7 @@ const GREETING_PATTERNS: Record<QuestionLanguage, RegExp> = {
   de: /^(?:hallo|guten morgen|guten tag|guten abend)$/u,
   pt: /^(?:olá|ola|oi|bom dia|boa tarde|boa noite)$/u,
   id: /^(?:halo|hai|selamat pagi|selamat siang|selamat malam)$/u,
-  tr: /^(?:merhaba|selam|günaydın|gunaydin)$/u,
+  tr: /^(?:merhaba|selam|günaydın|günaydin|gunaydin)$/u,
 };
 
 const GREETING_LANGUAGES = (Object.entries(GREETING_PATTERNS) as Array<
@@ -356,14 +359,71 @@ function validTimestamp(value: unknown, limit: number): value is string {
   return text !== undefined && Number.isFinite(Date.parse(text));
 }
 
-function validUrl(value: unknown): value is string {
+type CanonicalUrl = {
+  value: string;
+  decodedParts: readonly string[];
+};
+
+const MAX_URL_DECODE_DEPTH = 3;
+const MAX_URL_PARTS = 64;
+
+function decodeUrlPart(value: string, plusAsSpace = false): string | undefined {
+  let current = plusAsSpace ? value.replace(/\+/g, " ") : value;
+  for (let depth = 0; depth < MAX_URL_DECODE_DEPTH; depth += 1) {
+    if (/%(?![0-9a-f]{2})/iu.test(current)) return undefined;
+    if (!/%[0-9a-f]{2}/iu.test(current)) return current;
+    try {
+      current = decodeURIComponent(current);
+    } catch {
+      return undefined;
+    }
+  }
+  return /%(?![0-9a-f]{2})/iu.test(current) || /%[0-9a-f]{2}/iu.test(current)
+    ? undefined
+    : current;
+}
+
+function canonicalUrl(value: unknown): CanonicalUrl | undefined {
   const text = boundedText(value, FIELD_LIMITS.url);
-  if (!text) return false;
+  if (!text) return undefined;
   try {
     const url = new URL(text);
-    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && Boolean(url.hostname);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      !url.hostname
+    ) {
+      return undefined;
+    }
+    const decodedParts: string[] = [];
+    const addPart = (part: string, plusAsSpace = false): boolean => {
+      const decoded = decodeUrlPart(part, plusAsSpace);
+      if (decoded === undefined) return false;
+      if (decodedParts.length >= MAX_URL_PARTS) return false;
+      if (Buffer.byteLength(decoded, "utf8") > FIELD_LIMITS.url) return false;
+      decodedParts.push(decoded);
+      return true;
+    };
+
+    if (!addPart(url.pathname)) return undefined;
+    const rawQuery = url.search.slice(1);
+    if (rawQuery) {
+      const queryParts = rawQuery.split("&");
+      if (queryParts.length > MAX_URL_PARTS) return undefined;
+      for (const part of queryParts) {
+        const separator = part.indexOf("=");
+        const key = separator < 0 ? part : part.slice(0, separator);
+        const queryValue = separator < 0 ? "" : part.slice(separator + 1);
+        if (!addPart(key, true) || !addPart(queryValue, true)) return undefined;
+      }
+    }
+    if (!addPart(url.hash.slice(1))) return undefined;
+
+    const canonical = boundedText(url.toString(), FIELD_LIMITS.url);
+    return canonical ? { value: canonical, decodedParts } : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -371,13 +431,19 @@ function isTrustTier(value: unknown): value is QuestionEvidenceTrustTier {
   return value === "official" || value === "community" || value === "unverified";
 }
 
-function canonicalEvidenceRecord(value: unknown): QuestionEvidence | undefined {
+type CanonicalEvidence = {
+  record: QuestionEvidence;
+  fieldValues: readonly string[];
+  decodedUrlParts: readonly string[];
+};
+
+function canonicalEvidenceRecord(value: unknown): CanonicalEvidence | undefined {
   if (!isPlainRecord(value)) return undefined;
   const id = boundedText(readOwnDataProperty(value, "id"), FIELD_LIMITS.id);
   const sourceId = boundedText(readOwnDataProperty(value, "sourceId"), FIELD_LIMITS.sourceId);
   const trustTier = readOwnDataProperty(value, "trustTier");
   const title = boundedText(readOwnDataProperty(value, "title"), FIELD_LIMITS.title);
-  const url = readOwnDataProperty(value, "url");
+  const url = canonicalUrl(readOwnDataProperty(value, "url"));
   const excerpt = boundedText(readOwnDataProperty(value, "excerpt"), FIELD_LIMITS.excerpt);
   const publishedAt = readOwnDataProperty(value, "publishedAt");
   const retrievedAt = readOwnDataProperty(value, "retrievedAt");
@@ -389,7 +455,7 @@ function canonicalEvidenceRecord(value: unknown): QuestionEvidence | undefined {
     !sourceId ||
     !isTrustTier(trustTier) ||
     !title ||
-    !validUrl(url) ||
+    !url ||
     !excerpt ||
     !validTimestamp(retrievedAt, FIELD_LIMITS.retrievedAt) ||
     !versionHash ||
@@ -398,7 +464,11 @@ function canonicalEvidenceRecord(value: unknown): QuestionEvidence | undefined {
   ) {
     return undefined;
   }
-  if (hasOwnProperty(value, "publishedAt") && (publishedAt === MISSING || !validTimestamp(publishedAt, FIELD_LIMITS.publishedAt))) {
+  if (
+    hasOwnProperty(value, "publishedAt") &&
+    (publishedAt === MISSING ||
+      (publishedAt !== undefined && !validTimestamp(publishedAt, FIELD_LIMITS.publishedAt)))
+  ) {
     return undefined;
   }
 
@@ -407,29 +477,30 @@ function canonicalEvidenceRecord(value: unknown): QuestionEvidence | undefined {
     sourceId,
     trustTier,
     title,
-    url,
+    url: url.value,
     excerpt,
     retrievedAt,
     versionHash,
     score,
   };
-  if (publishedAt !== MISSING) canonical.publishedAt = publishedAt as string;
-  return Object.freeze(canonical);
-}
-
-function evidenceValues(record: QuestionEvidence): string[] {
-  return [
-    record.id,
-    record.sourceId,
-    record.trustTier,
-    record.title,
-    record.url,
-    record.excerpt,
-    ...(record.publishedAt ? [record.publishedAt] : []),
-    record.retrievedAt,
-    record.versionHash,
-    String(record.score),
+  if (publishedAt !== MISSING && publishedAt !== undefined) canonical.publishedAt = publishedAt as string;
+  const fieldValues = [
+    canonical.id,
+    canonical.sourceId,
+    canonical.trustTier,
+    canonical.title,
+    canonical.url,
+    canonical.excerpt,
+    canonical.publishedAt ?? "",
+    canonical.retrievedAt,
+    canonical.versionHash,
+    String(canonical.score),
   ];
+  return {
+    record: Object.freeze(canonical),
+    fieldValues: Object.freeze(fieldValues),
+    decodedUrlParts: Object.freeze(url.decodedParts),
+  };
 }
 
 function evidenceRecordText(record: QuestionEvidence): string {
@@ -478,6 +549,13 @@ type EvidenceSnapshot = {
   containsSecret: boolean;
 };
 
+function containsStructuredSecret(groups: readonly (readonly string[])[]): boolean {
+  for (const group of groups) {
+    if (findWalletSecretInFragments(group) !== undefined) return true;
+  }
+  return false;
+}
+
 function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
   let isArray = false;
   try {
@@ -498,39 +576,50 @@ function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
   }
 
   const records: QuestionEvidence[] = [];
-  const recordTexts: string[] = [];
-  const correlationTexts: string[] = [];
-  const excerptTexts: string[] = [];
+  const canonicalRecords: CanonicalEvidence[] = [];
+  const fieldGroups: string[][] = Array.from({ length: 10 }, () => []);
+  const flattenedValues: string[] = [];
+  const decodedUrlValues: string[] = [];
   let aggregateBytes = 0;
   for (let index = 0; index < lengthValue; index += 1) {
     const item = readOwnDataProperty(value, String(index));
     if (item === MISSING) return undefined;
-    const record = canonicalEvidenceRecord(item);
-    if (!record) return undefined;
-    const recordText = evidenceRecordText(record);
+    const canonical = canonicalEvidenceRecord(item);
+    if (!canonical) return undefined;
+    const recordText = evidenceRecordText(canonical.record);
     const recordBytes = Buffer.byteLength(recordText, "utf8");
-    if (recordBytes > MAX_EVIDENCE_RECORD_BYTES || aggregateBytes + recordBytes + 1 > MAX_EVIDENCE_TOTAL_BYTES) {
+    const decodedBytes = canonical.decodedUrlParts.reduce(
+      (total, part) => total + Buffer.byteLength(part, "utf8"),
+      0,
+    );
+    if (
+      recordBytes > MAX_EVIDENCE_RECORD_BYTES ||
+      recordBytes + decodedBytes > MAX_EVIDENCE_RECORD_BYTES ||
+      aggregateBytes + recordBytes + decodedBytes + 1 > MAX_EVIDENCE_TOTAL_BYTES
+    ) {
       return undefined;
     }
-    aggregateBytes += recordBytes + 1;
-    records.push(record);
-    recordTexts.push(recordText);
-    const values = evidenceValues(record);
-    correlationTexts.push(...values);
-    excerptTexts.push(record.excerpt);
-
-    if (scanBoundedText(recordText)) return { records: Object.freeze(records), containsSecret: true };
-    for (let left = 0; left < values.length; left += 1) {
-      for (let right = left + 1; right < values.length; right += 1) {
-        if (scanBoundedText(`${values[left]} ${values[right]}`)) {
-          return { records: Object.freeze(records), containsSecret: true };
-        }
-      }
+    aggregateBytes += recordBytes + decodedBytes + 1;
+    records.push(canonical.record);
+    canonicalRecords.push(canonical);
+    flattenedValues.push(...canonical.fieldValues);
+    decodedUrlValues.push(...canonical.decodedUrlParts);
+    for (let fieldIndex = 0; fieldIndex < canonical.fieldValues.length; fieldIndex += 1) {
+      fieldGroups[fieldIndex]!.push(canonical.fieldValues[fieldIndex]!);
     }
   }
 
   const frozenRecords = Object.freeze(records);
-  if (scanBoundedText(recordTexts.join("\n")) || scanBoundedText(correlationTexts.join("\n")) || scanBoundedText(excerptTexts.join(" "))) {
+  const recordGroups = canonicalRecords.map(({ fieldValues, decodedUrlParts }) => [
+    ...fieldValues,
+    ...decodedUrlParts,
+  ]);
+  if (
+    containsStructuredSecret(recordGroups) ||
+    containsStructuredSecret(fieldGroups) ||
+    containsStructuredSecret([flattenedValues]) ||
+    containsStructuredSecret([decodedUrlValues])
+  ) {
     return { records: frozenRecords, containsSecret: true };
   }
   return { records: frozenRecords, containsSecret: false };

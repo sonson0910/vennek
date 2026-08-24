@@ -5,7 +5,7 @@ export type { AgentConfig } from "./config.js";
 
 export { decryptText, encryptText } from "./security/encryption.js";
 export type { EncryptedText } from "./security/encryption.js";
-export { findWalletSecret } from "./security/walletSecrets.js";
+export { findWalletSecret, findWalletSecretInFragments } from "./security/walletSecrets.js";
 export type { WalletSecretKind } from "./security/walletSecrets.js";
 
 export { createDatabase } from "./database.js";

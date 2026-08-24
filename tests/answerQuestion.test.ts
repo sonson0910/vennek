@@ -296,6 +296,29 @@ describe("natural-language question service", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
+  it("keeps structured correlation across records with large safe excerpts", async () => {
+    const complete = vi.fn(async () => "should not be returned");
+    const filler = "safe-source-text ".repeat(280);
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({
+          title: '{"type":"PaymentSigningKeyShelley_ed25519"}',
+          excerpt: filler,
+        }),
+        evidenceRecord({
+          id: "E2",
+          title: "Independent source",
+          excerpt: `${filler}{"cborHex":"5820abcdef"}`,
+        }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("rejects evidence accessors before they can change from safe to secret", async () => {
     const phrase = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
     let reads = 0;
@@ -344,6 +367,8 @@ describe("natural-language question service", () => {
     const complete = vi.fn(async () => "should not be returned");
     const malformed = [
       evidenceRecord({ url: "https://user:password@example.com/source" }),
+      evidenceRecord({ url: "https://docs.cardano.org/search?q=%ZZ" }),
+      evidenceRecord({ url: "https://docs.cardano.org/search?q=%25252525" }),
       evidenceRecord({ score: Number.NaN }),
       evidenceRecord({ retrievedAt: "not-a-date" }),
     ];
@@ -433,6 +458,7 @@ describe("natural-language question service", () => {
     ["Hai!", /halo|cardano/i],
     ["Selamat pagi!", /halo|cardano/i],
     ["Selam!", /merhaba|cardano/i],
+    ["GÜNAYDIN!", /merhaba|cardano/i],
     ["Xin Cha\u0300o!", /xin chào|cardano/i],
   ])("recognizes normalized localized greeting: %s", async (text, expected) => {
     const retrieve = vi.fn();
@@ -444,6 +470,37 @@ describe("natural-language question service", () => {
     });
     expect(answer).toMatch(expected);
     expect(retrieve).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("accepts an own undefined publishedAt as an omitted optional field", async () => {
+    const complete = vi.fn(async ({ evidence }: { evidence: readonly QuestionEvidence[] }) => {
+      expect(evidence[0]).not.toHaveProperty("publishedAt");
+      return "ok";
+    });
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [evidenceRecord({ publishedAt: undefined })],
+      complete,
+    });
+
+    expect(answer).toBe("ok");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["mnemonic", "https://docs.cardano.org/search?q=" + encodeURIComponent(Array.from({ length: 11 }, () => "abandon").concat("about").join(" "))],
+    ["signing key", "https://docs.cardano.org/search?q=" + encodeURIComponent('{"type":"PaymentSigningKeyShelley_ed25519","cborHex":"5820abcdef"}')],
+  ])("blocks percent-encoded %s secrets in evidence URLs", async (_kind, url) => {
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => ({ firstInteraction: true })),
+      retrieve: async () => [evidenceRecord({ url })],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(answer).toContain(RETENTION_NOTICE);
     expect(complete).not.toHaveBeenCalled();
   });
 
