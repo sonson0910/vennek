@@ -82,7 +82,7 @@
       "owner": "EMURGO",
       "trustTier": "official",
       "kind": "page",
-      "url": "https://www.emurgo.io/about",
+      "url": "https://www.emurgo.io/about/",
       "allowedDomains": ["emurgo.io"],
       "topics": ["ecosystem", "developer", "education"],
       "networks": ["mainnet", "preprod", "preview"],
