@@ -56,6 +56,20 @@ describe("Telegram polling runtime", () => {
     expect(readTelegramOffset(root)).toBe(15);
   });
 
+  it("accepts the maximum safe Telegram update id without overflowing the offset", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-max-update-"));
+    const answer = vi.fn(async () => "agent answer");
+    const api = fakeApi({
+      updates: [{ update_id: Number.MAX_SAFE_INTEGER, message: { from: { id: 1 }, chat: { id: 2 }, text: "max" } }],
+    });
+
+    await runTelegramPolling({ api, answer, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(answer).toHaveBeenCalledOnce();
+    expect(readTelegramOffset(root)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(api.sentMessages).toHaveLength(1);
+  });
+
   it("starts from persisted offset and advances after a handled update", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     writeTelegramOffset(root, 10, now);

@@ -93,7 +93,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           const rawText = message?.text;
           const text = typeof rawText === "string" ? rawText.trim() : undefined;
           if (chatId === undefined || !text) {
-            const nextOffset = updateId + 1;
+            const nextOffset = nextOffsetFor(updateId);
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
             logger("info", "telegram_update_skipped", { updateId, offset });
@@ -102,14 +102,14 @@ export async function runPolling(options: PollingOptions): Promise<void> {
 
           const userId = canonicalTelegramIdentifier(isRecord(message?.from) ? message.from.id : undefined, true);
           if (userId === undefined) {
-            const nextOffset = updateId + 1;
+            const nextOffset = nextOffsetFor(updateId);
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
             logger("info", "telegram_update_skipped", { updateId, offset });
             continue;
           }
 
-          const nextOffset = updateId + 1;
+          const nextOffset = nextOffsetFor(updateId);
 
           if (!rateLimiter.allow(chatId)) {
             offset = Math.max(offset, nextOffset);
@@ -261,7 +261,11 @@ function chatHash(chatId: number | string): string {
 }
 
 function validUpdateId(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value < Number.MAX_SAFE_INTEGER ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined;
+}
+
+function nextOffsetFor(updateId: number): number {
+  return updateId === Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : updateId + 1;
 }
 
 function canonicalTelegramIdentifier(value: unknown, user: boolean): string | undefined {

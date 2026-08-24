@@ -16,6 +16,7 @@ import { sha256Hex, type CommandContext } from "@vennek/shared";
 
 const TELEGRAM_QUEUE = "telegram-answer";
 const PARTITION_QUEUE = "conversation-partition-maintenance";
+const SERVER_DRAIN_TIMEOUT_MS = 15_000;
 
 export async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -252,12 +253,7 @@ function waitForServerDrain(server: ReturnType<typeof createServer>): Promise<vo
       closing = true;
       process.off("SIGTERM", close);
       process.off("SIGINT", close);
-      if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
-      if (!server.listening) {
-        resolve();
-        return;
-      }
-      server.close(() => resolve());
+      void closeServer(server).then(resolve);
     };
     process.once("SIGTERM", close);
     process.once("SIGINT", close);
@@ -267,7 +263,21 @@ function waitForServerDrain(server: ReturnType<typeof createServer>): Promise<vo
 function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
   if (!server.listening) return Promise.resolve();
   return new Promise((resolve) => {
-    server.close(() => resolve());
+    let finished = false;
+    let forceCloseTimer: NodeJS.Timeout | undefined;
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      if (forceCloseTimer) clearTimeout(forceCloseTimer);
+      resolve();
+    };
+    forceCloseTimer = setTimeout(() => {
+      server.closeAllConnections?.();
+      finish();
+    }, SERVER_DRAIN_TIMEOUT_MS);
+    forceCloseTimer.unref();
+    server.close(finish);
+    server.closeIdleConnections?.();
   });
 }
 

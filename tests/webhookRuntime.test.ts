@@ -536,7 +536,9 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
     const db = createDatabase(databaseUrl!);
     const boss = new PgBoss(databaseUrl!);
     const updateId = 8_000_000_000_000_000 + randomInt(0, 100_000_000);
-    const job = { updateId, telegramUserId: `integration-${process.pid}`, telegramChatId: "22", text: "integration" };
+    const telegramUserId = `integration-${process.pid}`;
+    const telegramChatId = "22";
+    const job = { updateId, telegramUserId, telegramChatId, text: "integration" };
     const queue = new PgBossAgentQueue(boss, db);
     let jobId: string | undefined;
 
@@ -558,6 +560,10 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
       }
       await boss.stop().catch(() => undefined);
       await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await db.query(
+        "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
+        [telegramUserId, telegramChatId],
+      ).catch(() => undefined);
       await db.end();
     }
   }, 30_000);
@@ -568,6 +574,10 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
     const queue = new PgBossAgentQueue(boss, db);
     const base = 8_100_000_000_000_000 + randomInt(0, 100_000_000);
     const updateIds: number[] = [];
+    const admissionSubjects = new Set<string>();
+    const rememberSubject = (subjectType: "user" | "chat", subjectId: string): void => {
+      admissionSubjects.add(`${subjectType}\u0000${subjectId}`);
+    };
     try {
       await boss.start();
       await boss.createQueue("telegram-answer");
@@ -579,6 +589,10 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
         text: "accepted",
       }));
       updateIds.push(...sameUserJobs.map(({ updateId }) => updateId));
+      for (const job of sameUserJobs) {
+        rememberSubject("user", job.telegramUserId);
+        rememberSubject("chat", job.telegramChatId);
+      }
       const sameUserResults = await Promise.all(sameUserJobs.map((job) => queue.enqueue(job)));
       expect(sameUserResults.filter(Boolean)).toHaveLength(10);
       expect(sameUserResults.filter((result) => !result)).toHaveLength(1);
@@ -591,22 +605,36 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
         text: "accepted",
       }));
       updateIds.push(...sameChatJobs.map(({ updateId }) => updateId));
+      for (const job of sameChatJobs) {
+        rememberSubject("user", job.telegramUserId);
+        rememberSubject("chat", job.telegramChatId);
+      }
       const sameChatResults = await Promise.all(sameChatJobs.map((job) => queue.enqueue(job)));
       expect(sameChatResults.filter(Boolean)).toHaveLength(10);
       expect(sameChatResults.filter((result) => !result)).toHaveLength(1);
       const rejectedChatUpdate = sameChatJobs[sameChatResults.findIndex((result) => !result)]!.updateId;
 
       updateIds.push(base + 200);
-      await expect(queue.enqueue({ updateId: base + 200, telegramUserId: `admission-independent-user-${base}`, telegramChatId: `admission-independent-chat-${base}`, text: "accepted" })).resolves.toBe(true);
+      const independentJob = { updateId: base + 200, telegramUserId: `admission-independent-user-${base}`, telegramChatId: `admission-independent-chat-${base}`, text: "accepted" };
+      rememberSubject("user", independentJob.telegramUserId);
+      rememberSubject("chat", independentJob.telegramChatId);
+      await expect(queue.enqueue(independentJob)).resolves.toBe(true);
       const rejectedJobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(rejectedUserUpdate), queued: true });
       expect(rejectedJobs).toHaveLength(0);
       const rejectedChatJobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(rejectedChatUpdate), queued: true });
       expect(rejectedChatJobs).toHaveLength(0);
     } finally {
-      const jobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { queued: true }).catch(() => []);
-      for (const job of jobs) await boss.deleteJob("telegram-answer", job.id).catch(() => undefined);
+      for (const updateId of updateIds) {
+        const jobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(updateId), queued: true }).catch(() => []);
+        for (const job of jobs) await boss.deleteJob("telegram-answer", job.id).catch(() => undefined);
+      }
       if (updateIds.length > 0) await db.query("DELETE FROM telegram_updates WHERE update_id = ANY($1::bigint[])", [updateIds]).catch(() => undefined);
-      await db.query("DELETE FROM telegram_admission_windows WHERE subject_id LIKE $1 OR subject_id LIKE $2 OR subject_id LIKE $3 OR subject_id LIKE $4", [`admission-user-${base}%`, `admission-chat-${base}%`, `admission-other-user-${base}%`, `admission-independent-%`]).catch(() => undefined);
+      for (const subject of admissionSubjects) {
+        const separator = subject.indexOf("\u0000");
+        const subjectType = subject.slice(0, separator);
+        const subjectId = subject.slice(separator + 1);
+        await db.query("DELETE FROM telegram_admission_windows WHERE subject_type = $1 AND subject_id = $2", [subjectType, subjectId]).catch(() => undefined);
+      }
       await boss.stop().catch(() => undefined);
       await db.end();
     }
