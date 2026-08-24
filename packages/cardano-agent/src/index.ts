@@ -30,3 +30,15 @@ export type {
   QuestionPersistenceResult,
   QuestionRetrievalInput,
 } from "./agent/answerQuestion.js";
+
+export {
+  REQUIRED_OFFICIAL_SOURCE_IDS,
+  validateSourceRegistry,
+} from "./knowledge/sourceRegistry.js";
+export type {
+  CardanoNetwork,
+  RefreshRate,
+  SourceKind,
+  SourceRegistryEntry,
+  TrustTier,
+} from "./knowledge/sourceRegistry.js";

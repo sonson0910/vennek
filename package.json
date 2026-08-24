@@ -24,7 +24,9 @@
     "validate:sources:live": "tsx scripts/validate-data-sources.ts --mode live --write-report",
     "eval:citations": "tsx scripts/evaluate-citations.ts --write-report",
     "staging:smoke": "tsx scripts/staging-smoke.ts",
-    "proof:fixture": "tsx scripts/create-proof-fixture.ts"
+    "proof:fixture": "tsx scripts/create-proof-fixture.ts",
+    "validate:registry": "tsx scripts/validate-source-registry.ts",
+    "validate:registry:live": "tsx scripts/validate-source-registry.ts --live"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

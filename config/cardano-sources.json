@@ -1,0 +1,226 @@
+{
+  "official": [
+    {
+      "id": "cardano-docs",
+      "owner": "Cardano",
+      "trustTier": "official",
+      "kind": "sitemap",
+      "url": "https://docs.cardano.org/sitemap.xml",
+      "allowedDomains": ["docs.cardano.org"],
+      "topics": ["fundamentals", "developer", "staking"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "cardano-org",
+      "owner": "Cardano",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://cardano.org/",
+      "allowedDomains": ["cardano.org"],
+      "topics": ["fundamentals", "ecosystem", "governance"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "cardano-developer-portal",
+      "owner": "Cardano Developer Portal",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://developers.cardano.org/",
+      "allowedDomains": ["developers.cardano.org"],
+      "topics": ["developer", "fundamentals", "tooling"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "iog-research",
+      "owner": "IOG",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://www.iog.io/papers",
+      "allowedDomains": ["iog.io"],
+      "topics": ["research", "fundamentals"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "iog-github",
+      "owner": "IOG",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/input-output-hk",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "topics": ["developer", "infrastructure", "research"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "cardano-foundation",
+      "owner": "Cardano Foundation",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://cardanofoundation.org/about",
+      "allowedDomains": ["cardanofoundation.org"],
+      "topics": ["governance", "ecosystem", "education"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "cardano-foundation-github",
+      "owner": "Cardano Foundation",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/cardano-foundation",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "topics": ["developer", "governance", "infrastructure"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "emurgo",
+      "owner": "EMURGO",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://www.emurgo.io/about",
+      "allowedDomains": ["emurgo.io"],
+      "topics": ["ecosystem", "developer", "education"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "intersect",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://www.intersectmbo.org/",
+      "allowedDomains": ["intersectmbo.org"],
+      "topics": ["governance", "developer", "ecosystem"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "intersect-github",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/IntersectMBO",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "topics": ["governance", "developer", "infrastructure"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "cardano-cips",
+      "owner": "Cardano Foundation",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/cardano-foundation/CIPs",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "cips.cardano.org"],
+      "topics": ["governance", "developer", "standards"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "project-catalyst",
+      "owner": "Project Catalyst",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://docs.projectcatalyst.io/",
+      "allowedDomains": ["projectcatalyst.io", "docs.projectcatalyst.io", "app.projectcatalyst.io"],
+      "topics": ["governance", "funding", "ecosystem"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "govtool",
+      "owner": "GovTool",
+      "trustTier": "official",
+      "kind": "page",
+      "url": "https://docs.gov.tools/",
+      "allowedDomains": ["docs.gov.tools", "gov.tools", "preview.gov.tools"],
+      "topics": ["governance", "delegation", "voting"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "cardano-node-releases",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/IntersectMBO/cardano-node/releases",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "topics": ["node", "developer", "releases"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "hourly"
+    },
+    {
+      "id": "cardano-ledger",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/IntersectMBO/cardano-ledger",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "topics": ["ledger", "developer", "infrastructure"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "ouroboros-consensus",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/IntersectMBO/ouroboros-consensus",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "ouroboros-consensus.cardano.intersectmbo.org"],
+      "topics": ["consensus", "developer", "research"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "plutus",
+      "owner": "Intersect",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/IntersectMBO/plutus",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "plutus.cardano.intersectmbo.org"],
+      "topics": ["plutus", "developer", "smart-contracts"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "aiken",
+      "owner": "Aiken",
+      "trustTier": "official",
+      "kind": "github",
+      "url": "https://github.com/aiken-lang/aiken",
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "aiken-lang.org"],
+      "topics": ["developer", "smart-contracts", "tooling"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    }
+  ],
+  "community": [
+    {
+      "id": "cardano-forum",
+      "owner": "Cardano Forum",
+      "trustTier": "community",
+      "kind": "page",
+      "url": "https://forum.cardano.org/",
+      "allowedDomains": ["forum.cardano.org"],
+      "topics": ["community", "governance", "developer"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    },
+    {
+      "id": "cardano-stack-exchange",
+      "owner": "Cardano Stack Exchange",
+      "trustTier": "community",
+      "kind": "page",
+      "url": "https://cardano.stackexchange.com/",
+      "allowedDomains": ["cardano.stackexchange.com"],
+      "topics": ["community", "developer", "fundamentals"],
+      "networks": ["mainnet", "preprod", "preview"],
+      "refresh": "daily"
+    }
+  ]
+}
