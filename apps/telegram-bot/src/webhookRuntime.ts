@@ -176,25 +176,13 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
   const chat = message.chat;
   const userId = isPlainObject(from) ? from.id : undefined;
   const chatId = isPlainObject(chat) ? chat.id : undefined;
-  const unsupportedMessage = Object.keys(message).some((key) => !["from", "chat", "text"].includes(key));
   const hasText = Object.prototype.hasOwnProperty.call(message, "text");
-  if (hasText && message.text !== undefined && typeof message.text !== "string") {
-    throw new InvalidPayloadError("Invalid text");
-  }
+  if (!hasText) return undefined;
+  if (typeof message.text !== "string") throw new InvalidPayloadError("Invalid text");
   if (!isPositiveSafeInteger(userId) || !isSafeNonzeroInteger(chatId)) {
-    if (unsupportedMessage) return undefined;
     throw new InvalidPayloadError("Invalid identifiers");
   }
-  if (message.text === undefined) {
-    if (unsupportedMessage) return undefined;
-    throw new InvalidPayloadError("Missing text");
-  }
-  if (typeof message.text !== "string") {
-    if (unsupportedMessage) return undefined;
-    throw new InvalidPayloadError("Invalid text");
-  }
   if (message.text.trim().length === 0) {
-    if (unsupportedMessage) return undefined;
     throw new InvalidPayloadError("Invalid text");
   }
   if (message.text.length > TELEGRAM_TEXT_MAX_BYTES || Buffer.byteLength(message.text, "utf8") > TELEGRAM_TEXT_MAX_BYTES) {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { randomInt } from "node:crypto";
 import { PgBoss } from "pg-boss";
 import {
   createWebhookOptions,
@@ -224,10 +225,25 @@ describe("Telegram webhook", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it("rejects an empty message envelope instead of treating it as unsupported", async () => {
+  it("accepts a message without text instead of queueing it", async () => {
     const enqueue = vi.fn();
     const response = await handleTelegramWebhook(
-      request(JSON.stringify({ update_id: 81, message: {} })),
+      request(JSON.stringify({ update_id: 81, message: { message_id: 1, date: 2, from: { id: 11 }, chat: { id: 22 } } })),
+      { secret, enqueue },
+    );
+
+    expect(response.status).toBe(202);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { text: 7 },
+    { text: "  " },
+    { text: "valid", from: { id: 0 } },
+  ])("rejects malformed text messages even with Telegram metadata: %j", async (message) => {
+    const enqueue = vi.fn();
+    const response = await handleTelegramWebhook(
+      request(JSON.stringify({ update_id: 84, message: { message_id: 1, date: 2, chat: { id: 22 }, from: { id: 11 }, ...message } })),
       { secret, enqueue },
     );
 
@@ -464,7 +480,7 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
   it("claims one concurrent update, completes its job, and rejects replay", async () => {
     const db = createDatabase(databaseUrl!);
     const boss = new PgBoss(databaseUrl!);
-    const updateId = 8_000_000_000_000_000 + (process.pid % 100_000) * 10 + (Date.now() % 10);
+    const updateId = 8_000_000_000_000_000 + randomInt(0, 100_000_000);
     const job = { updateId, telegramUserId: `integration-${process.pid}`, telegramChatId: "22", text: "integration" };
     const queue = new PgBossAgentQueue(boss, db);
     let jobId: string | undefined;
@@ -475,12 +491,11 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
       const results = await Promise.all([queue.enqueue(job), queue.enqueue(job)]);
       expect(results.sort()).toEqual([false, true]);
 
-      const jobs = await boss.fetch<{ updateId: number }>("telegram-answer", { batchSize: 1 });
-      const matching = jobs.find((candidate) => candidate.data.updateId === updateId);
-      expect(matching).toBeDefined();
-      jobId = matching?.id;
+      const jobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(updateId), queued: true });
+      expect(jobs).toHaveLength(1);
+      jobId = jobs[0]?.id;
       if (!jobId) throw new Error("Expected an integration job");
-      await boss.complete("telegram-answer", jobId);
+      await boss.complete("telegram-answer", jobId, undefined, { includeQueued: true });
       await expect(queue.enqueue(job)).resolves.toBe(false);
     } finally {
       if (jobId) {
