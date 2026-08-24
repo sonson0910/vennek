@@ -56,6 +56,61 @@ describe("bounded source content extraction", () => {
     expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
   });
 
+  it("preserves Markdown autolinks and code literals while removing raw HTML outside them", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode(`# Cardano links and literals
+
+See <https://docs.cardano.org> followed by text.
+
+Use \`Array<string>\` inline.
+
+\`\`\`\`html
+<div>literal tag</div>
+<!-- literal comment -->
+\`\`\`\`\`
+
+Visible after backtick fence.
+
+~~~html
+<span>tilde literal</span>
+~~~
+
+Visible after tilde fence.
+
+<div>HIDDEN_INSTRUCTION_RAW_ELEMENT</div>
+<!-- HIDDEN_INSTRUCTION_RAW_COMMENT -->`)
+    });
+
+    expect(result.text).toBe(`# Cardano links and literals
+
+See <https://docs.cardano.org> followed by text.
+
+Use \`Array<string>\` inline.
+
+\`\`\`\`html
+<div>literal tag</div>
+<!-- literal comment -->
+\`\`\`\`\`
+
+Visible after backtick fence.
+
+~~~html
+<span>tilde literal</span>
+~~~
+
+Visible after tilde fence.`);
+    expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
+  });
+
+  it("preserves many literals without placeholder collisions or quadratic restoration", async () => {
+    const literals = Array.from({ length: 40_000 }, (_, index) => `\`Array<Tag${index}>\``).join(" ");
+    const source = `# Many literals\n\n__CARDANO_MARKDOWN_LITERAL_0__ ${literals}\n\n<div>HIDDEN_INSTRUCTION_BULK_RAW</div>`;
+    const result = await extractContent({ mime: "text/markdown", bytes: encoder.encode(source) });
+
+    expect(result.text).toBe(`# Many literals\n\n__CARDANO_MARKDOWN_LITERAL_0__ ${literals}`);
+  }, 10_000);
+
   it("removes explicitly concealed HTML styles and semantic hidden classes", async () => {
     const hidden = [
       ["display: NONE !important", "HIDDEN_INSTRUCTION_DISPLAY"],
