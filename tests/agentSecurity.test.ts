@@ -100,6 +100,17 @@ describe("wallet secret detection", () => {
     expect(findWalletSecret(`\`\`\`json\n${escapedJson}\n\`\`\``)).toBe("signing-key");
   });
 
+  it("detects malformed raw and fenced signing-key envelopes with Unicode escapes", () => {
+    const malformedJson = String.raw`{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","cbor\u0048ex":"5820abcdef",}`;
+
+    expect(findWalletSecret(malformedJson)).toBe("signing-key");
+    expect(findWalletSecret(`\`\`\`json\n${malformedJson}\n\`\`\``)).toBe("signing-key");
+  });
+
+  it("does not classify ordinary malformed JSON as a signing key", () => {
+    expect(findWalletSecret('{"type":"ordinary","note":"not a wallet key",}')).toBeUndefined();
+  });
+
   it("fails closed when escaped signing-key JSON exceeds the depth limit", () => {
     let nested = String.raw`{"cbor\u0048ex":"5820abcdef"}`;
     for (let depth = 0; depth < 10; depth += 1) {

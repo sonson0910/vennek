@@ -18,6 +18,7 @@ const MAX_JSON_CANDIDATE_CHARS = 16_384;
 const MAX_JSON_CANDIDATES = 32;
 const MAX_JSON_DEPTH = 8;
 const MAX_JSON_NODES = 256;
+const MAX_JSON_FALLBACK_WORK = 16_384;
 // Global per-message checksum cap; exhaustion is classified as recovery-like.
 const MAX_MNEMONIC_VALIDATIONS = 64;
 const signingKeyTypeField = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;
@@ -51,6 +52,52 @@ interface JsonInspection {
 }
 
 type JsonCandidateResult = "found" | "clean" | "exhausted";
+
+function hasIndependentSigningKeyHints(input: string): boolean {
+  for (const match of input.matchAll(signingKeyTypeField)) {
+    const type = match[1]!.toLowerCase();
+    if (type.includes("signingkey") && type.includes("ed25519")) {
+      return keyMaterialField.test(input);
+    }
+  }
+  return false;
+}
+
+function decodeJsonUnicodeEscapes(input: string):
+  | { decoded: string; exhausted: false }
+  | { decoded?: undefined; exhausted: true } {
+  const decoded: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    if (index >= MAX_JSON_FALLBACK_WORK) return { exhausted: true };
+    const character = input[index]!;
+
+    if (inString && escaped) {
+      decoded.push(character);
+      escaped = false;
+      continue;
+    }
+
+    if (inString && character === "\\") {
+      const unicode = input.slice(index + 2, index + 6);
+      if (input[index + 1] === "u" && /^[0-9a-f]{4}$/i.test(unicode)) {
+        decoded.push(String.fromCharCode(Number.parseInt(unicode, 16)));
+        index += 5;
+        continue;
+      }
+      decoded.push("\\");
+      escaped = true;
+      continue;
+    }
+
+    if (character === '"') inString = !inString;
+    decoded.push(character);
+  }
+
+  return { decoded: decoded.join(""), exhausted: false };
+}
 
 function inspectJson(value: unknown, depth: number, inspection: JsonInspection): void {
   if (inspection.exhausted) return;
@@ -97,7 +144,9 @@ function inspectJsonCandidate(candidate: string): JsonCandidateResult {
   try {
     parsed = JSON.parse(candidate);
   } catch {
-    return "clean";
+    const fallback = decodeJsonUnicodeEscapes(candidate);
+    if (fallback.exhausted) return "exhausted";
+    return hasIndependentSigningKeyHints(fallback.decoded) ? "found" : "clean";
   }
 
   const inspection: JsonInspection = {
@@ -160,14 +209,7 @@ function hasParsedSigningKeyJson(input: string): boolean {
 
 function hasSigningKeyJson(input: string): boolean {
   if (hasParsedSigningKeyJson(input)) return true;
-
-  for (const match of input.matchAll(signingKeyTypeField)) {
-    const type = match[1]!.toLowerCase();
-    if (type.includes("signingkey") && type.includes("ed25519")) {
-      return keyMaterialField.test(input);
-    }
-  }
-  return false;
+  return hasIndependentSigningKeyHints(input);
 }
 
 function hasValidRecoveryPhrase(input: string): boolean {
