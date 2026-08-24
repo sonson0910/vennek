@@ -56,6 +56,22 @@ describe("wallet secret detection", () => {
     expect(findWalletSecret(candidate)).toBe("recovery-phrase");
   });
 
+  it("detects a valid mnemonic embedded in surrounding text and punctuation", () => {
+    const mnemonic = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
+    expect(findWalletSecret(`my recovery phrase is: ${mnemonic}. do not share`)).toBe(
+      "recovery-phrase",
+    );
+  });
+
+  it("detects signing-key JSON when type and material are far apart", () => {
+    const signingKey = JSON.stringify({
+      type: "PaymentSigningKeyShelley_ed25519",
+      description: "x".repeat(700),
+      cborHex: "5820abcdef",
+    });
+    expect(findWalletSecret(signingKey)).toBe("signing-key");
+  });
+
   it("does not flag blank or ordinary short text", () => {
     expect(findWalletSecret(" \t\n")).toBeUndefined();
     expect(findWalletSecret("please summarize this conversation for me")).toBeUndefined();

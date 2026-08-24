@@ -12,6 +12,7 @@
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "dependencies": {
+    "@scure/bip39": "^2.3.0",
     "@vennek/cardano-governance-skills": "0.1.0",
     "@vennek/shared": "0.1.0",
     "pg": "^8.16.0",
