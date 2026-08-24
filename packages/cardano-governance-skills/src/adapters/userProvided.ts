@@ -61,7 +61,8 @@ export async function fetchUserProvidedUrl(input: {
     throw new Error(`HTTP ${response.statusCode}`);
   }
 
-  const raw = await readIncomingMessageTextLimited(response, signal);
+  const { bytes } = await readResponseBytesLimited(response, MAX_FETCH_BYTES, ALLOWED_CONTENT_TYPES, signal);
+  const raw = new TextDecoder().decode(bytes);
   const title = extractTitle(raw) ?? response.url;
   const text = htmlToText(raw);
   if (text.length < 40) {
@@ -77,57 +78,190 @@ export async function fetchUserProvidedUrl(input: {
   });
 }
 
-export async function readResponseTextLimited(response: Response, maxBytes = MAX_FETCH_BYTES): Promise<string> {
+export type ReadResponseBytesResult = {
+  bytes: Uint8Array;
+  mime: string;
+};
+
+type BoundedResponse = Response | PublicHttpsResponse;
+
+export async function readResponseBytesLimited(
+  response: BoundedResponse,
+  maxBytes = MAX_FETCH_BYTES,
+  allowedContentTypes: readonly string[] = ALLOWED_CONTENT_TYPES,
+  signal?: AbortSignal
+): Promise<ReadResponseBytesResult> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     await cancelResponseBody(response);
     throw new Error("maxBytes must be a positive safe integer");
   }
+  try {
+    signal?.throwIfAborted();
+  } catch (error) {
+    await cancelResponseBody(response);
+    throw error;
+  }
+
   if (!response.body) {
+    await cancelResponseBody(response);
     throw new Error("Source response has no body");
   }
 
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const contentType = getResponseHeader(response, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   if (!contentType) {
     await cancelResponseBody(response);
     throw new Error("Missing content-type");
   }
-  if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
+  const allowed = new Set(allowedContentTypes.map((value) => value.split(";", 1)[0].trim().toLowerCase()));
+  if (!allowed.has(contentType)) {
     await cancelResponseBody(response);
     throw new Error(`Unsupported content-type: ${contentType}`);
   }
 
-  const contentLength = Number(response.headers.get("content-length"));
+  const contentEncoding = getResponseHeader(response, "content-encoding")
+    ?.split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (contentEncoding?.some((value) => value !== "identity")) {
+    await cancelResponseBody(response);
+    throw new Error(`Unsupported content-encoding: ${contentEncoding.join(", ")}`);
+  }
+
+  const contentLength = Number(getResponseHeader(response, "content-length"));
   if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
     await cancelResponseBody(response);
     throw new Error(`Source body too large: ${contentLength} bytes`);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  if (isWebResponse(response)) {
+    return {
+      bytes: await readWebResponseBytes(response, maxBytes, signal),
+      mime: contentType
+    };
+  }
+
+  return {
+    bytes: await readIncomingMessageBytes(response, maxBytes, signal),
+    mime: contentType
+  };
+}
+
+export async function readResponseTextLimited(
+  response: Response | PublicHttpsResponse,
+  maxBytes = MAX_FETCH_BYTES,
+  signal?: AbortSignal
+): Promise<string> {
+  const { bytes } = await readResponseBytesLimited(response, maxBytes, ALLOWED_CONTENT_TYPES, signal);
+  return new TextDecoder().decode(bytes);
+}
+
+function isWebResponse(response: BoundedResponse): response is Response {
+  return typeof (response as Response).headers?.get === "function";
+}
+
+function getResponseHeader(response: BoundedResponse, name: string): string | undefined {
+  if (isWebResponse(response)) {
+    return response.headers.get(name) ?? undefined;
+  }
+  const value = response.headers[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+async function readWebResponseBytes(response: Response, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+  const reader = response.body!.getReader();
+  const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  let text = "";
+  let canceled = false;
+  const cancel = async () => {
+    if (!canceled) {
+      canceled = true;
+      await cancelReader(reader);
+    }
+  };
+  const abort = () => {
+    void cancel();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     while (true) {
+      signal?.throwIfAborted();
       const { done, value } = await reader.read();
       if (done) {
         break;
       }
-      totalBytes += value.byteLength;
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      totalBytes += bytes.byteLength;
       if (totalBytes > maxBytes) {
-        await cancelReader(reader);
+        await cancel();
         throw new Error(`Source body too large: ${totalBytes} bytes`);
       }
-      text += decoder.decode(value, { stream: true });
+      chunks.push(bytes);
     }
-    return text + decoder.decode();
+    signal?.throwIfAborted();
+    return concatBytes(chunks, totalBytes);
+  } catch (error) {
+    await cancel();
+    throw error;
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
 }
 
-async function cancelResponseBody(response: Response): Promise<void> {
+async function readIncomingMessageBytes(
+  response: PublicHttpsResponse,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let canceled = false;
+  const cancel = () => {
+    if (!canceled) {
+      canceled = true;
+      response.cancel();
+    }
+  };
+  const abort = () => response.body.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+  signal?.addEventListener("abort", abort, { once: true });
   try {
-    await response.body?.cancel();
+    for await (const chunk of response.body) {
+      signal?.throwIfAborted();
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk as Uint8Array;
+      totalBytes += bytes.byteLength;
+      if (totalBytes > maxBytes) {
+        cancel();
+        throw new Error(`Source body too large: ${totalBytes} bytes`);
+      }
+      chunks.push(bytes);
+    }
+    signal?.throwIfAborted();
+    return concatBytes(chunks, totalBytes);
+  } catch (error) {
+    cancel();
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+function concatBytes(chunks: Uint8Array[], totalBytes: number): Uint8Array {
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function cancelResponseBody(response: BoundedResponse): Promise<void> {
+  try {
+    if (isWebResponse(response)) {
+      await response.body?.cancel();
+    } else {
+      response.cancel();
+    }
   } catch {
     // Preserve the validation or HTTP error when transport cleanup fails.
   }
@@ -296,55 +430,6 @@ export async function requestPublicHttps(input: {
       reject(error);
     }
   });
-}
-
-async function readIncomingMessageTextLimited(
-  response: PublicHttpsResponse,
-  signal: AbortSignal,
-  maxBytes = MAX_FETCH_BYTES
-): Promise<string> {
-  const rawContentType = response.headers["content-type"];
-  const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType)
-    ?.split(";", 1)[0]
-    ?.trim()
-    .toLowerCase() ?? "";
-  if (!contentType) {
-    response.cancel();
-    throw new Error("Missing content-type");
-  }
-  if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
-    response.cancel();
-    throw new Error(`Unsupported content-type: ${contentType}`);
-  }
-
-  const rawContentLength = response.headers["content-length"];
-  const contentLength = Number(Array.isArray(rawContentLength) ? rawContentLength[0] : rawContentLength);
-  if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
-    response.cancel();
-    throw new Error(`Source body too large: ${contentLength} bytes`);
-  }
-
-  signal.throwIfAborted();
-  const abort = () => response.body.destroy(signal.reason instanceof Error ? signal.reason : undefined);
-  signal.addEventListener("abort", abort, { once: true });
-  const decoder = new TextDecoder();
-  let totalBytes = 0;
-  let text = "";
-  try {
-    for await (const chunk of response.body) {
-      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk as Uint8Array;
-      totalBytes += bytes.byteLength;
-      if (totalBytes > maxBytes) {
-        response.cancel();
-        throw new Error(`Source body too large: ${totalBytes} bytes`);
-      }
-      text += decoder.decode(bytes, { stream: true });
-    }
-    signal.throwIfAborted();
-    return text + decoder.decode();
-  } finally {
-    signal.removeEventListener("abort", abort);
-  }
 }
 
 async function resolvePublicHttpsUrl(

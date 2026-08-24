@@ -11,6 +11,7 @@ import {
   isPrivateAddress,
   normalizeCatalystSnapshot,
   normalizeGovernanceSnapshot,
+  readResponseBytesLimited,
   readResponseTextLimited,
   requestPublicHttps,
   type PublicHttpsRequest
@@ -287,6 +288,51 @@ describe("adapters URL classification and fetch guards", () => {
     }), { headers: { "content-type": "text/plain; charset=utf-8" } });
 
     await expect(readResponseTextLimited(response, bytes.byteLength)).resolves.toBe("éclair");
+  });
+
+  it("returns bounded response bytes with normalized MIME", async () => {
+    const response = new Response(new Uint8Array([0, 1, 2]), {
+      headers: { "content-type": "application/json; charset=utf-8" }
+    });
+
+    await expect(readResponseBytesLimited(response, 3, ["application/json"])).resolves.toEqual({
+      bytes: new Uint8Array([0, 1, 2]),
+      mime: "application/json"
+    });
+  });
+
+  it("reads bytes from the pinned HTTPS response with the caller signal", async () => {
+    const controller = new AbortController();
+    const { request } = pinnedResponse({ "content-type": "text/plain" }, ["pinned body"]);
+    const response = await requestPublicHttps({
+      url: "https://8.8.8.8/source",
+      allowedDomains: ["8.8.8.8"],
+      signal: controller.signal,
+      lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      request
+    });
+
+    await expect(readResponseBytesLimited(response, 100, ["text/plain"], controller.signal)).resolves.toEqual({
+      bytes: new TextEncoder().encode("pinned body"),
+      mime: "text/plain"
+    });
+  });
+
+  it("rejects non-identity content encodings before reading", async () => {
+    let cancelCalled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+      }
+    }), {
+      headers: {
+        "content-type": "text/plain",
+        "content-encoding": "gzip"
+      }
+    });
+
+    await expect(readResponseBytesLimited(response, 10, ["text/plain"])).rejects.toThrow(/content-encoding/i);
+    expect(cancelCalled).toBe(true);
   });
 
   it("rejects responses without a body", async () => {

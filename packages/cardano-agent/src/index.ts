@@ -45,6 +45,9 @@ export type {
   TrustTier,
 } from "./knowledge/sourceRegistry.js";
 
+export { extractContent } from "./knowledge/extractContent.js";
+export type { ExtractContentInput, ExtractedContent } from "./knowledge/extractContent.js";
+
 export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
 export type {
   KnowledgeChunkInput,
