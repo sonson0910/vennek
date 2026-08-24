@@ -2,3 +2,8 @@ export const AGENT_PACKAGE_VERSION = "1";
 
 export { parseAgentConfig } from "./config.js";
 export type { AgentConfig } from "./config.js";
+
+export { decryptText, encryptText } from "./security/encryption.js";
+export type { EncryptedText } from "./security/encryption.js";
+export { findWalletSecret } from "./security/walletSecrets.js";
+export type { WalletSecretKind } from "./security/walletSecrets.js";
