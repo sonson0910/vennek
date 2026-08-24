@@ -65,6 +65,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(workerEnvironment?.VENNEK_MODEL_FAST).toBe("cardano-fast");
     expect(workerEnvironment?.VENNEK_MODEL_QUALITY).toBe("cardano-quality");
     expect(workerEnvironment?.VENNEK_MODEL_VERIFIER).toBe("cardano-verifier");
+    expect(workerEnvironment?.VENNEK_EMBEDDING_MODEL).toBe("cardano-embedding");
     for (const name of [
       "VENNEK_ENCRYPTION_KEY",
       "LITELLM_BASE_URL",
@@ -72,6 +73,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       "VENNEK_MODEL_FAST",
       "VENNEK_MODEL_QUALITY",
       "VENNEK_MODEL_VERIFIER",
+      "VENNEK_EMBEDDING_MODEL",
       "TELEGRAM_BOT_TOKEN",
     ]) {
       expect(webhookEnvironment?.[name]).toBeUndefined();
@@ -124,5 +126,19 @@ describe("PDF extractor verifier contract", () => {
     expect(verifier).not.toContain("process.env.PDF_EXTRACTOR_TOKEN ??");
     expect(verifier).toContain("pollAgentExtraction");
     expect(verifier).toContain("ENOTFOUND");
+  });
+});
+
+describe("LiteLLM embedding route contract", () => {
+  it("declares the Cardano embedding alias and its provider environment", () => {
+    const config = readFileSync("config/litellm.example.yaml", "utf8");
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const env = readFileSync(".env.example", "utf8");
+
+    expect(config).toContain("model_name: cardano-embedding");
+    expect(config).toContain("model: os.environ/OPENAI_EMBEDDING_MODEL");
+    expect(config).toContain("api_key: os.environ/OPENAI_API_KEY");
+    expect(env).toContain("OPENAI_EMBEDDING_MODEL=text-embedding-3-small");
+    expect(compose).toContain("OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}");
   });
 });

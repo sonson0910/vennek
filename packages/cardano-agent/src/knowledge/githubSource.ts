@@ -8,7 +8,8 @@ import {
   KnowledgeRepository,
   type GithubEndpoint,
   type GithubEndpointState,
-  type GithubEndpointStateUpdate
+  type GithubEndpointStateUpdate,
+  type RepositoryOperationOptions
 } from "./knowledgeRepository.js";
 import { extractContent } from "./extractContent.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry } from "./sourceRegistry.js";
@@ -17,6 +18,7 @@ const MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_GITHUB_README_BYTES = 4 * 1024 * 1024;
 const MAX_TOKEN_LENGTH = 1_024;
 const MAX_DEFER_MS = 24 * 60 * 60 * 1_000;
+const GITHUB_STATE_OPERATION_TIMEOUT_MS = 5_000;
 
 type GithubEndpointPlan = {
   endpoint: GithubEndpoint;
@@ -46,6 +48,7 @@ export type GithubSourceResult = {
   documents: GithubSourceDocument[];
   unchanged: number;
   deferredUntil?: Date;
+  commitState?: (options?: RepositoryOperationOptions) => Promise<boolean>;
 };
 
 type GithubResponseHeaders = Record<string, string | string[] | undefined>;
@@ -111,7 +114,15 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
     const retryAfter = parseRetryAfter(responseHeader(response.headers, "retry-after"), now);
     if (isRateLimited(response.statusCode, rate.remaining, retryAfter)) {
       response.cancel();
-      const deferred = await deferEndpoint(input.repository, validated.id, plan.endpoint, state, response.headers, now);
+      const deferred = await deferEndpoint(
+        input.repository,
+        validated.id,
+        plan.endpoint,
+        state,
+        response.headers,
+        now,
+        { signal: input.signal, timeoutMs: GITHUB_STATE_OPERATION_TIMEOUT_MS },
+      );
       return {
         documents: [],
         unchanged: 0,
@@ -157,11 +168,10 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
       nextState: successState(state, response.headers, now)
     });
   }
-  // ponytail: R3 commits after extraction; Task 4 moves this after durable indexing.
-  if (stateUpdates.length > 0) {
-    await input.repository.compareAndSetGithubEndpointStates(stateUpdates);
-  }
-  return { documents, unchanged };
+  const commitState = stateUpdates.length === 0
+    ? undefined
+    : async (options?: RepositoryOperationOptions) => input.repository.compareAndSetGithubEndpointStates(stateUpdates, options);
+  return { documents, unchanged, ...(commitState ? { commitState } : {}) };
 }
 
 function buildEndpointPlan(entry: Extract<SourceRegistryEntry, { kind: "github" }>): GithubEndpointPlan[] {
@@ -238,6 +248,7 @@ async function deferEndpoint(
   expected: GithubEndpointState | null,
   headers: GithubResponseHeaders,
   now: Date,
+  options: RepositoryOperationOptions,
 ): Promise<Date> {
   const rate = rateLimitInfo(headers, now);
   const retryAt = parseRetryAfter(responseHeader(headers, "retry-after"), now);
@@ -252,9 +263,9 @@ async function deferEndpoint(
   if (resetAt) next.rateLimitResetAt = resetAt.toISOString();
   else delete next.rateLimitResetAt;
   if (rate.remaining !== undefined) next.rateLimitRemaining = rate.remaining;
-  const persisted = await repository.compareAndSetGithubEndpointState(sourceId, endpoint, expected, next);
+  const persisted = await repository.compareAndSetGithubEndpointState(sourceId, endpoint, expected, next, options);
   if (!persisted) {
-    const current = await repository.getGithubEndpointState(sourceId, endpoint);
+    const current = await repository.getGithubEndpointState(sourceId, endpoint, options);
     const currentRetryAt = futureRetryAt(current, now);
     if (currentRetryAt) return currentRetryAt;
     throw new Error("GitHub rate-limit state concurrency conflict.");

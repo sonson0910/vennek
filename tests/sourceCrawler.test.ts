@@ -330,7 +330,8 @@ describe("bounded source crawler", () => {
       "/repos/test-org/test-repo/tags?per_page=100&page=1": json([])
     }).request;
 
-    const result = await crawlSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
+    const repository = fakeRepository();
+    const result = await crawlSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents.map((document) => document.title)).toEqual([
       "test-org GitHub repository",
@@ -339,6 +340,10 @@ describe("bounded source crawler", () => {
       "test-org GitHub tags"
     ]);
     expect(result.documents.every((document) => document.sourceId === "github-source" && document.retrievedAt.getTime() === now.getTime())).toBe(true);
+    expect(result.commitState).toBeTypeOf("function");
+    expect(repository.compareAndSetGithubEndpointStates).not.toHaveBeenCalled();
+    await expect(result.commitState?.()).resolves.toBe(true);
+    expect(repository.compareAndSetGithubEndpointStates).toHaveBeenCalledTimes(1);
   });
 });
 

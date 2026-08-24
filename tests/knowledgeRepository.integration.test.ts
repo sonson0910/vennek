@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { KnowledgeRepository, createDatabase, type SourceRegistryEntry } from "@vennek/cardano-agent";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -133,7 +133,7 @@ describe("knowledge repository validation", () => {
     const insertError = new Error("insert failed");
     const release = vi.fn();
     const query = vi.fn(async (sql: string) => {
-      if (sql === "BEGIN" || sql.startsWith("DELETE")) return { rows: [] };
+      if (sql === "BEGIN" || sql.startsWith("SELECT id FROM") || sql.startsWith("DELETE")) return { rows: [], rowCount: 1 };
       if (sql === "ROLLBACK") throw new Error("rollback failed");
       throw insertError;
     });
@@ -150,6 +150,7 @@ describe("knowledge repository validation", () => {
     }])).rejects.toBe(insertError);
     expect(query.mock.calls.map(([sql]) => sql)).toEqual([
       "BEGIN",
+      expect.stringMatching(/^SELECT id FROM source_versions/),
       expect.stringMatching(/^DELETE/),
       expect.stringMatching(/^INSERT/),
       "ROLLBACK",
@@ -175,6 +176,17 @@ describe("knowledge repository validation", () => {
     })).rejects.toThrow(/etag/i);
     await expect(repository.getGithubEndpointState("test-github", "unknown" as never)).rejects.toThrow(/endpoint/i);
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates complete chunk queries before issuing SQL", async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const repository = new KnowledgeRepository({ query } as unknown as Pool);
+
+    await expect(repository.hasCompleteChunks("0", "test-model", ["a".repeat(64)])).rejects.toThrow(/version ID/i);
+    await expect(repository.hasCompleteChunks("1", "", ["a".repeat(64)])).rejects.toThrow(/embedding model/i);
+    await expect(repository.hasCompleteChunks("1", "test-model", [])).rejects.toThrow(/hash/i);
+    await expect(repository.hasCompleteChunks("1", "test-model", ["A".repeat(64)])).rejects.toThrow(/hash/i);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("upserts a validated source without overwriting fetch lifecycle columns", async () => {
@@ -385,6 +397,344 @@ describe.skipIf(!databaseUrl)("knowledge repository", () => {
       ).catch(() => undefined);
       await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
       await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
+  it("reports only an exact ordered chunk set for an embedding model", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-cardano-complete-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://docs.cardano.org/test/${sourceId}`;
+    const firstHash = "b".repeat(64);
+    const secondHash = "c".repeat(64);
+
+    try {
+      await db.query(
+        `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
+         VALUES ($1, $2, $3, $4::jsonb)`,
+        [sourceId, "Cardano", "official", JSON.stringify({ id: sourceId })],
+      );
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "About Cardano",
+        content: "Cardano source body",
+        contentHash: "a".repeat(64),
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      });
+      await repository.replaceChunks(version.id, [{
+        ordinal: 0,
+        heading: "Ouroboros",
+        content: "Proof of stake.",
+        contentHash: firstHash,
+        embeddingModel: "test-model",
+        embedding: embedding(),
+      }, {
+        ordinal: 1,
+        heading: "Governance",
+        content: "Cardano governance.",
+        contentHash: secondHash,
+        embeddingModel: "test-model",
+        embedding: embedding(),
+      }]);
+
+      await expect(repository.hasCompleteChunks(version.id, "test-model", [firstHash, secondHash])).resolves.toBe(true);
+      await expect(repository.hasCompleteChunks(version.id, "test-model", [secondHash, firstHash])).resolves.toBe(false);
+      await expect(repository.hasCompleteChunks(version.id, "other-model", [firstHash, secondHash])).resolves.toBe(false);
+      await expect(repository.hasCompleteChunks(version.id, "test-model", [firstHash])).resolves.toBe(false);
+    } finally {
+      await db.query(
+        `DELETE FROM knowledge_chunks
+         WHERE version_id IN (SELECT id FROM source_versions WHERE source_id = $1)`,
+        [sourceId],
+      ).catch(() => undefined);
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
+  it("serializes concurrent replacements for one version under a row lock", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-cardano-concurrent-replace-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://docs.cardano.org/test/${sourceId}`;
+    const firstHash = "d".repeat(64);
+    const secondHash = "e".repeat(64);
+
+    try {
+      await db.query(
+        `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
+         VALUES ($1, $2, $3, $4::jsonb)`,
+        [sourceId, "Cardano", "official", JSON.stringify({ id: sourceId })],
+      );
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Concurrent Cardano version",
+        content: "Concurrent source body",
+        contentHash: "f".repeat(64),
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      });
+      const makeChunk = (contentHash: string, content: string) => [{
+        ordinal: 0,
+        heading: "Concurrent",
+        content,
+        contentHash,
+        embeddingModel: "test-model",
+        embedding: embedding(),
+      }];
+
+      await expect(Promise.all([
+        repository.replaceChunks(version.id, makeChunk(firstHash, "First complete set.")),
+        repository.replaceChunks(version.id, makeChunk(secondHash, "Second complete set.")),
+      ])).resolves.toHaveLength(2);
+      const rows = await db.query<{ content_hash: string; content: string }>(
+        `SELECT content_hash, content FROM knowledge_chunks WHERE version_id = $1 ORDER BY ordinal`,
+        [version.id],
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect([firstHash, secondHash]).toContain(rows.rows[0]?.content_hash);
+      expect(["First complete set.", "Second complete set."]).toContain(rows.rows[0]?.content);
+    } finally {
+      await db.query(`DELETE FROM knowledge_chunks WHERE version_id IN (SELECT id FROM source_versions WHERE source_id = $1)`, [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
+  it("bounds replacement while another transaction holds the version lock", async () => {
+    const db = createDatabase(databaseUrl!);
+    const blockerDb = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-cardano-replace-timeout-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://docs.cardano.org/test/${sourceId}`;
+    const makeChunk = (contentHash: string) => [{
+      ordinal: 0,
+      heading: "Timeout",
+      content: "Bounded replacement.",
+      contentHash,
+      embeddingModel: "test-model",
+      embedding: embedding(),
+    }];
+    let blocker: PoolClient | undefined;
+
+    try {
+      await db.query("INSERT INTO knowledge_sources (id, owner, trust_tier, registry) VALUES ($1, $2, $3, $4::jsonb)", [
+        sourceId, "Cardano", "official", JSON.stringify({ id: sourceId }),
+      ]);
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Replacement timeout",
+        content: "A source body.",
+        contentHash: "a".repeat(64),
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      });
+      blocker = await blockerDb.connect();
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM source_versions WHERE id = $1 FOR UPDATE", [version.id]);
+
+      await expect(repository.replaceChunks(version.id, makeChunk("b".repeat(64)), { timeoutMs: 100 }))
+        .rejects.toThrow(/timed out/i);
+      const untouched = await db.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM knowledge_chunks WHERE version_id = $1",
+        [version.id],
+      );
+      expect(untouched.rows[0]?.count).toBe("0");
+
+      await blocker.query("ROLLBACK");
+      await expect(repository.replaceChunks(version.id, makeChunk("b".repeat(64)))).resolves.toBeUndefined();
+      await expect(db.query("SELECT 1")).resolves.toBeDefined();
+    } finally {
+      await blocker?.query("ROLLBACK").catch(() => undefined);
+      blocker?.release();
+      await db.query("DELETE FROM knowledge_chunks WHERE version_id IN (SELECT id FROM source_versions WHERE source_id = $1)", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await blockerDb.end();
+      await db.end();
+    }
+  });
+
+  it("bounds staged endpoint CAS while another transaction holds the source lock", async () => {
+    const db = createDatabase(databaseUrl!);
+    const blockerDb = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-github-cas-timeout-${process.pid}-${Date.now()}`;
+    let blocker: PoolClient | undefined;
+
+    try {
+      await db.query("INSERT INTO knowledge_sources (id, owner, trust_tier, registry, fetch_state) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)", [
+        sourceId,
+        "Cardano",
+        "official",
+        JSON.stringify({ ...githubEntry, id: sourceId }),
+        JSON.stringify({ repository: { etag: '"old"' } }),
+      ]);
+      const expected = await repository.getGithubEndpointState(sourceId, "repository");
+      blocker = await blockerDb.connect();
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM knowledge_sources WHERE id = $1 FOR UPDATE", [sourceId]);
+
+      await expect(repository.compareAndSetGithubEndpointStates([{
+        sourceId,
+        endpoint: "repository",
+        expectedState: expected,
+        nextState: { etag: '"new"' },
+      }], { timeoutMs: 100 })).rejects.toThrow(/timed out/i);
+      await expect(repository.getGithubEndpointState(sourceId, "repository")).resolves.toEqual(expected);
+
+      await blocker.query("ROLLBACK");
+      await expect(repository.compareAndSetGithubEndpointStates([{
+        sourceId,
+        endpoint: "repository",
+        expectedState: expected,
+        nextState: { etag: '"new"' },
+      }])).resolves.toBe(true);
+      await expect(db.query("SELECT 1")).resolves.toBeDefined();
+    } finally {
+      await blocker?.query("ROLLBACK").catch(() => undefined);
+      blocker?.release();
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await blockerDb.end();
+      await db.end();
+    }
+  });
+
+  it("bounds immediate single-endpoint CAS while another transaction holds the source lock", async () => {
+    const db = createDatabase(databaseUrl!);
+    const blockerDb = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-github-single-cas-timeout-${process.pid}-${Date.now()}`;
+    let blocker: PoolClient | undefined;
+
+    try {
+      await db.query("INSERT INTO knowledge_sources (id, owner, trust_tier, registry, fetch_state) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)", [
+        sourceId,
+        "Cardano",
+        "official",
+        JSON.stringify({ ...githubEntry, id: sourceId }),
+        JSON.stringify({ repository: { etag: '"old"' } }),
+      ]);
+      const expected = await repository.getGithubEndpointState(sourceId, "repository");
+      blocker = await blockerDb.connect();
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM knowledge_sources WHERE id = $1 FOR UPDATE", [sourceId]);
+
+      await expect(repository.compareAndSetGithubEndpointState(
+        sourceId,
+        "repository",
+        expected,
+        { etag: '"new"' },
+        { timeoutMs: 100 },
+      )).rejects.toThrow(/timed out/i);
+      await expect(repository.getGithubEndpointState(sourceId, "repository")).resolves.toEqual(expected);
+
+      await blocker.query("ROLLBACK");
+      await expect(repository.compareAndSetGithubEndpointState(
+        sourceId,
+        "repository",
+        expected,
+        { etag: '"new"' },
+      )).resolves.toBe(true);
+      await expect(db.query("SELECT 1")).resolves.toBeDefined();
+    } finally {
+      await blocker?.query("ROLLBACK").catch(() => undefined);
+      blocker?.release();
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await blockerDb.end();
+      await db.end();
+    }
+  });
+
+  it("bounds storeVersion while a conflicting source version insert is uncommitted", async () => {
+    const db = createDatabase(databaseUrl!);
+    const blockerDb = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-cardano-store-timeout-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://docs.cardano.org/test/${sourceId}`;
+    const contentHash = "a".repeat(64);
+    let blocker: PoolClient | undefined;
+
+    try {
+      await db.query("INSERT INTO knowledge_sources (id, owner, trust_tier, registry) VALUES ($1, $2, $3, $4::jsonb)", [
+        sourceId, "Cardano", "official", JSON.stringify({ id: sourceId }),
+      ]);
+      blocker = await blockerDb.connect();
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "INSERT INTO source_versions (source_id, canonical_url, title, content, content_hash, retrieved_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [sourceId, canonicalUrl, "Blocked version", "Blocked body", contentHash, new Date("2026-08-24T00:00:00Z")],
+      );
+
+      await expect(repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Blocked version",
+        content: "Blocked body",
+        contentHash,
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      }, { timeoutMs: 100 })).rejects.toThrow(/timed out/i);
+
+      await blocker.query("ROLLBACK");
+      await expect(repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Stored version",
+        content: "Stored body",
+        contentHash,
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      })).resolves.toMatchObject({ id: expect.any(String) });
+      await expect(db.query("SELECT 1")).resolves.toBeDefined();
+    } finally {
+      await blocker?.query("ROLLBACK").catch(() => undefined);
+      blocker?.release();
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await blockerDb.end();
+      await db.end();
+    }
+  });
+
+  it("bounds completeness reads while the chunk table is locked", async () => {
+    const db = createDatabase(databaseUrl!);
+    const blockerDb = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-cardano-read-timeout-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://docs.cardano.org/test/${sourceId}`;
+    let blocker: PoolClient | undefined;
+
+    try {
+      await db.query("INSERT INTO knowledge_sources (id, owner, trust_tier, registry) VALUES ($1, $2, $3, $4::jsonb)", [
+        sourceId, "Cardano", "official", JSON.stringify({ id: sourceId }),
+      ]);
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Read timeout",
+        content: "Read body",
+        contentHash: "b".repeat(64),
+        retrievedAt: new Date("2026-08-24T00:00:00Z"),
+      });
+      blocker = await blockerDb.connect();
+      await blocker.query("BEGIN");
+      await blocker.query("LOCK TABLE knowledge_chunks IN ACCESS EXCLUSIVE MODE");
+
+      await expect(repository.hasCompleteChunks(version.id, "test-model", ["c".repeat(64)], { timeoutMs: 100 }))
+        .rejects.toThrow(/timed out/i);
+
+      await blocker.query("ROLLBACK");
+      await expect(repository.hasCompleteChunks(version.id, "test-model", ["c".repeat(64)])).resolves.toBe(false);
+      await expect(db.query("SELECT 1")).resolves.toBeDefined();
+    } finally {
+      await blocker?.query("ROLLBACK").catch(() => undefined);
+      blocker?.release();
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await blockerDb.end();
       await db.end();
     }
   });

@@ -9,6 +9,7 @@ const validEnvironment = {
   VENNEK_MODEL_FAST: "cardano-fast",
   VENNEK_MODEL_QUALITY: "cardano-quality",
   VENNEK_MODEL_VERIFIER: "cardano-verifier",
+  VENNEK_EMBEDDING_MODEL: "cardano-embedding",
 };
 
 describe("parseAgentConfig", () => {
@@ -24,6 +25,7 @@ describe("parseAgentConfig", () => {
         fast: validEnvironment.VENNEK_MODEL_FAST,
         quality: validEnvironment.VENNEK_MODEL_QUALITY,
         verifier: validEnvironment.VENNEK_MODEL_VERIFIER,
+        embedding: validEnvironment.VENNEK_EMBEDDING_MODEL,
       },
     });
     expect(config.encryptionKey.length).toBe(32);
@@ -66,6 +68,11 @@ describe("parseAgentConfig", () => {
     expect(() =>
       parseAgentConfig({ ...validEnvironment, LITELLM_API_KEY: " \t" }),
     ).toThrow(/LITELLM_API_KEY is required/);
+  });
+
+  it("requires an embedding model", () => {
+    const { VENNEK_EMBEDDING_MODEL: _embeddingModel, ...withoutEmbeddingModel } = validEnvironment;
+    expect(() => parseAgentConfig(withoutEmbeddingModel)).toThrow(/VENNEK_EMBEDDING_MODEL is required/);
   });
 
   it("rejects non-http(s) LiteLLM URLs", () => {

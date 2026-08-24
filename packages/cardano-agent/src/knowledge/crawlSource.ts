@@ -9,7 +9,7 @@ import {
 import { extractContent } from "./extractContent.js";
 import type { PdfExtractor } from "./extractContent.js";
 import { fetchGithubSource } from "./githubSource.js";
-import { KnowledgeRepository } from "./knowledgeRepository.js";
+import { KnowledgeRepository, type RepositoryOperationOptions } from "./knowledgeRepository.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry, type TrustTier } from "./sourceRegistry.js";
 
 const MAX_REQUESTS = 500;
@@ -52,6 +52,7 @@ export type CrawlSourceResult = {
   documents: CrawledDocument[];
   unchanged: number;
   deferredUntil?: Date;
+  commitState?: (options?: RepositoryOperationOptions) => Promise<boolean>;
 };
 
 export type CrawlResponse = {
@@ -136,7 +137,12 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
         retrievedAt
       } satisfies CrawledDocument;
     });
-    return { documents, unchanged: github.unchanged, ...(github.deferredUntil ? { deferredUntil: github.deferredUntil } : {}) };
+    return {
+      documents,
+      unchanged: github.unchanged,
+      ...(github.deferredUntil ? { deferredUntil: github.deferredUntil } : {}),
+      ...(github.commitState ? { commitState: github.commitState } : {}),
+    };
   }
 
   await input.repository.ensureSource(entry);

@@ -35,6 +35,10 @@ model_list:
     litellm_params:
       model: os.environ/GEMINI_VERIFIER_MODEL
       api_key: os.environ/GEMINI_API_KEY
+  - model_name: cardano-embedding
+    litellm_params:
+      model: os.environ/OPENAI_EMBEDDING_MODEL
+      api_key: os.environ/OPENAI_API_KEY
 
 router_settings:
   num_retries: 1

@@ -85,7 +85,9 @@ describe("fixed GitHub source retrieval", () => {
       }
     }));
     const fake = fakeRepository();
-    await fetchGithubSource(input({ repository: fake.repository, request: firstRequest }));
+    const first = await fetchGithubSource(input({ repository: fake.repository, request: firstRequest }));
+    expect(fake.states.size).toBe(0);
+    await expect(first.commitState?.()).resolves.toBe(true);
 
     const secondCalls: string[] = [];
     const secondOptions: Array<Record<string, unknown>> = [];
@@ -103,6 +105,8 @@ describe("fixed GitHub source retrieval", () => {
     expect(second.unchanged).toBe(4);
     expect(second.documents).toHaveLength(0);
     expect(secondOptions[0]?.headers).toMatchObject({ "if-none-match": '"v1"' });
+    expect(fake.states.get("repository")).toMatchObject({ etag: '"v1"' });
+    await expect(second.commitState?.()).resolves.toBe(true);
     expect(fake.states.get("repository")).toMatchObject({
       etag: '"v2"',
       rateLimitRemaining: 9,
@@ -110,7 +114,8 @@ describe("fixed GitHub source retrieval", () => {
     });
 
     fake.forceCasConflict = true;
-    await fetchGithubSource(input({ entry: organizationEntry, repository: fake.repository, request: responseRequest([], () => ({ payload: {} })) }));
+    const conflicted = await fetchGithubSource(input({ entry: organizationEntry, repository: fake.repository, request: responseRequest([], () => ({ payload: {} })) }));
+    await expect(conflicted.commitState?.()).resolves.toBe(false);
     expect(fake.repository.compareAndSetGithubEndpointStates).toHaveBeenCalled();
   });
 
@@ -126,6 +131,13 @@ describe("fixed GitHub source retrieval", () => {
     expect(calls).toHaveLength(1);
     expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:02:00.000Z"));
     expect((fake.states.get("repository") as GithubEndpointState).retryAt).toBe(result.deferredUntil?.toISOString());
+    expect(fake.repository.compareAndSetGithubEndpointState).toHaveBeenCalledWith(
+      "github-test-repo",
+      "repository",
+      null,
+      expect.any(Object),
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 5_000 }),
+    );
 
     const noRequest = vi.fn() as unknown as PublicHttpsRequest;
     const deferred = await fetchGithubSource(input({ repository: fake.repository, request: noRequest }));

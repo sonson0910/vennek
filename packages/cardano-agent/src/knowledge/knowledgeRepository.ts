@@ -25,6 +25,12 @@ export type GithubEndpointStateUpdate = {
   nextState: GithubEndpointState | null;
 };
 
+export type RepositoryOperationOptions = {
+  signal?: AbortSignal;
+  deadlineAt?: number;
+  timeoutMs?: number;
+};
+
 export type StoreVersionInput = {
   sourceId: string;
   canonicalUrl: string;
@@ -60,8 +66,8 @@ function assertValidDate(value: Date, field: string): void {
   }
 }
 
-function assertContentHash(value: string, field: string): void {
-  if (!HASH_PATTERN.test(value)) {
+function assertContentHash(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !HASH_PATTERN.test(value)) {
     throw new Error(`${field} must be a lowercase 64-hex hash.`);
   }
 }
@@ -206,6 +212,85 @@ function serializeEndpointState(value: GithubEndpointState | null): string {
   return JSON.stringify(value);
 }
 
+function remainingOperationMs(options: RepositoryOperationOptions | undefined): number | undefined {
+  if (!options) return undefined;
+  const limits: number[] = [];
+  if (options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs)) limits.push(options.timeoutMs);
+  if (options.deadlineAt !== undefined && Number.isFinite(options.deadlineAt)) limits.push(options.deadlineAt - Date.now());
+  if (limits.length === 0) return options.signal ? 5_000 : undefined;
+  return Math.min(...limits);
+}
+
+function ensureOperationActive(options: RepositoryOperationOptions | undefined): void {
+  if (options?.signal?.aborted) throw new Error("Knowledge repository operation aborted.");
+  const remaining = remainingOperationMs(options);
+  if (remaining !== undefined && remaining <= 0) throw new Error("Knowledge repository operation timed out.");
+}
+
+function operationExpired(options: RepositoryOperationOptions | undefined): boolean {
+  if (options?.signal?.aborted) return true;
+  const remaining = remainingOperationMs(options);
+  return remaining !== undefined && remaining <= 0;
+}
+
+function isDatabaseTimeout(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return code === "55P03" || code === "57014";
+}
+
+function operationError(error: unknown, options: RepositoryOperationOptions | undefined): Error {
+  if (options?.signal?.aborted) return new Error("Knowledge repository operation aborted.");
+  if (operationExpired(options) || isDatabaseTimeout(error)) return new Error("Knowledge repository operation timed out.");
+  return toError(error);
+}
+
+async function configureTransactionTimeout(client: PoolClient, options: RepositoryOperationOptions | undefined): Promise<void> {
+  const remaining = remainingOperationMs(options);
+  if (remaining === undefined) return;
+  const timeoutMs = Math.max(1, Math.min(5_000, Math.floor(remaining)));
+  await client.query(
+    "SELECT set_config($1, $2, true), set_config($3, $4, true)",
+    ["lock_timeout", `${timeoutMs}ms`, "statement_timeout", `${timeoutMs}ms`],
+  );
+}
+
+async function runBoundedTransaction<T>(
+  db: Pool,
+  options: RepositoryOperationOptions,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await db.connect();
+  let inTransaction = false;
+  let releaseError: Error | undefined;
+  try {
+    ensureOperationActive(options);
+    await client.query("BEGIN");
+    inTransaction = true;
+    await configureTransactionTimeout(client, options);
+    const result = await operation(client);
+    ensureOperationActive(options);
+    await client.query("COMMIT");
+    inTransaction = false;
+    ensureOperationActive(options);
+    return result;
+  } catch (error) {
+    if (inTransaction) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        releaseError = toError(rollbackError);
+      }
+    } else {
+      releaseError = toError(error);
+    }
+    throw operationError(error, options);
+  } finally {
+    client.release(releaseError);
+  }
+}
+
 export class KnowledgeRepository {
   constructor(private readonly db: Pool) {}
 
@@ -222,9 +307,25 @@ export class KnowledgeRepository {
     );
   }
 
-  async getGithubEndpointState(sourceId: string, endpoint: GithubEndpoint): Promise<GithubEndpointState | null> {
+  async getGithubEndpointState(
+    sourceId: string,
+    endpoint: GithubEndpoint,
+    options?: RepositoryOperationOptions,
+  ): Promise<GithubEndpointState | null> {
     assertSourceId(sourceId);
     assertGithubEndpoint(endpoint);
+    if (options) {
+      const state = await runBoundedTransaction(this.db, options, async (client) => {
+        ensureOperationActive(options);
+        const result = await client.query<{ state: unknown }>(
+          `SELECT fetch_state -> $2 AS state FROM knowledge_sources WHERE id = $1`,
+          [sourceId, endpoint],
+        );
+        ensureOperationActive(options);
+        return result.rows[0]?.state;
+      });
+      return state === null || state === undefined ? null : validateGithubEndpointState(state);
+    }
     const result = await this.db.query<{ state: unknown }>(
       `SELECT fetch_state -> $2 AS state FROM knowledge_sources WHERE id = $1`,
       [sourceId, endpoint],
@@ -238,11 +339,20 @@ export class KnowledgeRepository {
     endpoint: GithubEndpoint,
     expectedState: GithubEndpointState | null,
     nextState: GithubEndpointState | null,
+    options?: RepositoryOperationOptions,
   ): Promise<boolean> {
     assertSourceId(sourceId);
     assertGithubEndpoint(endpoint);
     if (expectedState !== null) validateGithubEndpointState(expectedState, "Expected endpoint state");
     if (nextState !== null) validateGithubEndpointState(nextState, "Next endpoint state");
+    if (options) {
+      return this.compareAndSetGithubEndpointStates([{
+        sourceId,
+        endpoint,
+        expectedState,
+        nextState,
+      }], options);
+    }
     const result = await this.db.query(
       `UPDATE knowledge_sources
        SET fetch_state = jsonb_set(COALESCE(fetch_state, '{}'::jsonb), ARRAY[$2]::text[], $3::jsonb, true)
@@ -253,7 +363,10 @@ export class KnowledgeRepository {
     return (result.rowCount ?? 0) === 1;
   }
 
-  async compareAndSetGithubEndpointStates(updates: GithubEndpointStateUpdate[]): Promise<boolean> {
+  async compareAndSetGithubEndpointStates(
+    updates: GithubEndpointStateUpdate[],
+    options?: RepositoryOperationOptions,
+  ): Promise<boolean> {
     if (!Array.isArray(updates)) throw new Error("GitHub endpoint updates must be an array.");
     if (updates.length > GITHUB_ENDPOINTS.length) {
       throw new Error(`GitHub endpoint updates must contain at most ${GITHUB_ENDPOINTS.length} entries.`);
@@ -293,9 +406,12 @@ export class KnowledgeRepository {
       }
     };
     try {
+      ensureOperationActive(options);
       await client.query("BEGIN");
       inTransaction = true;
+      await configureTransactionTimeout(client, options);
       for (const update of updates) {
+        ensureOperationActive(options);
         const result = await client.query(
           `UPDATE knowledge_sources
            SET fetch_state = jsonb_set(COALESCE(fetch_state, '{}'::jsonb), ARRAY[$2]::text[], $3::jsonb, true)
@@ -306,23 +422,56 @@ export class KnowledgeRepository {
         if ((result.rowCount ?? 0) !== 1) {
           await rollback();
           release();
+          ensureOperationActive(options);
           return false;
         }
       }
+      ensureOperationActive(options);
       await client.query("COMMIT");
       inTransaction = false;
+      ensureOperationActive(options);
       return true;
     } catch (error) {
       if (inTransaction) await rollback();
       else releaseError = toError(error);
-      throw error;
+      throw operationError(error, options);
     } finally {
       release();
     }
   }
 
-  async storeVersion(input: StoreVersionInput): Promise<KnowledgeVersion> {
+  async storeVersion(input: StoreVersionInput, options?: RepositoryOperationOptions): Promise<KnowledgeVersion> {
     validateVersion(input);
+    if (options) {
+      return runBoundedTransaction(this.db, options, async (client) => {
+        ensureOperationActive(options);
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO source_versions
+           (source_id, canonical_url, title, content, content_hash, published_at, retrieved_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (source_id, canonical_url, content_hash) DO NOTHING
+           RETURNING id::text AS id`,
+          [
+            input.sourceId,
+            input.canonicalUrl,
+            input.title,
+            input.content,
+            input.contentHash,
+            input.publishedAt ?? null,
+            input.retrievedAt,
+          ],
+        );
+        ensureOperationActive(options);
+        const id = inserted.rows[0]?.id ?? (await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM source_versions
+           WHERE source_id = $1 AND canonical_url = $2 AND content_hash = $3`,
+          [input.sourceId, input.canonicalUrl, input.contentHash],
+        )).rows[0]?.id;
+        if (!id) throw new Error("Could not store knowledge version.");
+        ensureOperationActive(options);
+        return { id };
+      });
+    }
     const inserted = await this.db.query<{ id: string }>(
       `INSERT INTO source_versions
        (source_id, canonical_url, title, content, content_hash, published_at, retrieved_at)
@@ -348,16 +497,72 @@ export class KnowledgeRepository {
     return { id };
   }
 
-  async replaceChunks(versionId: string | number, chunks: KnowledgeChunkInput[]): Promise<void> {
+  async hasCompleteChunks(
+    versionId: string | number,
+    embeddingModel: string,
+    expectedContentHashes: string[],
+    options?: RepositoryOperationOptions,
+  ): Promise<boolean> {
+    const normalizedVersionId = normalizeVersionId(versionId);
+    assertNonEmpty(embeddingModel, "Embedding model");
+    if (!Array.isArray(expectedContentHashes) || expectedContentHashes.length === 0) {
+      throw new Error("Expected content hashes must not be empty.");
+    }
+    for (const hash of expectedContentHashes) assertContentHash(hash, "Expected content hash");
+
+    if (options) {
+      return runBoundedTransaction(this.db, options, async (client) => {
+        ensureOperationActive(options);
+        const result = await client.query<{ ordinal: number; content_hash: string }>(
+          `SELECT ordinal, content_hash
+           FROM knowledge_chunks
+           WHERE version_id = $1 AND embedding_model = $2
+           ORDER BY ordinal`,
+          [normalizedVersionId, embeddingModel],
+        );
+        ensureOperationActive(options);
+        if (result.rows.length !== expectedContentHashes.length) return false;
+        return result.rows.every((row, index) => row.ordinal === index && row.content_hash === expectedContentHashes[index]);
+      });
+    }
+
+    const result = await this.db.query<{ ordinal: number; content_hash: string }>(
+      `SELECT ordinal, content_hash
+       FROM knowledge_chunks
+       WHERE version_id = $1 AND embedding_model = $2
+       ORDER BY ordinal`,
+      [normalizedVersionId, embeddingModel],
+    );
+    if (result.rows.length !== expectedContentHashes.length) return false;
+    return result.rows.every((row, index) => row.ordinal === index && row.content_hash === expectedContentHashes[index]);
+  }
+
+  async replaceChunks(
+    versionId: string | number,
+    chunks: KnowledgeChunkInput[],
+    options?: RepositoryOperationOptions,
+  ): Promise<void> {
     const normalizedVersionId = validateChunks(versionId, chunks);
     const client: PoolClient = await this.db.connect();
     let inTransaction = false;
     let releaseError: Error | undefined;
     try {
+      ensureOperationActive(options);
       await client.query("BEGIN");
       inTransaction = true;
+      await configureTransactionTimeout(client, options);
+      ensureOperationActive(options);
+      const version = await client.query<{ id: string }>(
+        "SELECT id FROM source_versions WHERE id = $1 FOR UPDATE",
+        [normalizedVersionId],
+      );
+      if ((version.rowCount ?? version.rows.length) !== 1) {
+        throw new Error("Knowledge version was not found.");
+      }
+      ensureOperationActive(options);
       await client.query("DELETE FROM knowledge_chunks WHERE version_id = $1", [normalizedVersionId]);
       for (const chunk of chunks) {
+        ensureOperationActive(options);
         await client.query(
           `INSERT INTO knowledge_chunks
            (version_id, ordinal, heading, content, content_hash, embedding_model, embedding)
@@ -373,8 +578,10 @@ export class KnowledgeRepository {
           ],
         );
       }
+      ensureOperationActive(options);
       await client.query("COMMIT");
       inTransaction = false;
+      ensureOperationActive(options);
     } catch (error) {
       if (inTransaction) {
         try {
@@ -385,7 +592,7 @@ export class KnowledgeRepository {
       } else {
         releaseError = error instanceof Error ? error : new Error("Knowledge transaction failed.");
       }
-      throw error;
+      throw operationError(error, options);
     } finally {
       client.release(releaseError);
     }

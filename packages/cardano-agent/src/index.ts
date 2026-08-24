@@ -19,6 +19,8 @@ export type {
   CompletionInput,
   CompletionOutput,
 } from "./llm/liteLlmClient.js";
+export { EmbeddingClient } from "./llm/embeddingClient.js";
+export type { EmbeddingResult } from "./llm/embeddingClient.js";
 export { selectModelProfile } from "./llm/modelRouter.js";
 export type { ModelProfile } from "./llm/modelRouter.js";
 
@@ -47,6 +49,8 @@ export type {
 
 export { extractContent } from "./knowledge/extractContent.js";
 export type { ExtractContentInput, ExtractedContent, PdfExtractor } from "./knowledge/extractContent.js";
+export { chunkDocument } from "./knowledge/chunkDocument.js";
+export type { DocumentChunk } from "./knowledge/chunkDocument.js";
 export { PdfExtractorClient, createPdfExtractorClient } from "./knowledge/pdfExtractorClient.js";
 export type { PdfExtractorClientConfig } from "./knowledge/pdfExtractorClient.js";
 export {
@@ -71,6 +75,16 @@ export type {
   CrawlSourceResult,
   CrawledDocument,
 } from "./knowledge/crawlSource.js";
+export { indexDocument, indexCrawlResult } from "./knowledge/indexDocument.js";
+export type {
+  EmbeddingProvider,
+  IndexCrawlInput,
+  IndexCrawlSummary,
+  IndexDocumentDependencies,
+  IndexDocumentInput,
+  IndexDocumentRepository,
+  IndexedDocument,
+} from "./knowledge/indexDocument.js";
 
 export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
 export type {
@@ -79,5 +93,6 @@ export type {
   GithubEndpointStateUpdate,
   KnowledgeChunkInput,
   KnowledgeVersion,
+  RepositoryOperationOptions,
   StoreVersionInput,
 } from "./knowledge/knowledgeRepository.js";

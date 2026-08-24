@@ -7,6 +7,7 @@ export interface AgentConfig {
     fast: string;
     quality: string;
     verifier: string;
+    embedding: string;
   };
 }
 
@@ -60,6 +61,7 @@ export function parseAgentConfig(env: Environment): AgentConfig {
       fast: required("VENNEK_MODEL_FAST"),
       quality: required("VENNEK_MODEL_QUALITY"),
       verifier: required("VENNEK_MODEL_VERIFIER"),
+      embedding: required("VENNEK_EMBEDDING_MODEL"),
     },
   };
 }
