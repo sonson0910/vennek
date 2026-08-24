@@ -357,7 +357,7 @@ CREATE INDEX conversation_messages_user_created_idx
   ON conversation_messages (telegram_user_id, created_at DESC);
 ```
 
-Remove the first inline `PRIMARY KEY` from `id` when using the composite partition key. In the same migration, create previous/current/next monthly partitions with a PostgreSQL `DO` block using `format('%I', partition_name)` and literal date bounds. `ensureConversationPartitions(db, now)` creates the next two monthly partitions under an advisory lock; call it on webhook and worker startup and schedule it daily through pg-boss.
+Remove the first inline `PRIMARY KEY` from `id` when using the composite partition key. In the same migration, create previous/current/next monthly partitions with a PostgreSQL `DO` block using `format('%I', partition_name)` and literal date bounds. `ensureConversationPartitions(db, now)` creates the next two monthly partitions under an advisory lock. Task 4 exports and verifies this helper; Task 8 wires it into the webhook/worker runtimes and schedules it daily after those runtimes and their pg-boss instance exist.
 
 Create the initial local PostgreSQL service now so the migration test is runnable:
 
@@ -658,6 +658,8 @@ Delete `parseAllowedChatIds` and `isAllowedChat`. Remove `allowedChatIds` from `
 - [ ] **Step 4: Implement the worker and runtime modes**
 
 `processAgentJob` calls the injected answer service once and the existing Telegram delivery path once. `--worker` starts pg-boss work for `telegram-answer`. `--webhook` starts a Node HTTP server whose only application route is `POST /telegram/webhook`; `--poll` remains available for local development and routes the same question service synchronously.
+
+Webhook and worker startup must call `ensureConversationPartitions` before accepting work. The worker's pg-boss instance must also schedule it as a daily maintenance job so future monthly partitions are created automatically.
 
 Required environment values in webhook/worker mode are `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and all values parsed by `parseAgentConfig`. Health mode must not require external credentials.
 
