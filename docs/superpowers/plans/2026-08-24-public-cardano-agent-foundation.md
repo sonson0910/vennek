@@ -647,6 +647,8 @@ it("answers a queued update once and persists both accepted messages", async () 
 });
 ```
 
+Add a second worker test proving a `walletSecretDetected` queue marker sends only the fixed wallet-security warning and never calls the answer service. The original secret text must not exist in the job.
+
 - [ ] **Step 2: Confirm changed expectations fail**
 
 Run: `npm test -- --run tests/accessControl.test.ts tests/pollingRuntime.test.ts tests/agentWorker.test.ts`
@@ -659,7 +661,7 @@ Delete `parseAllowedChatIds` and `isAllowedChat`. Remove `allowedChatIds` from `
 
 - [ ] **Step 4: Implement the worker and runtime modes**
 
-`processAgentJob` calls the injected answer service once and the existing Telegram delivery path once. `--worker` starts pg-boss work for `telegram-answer`. `--webhook` starts a Node HTTP server whose only application route is `POST /telegram/webhook`; `--poll` remains available for local development and routes the same question service synchronously.
+`processAgentJob` calls the injected answer service once and the existing Telegram delivery path once. A wallet-secret marker bypasses the answer/persistence/provider path and sends only the fixed security warning. `--worker` starts pg-boss work for `telegram-answer`. `--webhook` starts a Node HTTP server whose only application route is `POST /telegram/webhook`; `--poll` remains available for local development and routes the same question service synchronously. Production webhook startup must create its handler options through `createWebhookOptions` so secret-strength validation cannot be bypassed.
 
 Webhook and worker startup must call `ensureConversationPartitions` before accepting work. The worker's pg-boss instance must also schedule it as a daily maintenance job so future monthly partitions are created automatically.
 
