@@ -624,6 +624,7 @@ git commit -m "feat: queue authenticated Telegram webhooks"
 
 **Files:**
 - Create: `packages/cardano-agent/migrations/001_transport_admission.sql`
+- Create: `packages/cardano-agent/migrations/001_worker_idempotency.sql`
 - Create: `apps/telegram-bot/src/agentWorker.ts`
 - Modify: `apps/telegram-bot/src/main.ts`
 - Modify: `apps/telegram-bot/src/pollingRuntime.ts`
@@ -651,6 +652,8 @@ it("answers a queued update once and persists both accepted messages", async () 
 ```
 
 Add a second worker test proving a `walletSecretDetected` queue marker sends only the fixed wallet-security warning and never calls the answer service. The original secret text must not exist in the job.
+
+Conversation persistence must be idempotent by Telegram `update_id` and role so a worker retry after a partial persistence failure neither duplicates the user message nor loses the original first-interaction retention notice.
 
 - [ ] **Step 2: Confirm changed expectations fail**
 
