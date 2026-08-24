@@ -34,7 +34,7 @@ describe("Telegram polling runtime", () => {
     await runPolling({ api, answer, maxCycles: 1, retryDelayMs: 0 });
 
     expect(answer).toHaveBeenCalledOnce();
-    expect(answer).toHaveBeenCalledWith({ telegramUserId: "42", telegramChatId: "99", text: "hello" });
+    expect(answer).toHaveBeenCalledWith({ telegramUserId: "42", telegramChatId: "99", text: "hello", updateId: 1 });
     expect(api.sentMessages).toHaveLength(1);
   });
 
@@ -66,7 +66,7 @@ describe("Telegram polling runtime", () => {
     await runTelegramPolling({ api, answer, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
 
     expect(answer).toHaveBeenCalledOnce();
-    expect(readTelegramOffset(root)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(readTelegramOffset(root)).toBe(Number.MAX_SAFE_INTEGER + 1);
     expect(api.sentMessages).toHaveLength(1);
   });
 

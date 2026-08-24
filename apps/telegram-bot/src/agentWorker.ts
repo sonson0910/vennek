@@ -5,7 +5,9 @@ import { WALLET_SECRET_JOB_MARKER, type TelegramAnswerJob } from "./agentQueue.j
 export const WALLET_SECRET_WARNING =
   "Do not send wallet secrets such as a seed phrase or private key here. Please remove them from the conversation.";
 
-export type AgentAnswer = (input: QuestionInput) => Promise<string>;
+type AgentAnswerInput = QuestionInput & { updateId?: number };
+
+export type AgentAnswer = (input: AgentAnswerInput) => Promise<string>;
 
 export type AgentJobSender = (
   telegramChatId: string,
@@ -30,6 +32,7 @@ export async function processAgentJob(
     telegramUserId: job.telegramUserId,
     telegramChatId: job.telegramChatId,
     text: job.text,
+    updateId: job.updateId,
   });
   const delivery = await dependencies.send(job.telegramChatId, response);
   return delivery && "delivered" in delivery ? delivery : { delivered: true, attempts: 1 };
@@ -37,16 +40,19 @@ export async function processAgentJob(
 
 export function createAgentAnswer(repository: ConversationRepository): AgentAnswer {
   return async (input) => {
+    const { updateId, telegramUserId, telegramChatId, text } = input;
+    const question: QuestionInput = { telegramUserId, telegramChatId, text };
+    const persistenceInput = updateId === undefined ? question : { ...question, telegramUpdateId: updateId };
     let persisted = false;
-    const answer = await answerQuestion(input, {
+    const answer = await answerQuestion(question, {
       persist: async () => {
-        const result = await repository.append({ ...input, role: "user" });
+        const result = await repository.append({ ...persistenceInput, role: "user" });
         persisted = true;
         return result;
       },
       retrieve: async () => [],
     });
-    if (persisted) await repository.append({ ...input, role: "assistant", text: answer });
+    if (persisted) await repository.append({ ...persistenceInput, role: "assistant", text: answer });
     return answer;
   };
 }

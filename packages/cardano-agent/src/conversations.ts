@@ -32,9 +32,13 @@ export class ConversationRepository {
     telegramChatId: string;
     role: ConversationRole;
     text: string;
+    telegramUpdateId?: number;
   }): Promise<{ firstInteraction: boolean }> {
     if (findWalletSecret(input.text)) {
       throw new Error("Conversation text contains a wallet secret.");
+    }
+    if (input.telegramUpdateId !== undefined && (!Number.isSafeInteger(input.telegramUpdateId) || input.telegramUpdateId <= 0)) {
+      throw new Error("Telegram update id is invalid.");
     }
 
     const client: PoolClient = await this.db.connect();
@@ -42,6 +46,35 @@ export class ConversationRepository {
     try {
       await client.query("BEGIN");
       inTransaction = true;
+      const user = await client.query(
+        "INSERT INTO telegram_users (telegram_user_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING telegram_user_id",
+        [input.telegramUserId],
+      );
+      const firstInteraction = user.rows.length > 0;
+      if (input.telegramUpdateId !== undefined) {
+        const reservation = await client.query<{ first_interaction: boolean }>(
+          `INSERT INTO conversation_message_idempotency
+           (telegram_update_id, role, first_interaction)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (telegram_update_id, role) DO NOTHING
+           RETURNING first_interaction`,
+          [input.telegramUpdateId, input.role, firstInteraction],
+        );
+        if (reservation.rows.length === 0) {
+          const existing = await client.query<{ first_interaction: boolean }>(
+            `SELECT first_interaction
+             FROM conversation_message_idempotency
+             WHERE telegram_update_id = $1 AND role = $2`,
+            [input.telegramUpdateId, input.role],
+          );
+          const original = existing.rows[0]?.first_interaction;
+          if (original === undefined) throw new Error("Could not read conversation idempotency reservation.");
+          await client.query("COMMIT");
+          inTransaction = false;
+          return { firstInteraction: original };
+        }
+      }
+
       const sequence = await client.query<{ id: string }>(
         "SELECT nextval(pg_get_serial_sequence('conversation_messages', 'id'))::text AS id",
       );
@@ -59,10 +92,6 @@ export class ConversationRepository {
           id,
           createdAtIso,
         ),
-      );
-      const user = await client.query(
-        "INSERT INTO telegram_users (telegram_user_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING telegram_user_id",
-        [input.telegramUserId],
       );
       await client.query(
         `INSERT INTO conversation_messages
@@ -82,7 +111,7 @@ export class ConversationRepository {
       );
       await client.query("COMMIT");
       inTransaction = false;
-      return { firstInteraction: user.rows.length > 0 };
+      return { firstInteraction };
     } catch (error) {
       if (inTransaction) {
         try {

@@ -537,7 +537,7 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
     const boss = new PgBoss(databaseUrl!);
     const updateId = 8_000_000_000_000_000 + randomInt(0, 100_000_000);
     const telegramUserId = `integration-${process.pid}`;
-    const telegramChatId = "22";
+    const telegramChatId = `integration-chat-${process.pid}-${Date.now()}-${randomInt(0, 100_000)}`;
     const job = { updateId, telegramUserId, telegramChatId, text: "integration" };
     const queue = new PgBossAgentQueue(boss, db);
     let jobId: string | undefined;

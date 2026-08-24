@@ -30,7 +30,7 @@ export async function main(): Promise<void> {
   if (args.includes("--webhook")) return runWebhook();
   if (args.includes("--poll")) return runPoll();
   const input = args.join(" ").trim() || "/proposal catalyst-review-workbench";
-  const { config } = agentRuntimeConfig();
+  const config = parseAgentConfig(process.env);
   const agent = await createConfiguredAgentAnswer(config);
   try {
     console.log(await agent.answer(input, runtimeContext()));
@@ -42,13 +42,13 @@ export async function main(): Promise<void> {
 async function runPoll(): Promise<void> {
   const { config, token } = agentRuntimeConfig();
   const db = createDatabase(config.databaseUrl);
-  await ensureConversationPartitions(db);
-  const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
   const controller = new AbortController();
   const stop = (): void => controller.abort();
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   try {
+    await ensureConversationPartitions(db);
+    const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
     await runPolling({
       api: createTelegramApi(token, controller.signal),
       answer: agentAnswer,
@@ -177,12 +177,17 @@ async function createConfiguredAgentAnswer(config: AgentConfig): Promise<{
   close(): Promise<void>;
 }> {
   const db = createDatabase(config.databaseUrl);
-  await ensureConversationPartitions(db);
-  const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
-  return {
-    answer: (input) => agentAnswer({ telegramUserId: "1", telegramChatId: "1", text: input }),
-    close: () => db.end(),
-  };
+  try {
+    await ensureConversationPartitions(db);
+    const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
+    return {
+      answer: (input) => agentAnswer({ telegramUserId: "1", telegramChatId: "1", text: input }),
+      close: () => db.end(),
+    };
+  } catch (error) {
+    await db.end().catch(() => undefined);
+    throw error;
+  }
 }
 
 function agentRuntimeConfig(): { config: AgentConfig; token: string } {

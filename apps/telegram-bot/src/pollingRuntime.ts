@@ -27,7 +27,7 @@ export type RuntimeLogger = (level: RuntimeLogLevel, event: string, fields?: Rec
 export type PollingOptions = {
   api: TelegramApi;
   context?: CommandContext;
-  answer: (input: { telegramUserId: string; telegramChatId: string; text: string }) => Promise<string>;
+  answer: (input: { telegramUserId: string; telegramChatId: string; text: string; updateId?: number }) => Promise<string>;
   logger?: RuntimeLogger;
   signal?: AbortSignal;
   pollTimeoutSeconds?: number;
@@ -127,6 +127,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             telegramUserId: userId,
             telegramChatId: chatId,
             text,
+            updateId,
           });
           const delivery = await deliverMessage(options.api, {
             chat_id: chatId,
@@ -265,7 +266,7 @@ function validUpdateId(value: unknown): number | undefined {
 }
 
 function nextOffsetFor(updateId: number): number {
-  return updateId === Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : updateId + 1;
+  return updateId + 1;
 }
 
 function canonicalTelegramIdentifier(value: unknown, user: boolean): string | undefined {

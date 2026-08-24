@@ -18,6 +18,7 @@ describe("agent worker", () => {
     );
 
     expect(answer).toHaveBeenCalledOnce();
+    expect(answer).toHaveBeenCalledWith({ telegramUserId: "1", telegramChatId: "2", text: "xin chào", updateId: 7 });
     expect(send).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledWith("2", "Xin chào Cardano");
   });
@@ -86,5 +87,25 @@ describe("agent worker", () => {
 
     await expect(answer({ telegramUserId: "1", telegramChatId: "2", text: "xin chào" })).resolves.toMatch(/safely|xử lý/i);
     expect(append).toHaveBeenCalledOnce();
+  });
+
+  it("retries a failed assistant append without duplicating the user or losing first-use notice", async () => {
+    const append = vi.fn()
+      .mockResolvedValueOnce({ firstInteraction: true })
+      .mockRejectedValueOnce(new Error("assistant insert failed"))
+      .mockResolvedValueOnce({ firstInteraction: true })
+      .mockResolvedValueOnce({ firstInteraction: true });
+    const answer = createAgentAnswer({ append } as never);
+    const input = { telegramUserId: "1", telegramChatId: "2", text: "xin chào", updateId: 100 };
+
+    await expect(answer(input)).rejects.toThrow("assistant insert failed");
+    const retry = await answer(input);
+
+    expect(retry).toContain("Vennek lưu lịch sử hội thoại vô thời hạn");
+    expect(append).toHaveBeenCalledTimes(4);
+    expect(append).toHaveBeenNthCalledWith(1, expect.objectContaining({ role: "user", telegramUpdateId: 100 }));
+    expect(append).toHaveBeenNthCalledWith(2, expect.objectContaining({ role: "assistant", telegramUpdateId: 100 }));
+    expect(append).toHaveBeenNthCalledWith(3, expect.objectContaining({ role: "user", telegramUpdateId: 100 }));
+    expect(append).toHaveBeenNthCalledWith(4, expect.objectContaining({ role: "assistant", telegramUpdateId: 100 }));
   });
 });

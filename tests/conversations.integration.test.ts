@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { randomInt } from "node:crypto";
 import {
   ConversationRepository,
   createDatabase,
@@ -35,6 +36,83 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
       expect(first).toEqual({ firstInteraction: true });
       expect(second).toEqual({ firstInteraction: false });
     } finally {
+      await db.end();
+    }
+  });
+
+  it("deduplicates a repeated update and preserves its original first-interaction result", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new ConversationRepository(db, Buffer.alloc(32, 3));
+    const telegramUserId = `dedupe-${process.pid}-${Date.now()}`;
+    const telegramUpdateId = 8_200_000_000_000_000 + randomInt(0, 100_000);
+
+    try {
+      const first = await repository.append({
+        telegramUserId,
+        telegramChatId: "dedupe-chat",
+        role: "user",
+        text: "first",
+        telegramUpdateId,
+      });
+      const duplicate = await repository.append({
+        telegramUserId,
+        telegramChatId: "dedupe-chat",
+        role: "user",
+        text: "duplicate",
+        telegramUpdateId,
+      });
+
+      expect(first).toEqual({ firstInteraction: true });
+      expect(duplicate).toEqual(first);
+      const assistant = await repository.append({
+        telegramUserId,
+        telegramChatId: "dedupe-chat",
+        role: "assistant",
+        text: "answer",
+        telegramUpdateId,
+      });
+      const assistantDuplicate = await repository.append({
+        telegramUserId,
+        telegramChatId: "dedupe-chat",
+        role: "assistant",
+        text: "duplicate answer",
+        telegramUpdateId,
+      });
+
+      expect(assistant).toEqual({ firstInteraction: false });
+      expect(assistantDuplicate).toEqual(assistant);
+      expect(await repository.recent(telegramUserId, 10)).toEqual([
+        { role: "user", text: "first" },
+        { role: "assistant", text: "answer" },
+      ]);
+    } finally {
+      await db.query("DELETE FROM conversation_message_idempotency WHERE telegram_update_id = $1", [telegramUpdateId]).catch(() => undefined);
+      await db.query("DELETE FROM telegram_users WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
+  it("inserts one message for concurrent duplicate update-role appends", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new ConversationRepository(db, Buffer.alloc(32, 3));
+    const telegramUserId = `dedupe-concurrent-${process.pid}-${Date.now()}`;
+    const telegramUpdateId = 8_300_000_000_000_000 + randomInt(0, 100_000);
+
+    try {
+      const results = await Promise.all([
+        repository.append({ telegramUserId, telegramChatId: "dedupe-chat", role: "user", text: "one", telegramUpdateId }),
+        repository.append({ telegramUserId, telegramChatId: "dedupe-chat", role: "user", text: "two", telegramUpdateId }),
+      ]);
+      const count = await db.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM conversation_messages WHERE telegram_user_id = $1",
+        [telegramUserId],
+      );
+
+      expect(results).toEqual([{ firstInteraction: true }, { firstInteraction: true }]);
+      expect(count.rows[0]?.count).toBe("1");
+    } finally {
+      await db.query("DELETE FROM conversation_message_idempotency WHERE telegram_update_id = $1", [telegramUpdateId]).catch(() => undefined);
+      await db.query("DELETE FROM telegram_users WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
       await db.end();
     }
   });
