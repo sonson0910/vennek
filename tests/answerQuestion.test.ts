@@ -37,6 +37,60 @@ describe("natural-language question service", () => {
     expect(persist).toHaveBeenCalledWith(input("How does Ouroboros work?"));
   });
 
+  it("accepts signed 64-bit boundary Telegram identifiers without coercion", async () => {
+    const persist = vi.fn(async () => undefined);
+    const boundary = {
+      telegramUserId: "9223372036854775807",
+      telegramChatId: "-9223372036854775808",
+      text: "What is Cardano?",
+    };
+
+    await expect(answerQuestion(boundary, {
+      persist,
+      retrieve: async () => [],
+    })).resolves.toMatch(/reliable sources/i);
+
+    expect(persist).toHaveBeenCalledWith(boundary);
+  });
+
+  it.each([
+    ["zero user", "0", "1"],
+    ["negative user", "-1", "1"],
+    ["zero chat", "1", "0"],
+    ["whitespace", "1", " 2"],
+    ["plus sign", "1", "+2"],
+    ["exponent", "1", "1e3"],
+    ["word", "one", "2"],
+    ["user overflow", "9223372036854775808", "2"],
+    ["chat overflow", "1", "9223372036854775808"],
+    ["negative chat overflow", "1", "-9223372036854775809"],
+  ])("rejects %s before persistence", async (_case, telegramUserId, telegramChatId) => {
+    const persist = vi.fn();
+
+    await expect(answerQuestion({ telegramUserId, telegramChatId, text: "What is Cardano?" }, {
+      persist,
+      retrieve: async () => [],
+    })).resolves.toMatch(/can't process|xử lý/i);
+
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a mnemonic split across Telegram identifiers and text", async () => {
+    const persist = vi.fn();
+    const phrase = {
+      telegramUserId: "abandon abandon abandon abandon",
+      telegramChatId: "abandon abandon abandon abandon",
+      text: "abandon abandon abandon about",
+    };
+
+    await expect(answerQuestion(phrase, {
+      persist,
+      retrieve: async () => [],
+    })).resolves.toMatch(/can't process|xử lý/i);
+
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it("prepends the retention notice only when persistence marks first use", async () => {
     const answer = await answerQuestion(input("Xin chào!"), {
       persist: async () => ({ firstInteraction: true }),
@@ -202,7 +256,7 @@ describe("natural-language question service", () => {
       { ...input("What is Cardano?"), telegramChatId: phrase },
       { persist, retrieve: async () => [] },
     );
-    expect(blocked).toMatch(/wallet secret|không gửi/i);
+    expect(blocked).toMatch(/can't process|xử lý/i);
     expect(persist).not.toHaveBeenCalled();
   });
 });
