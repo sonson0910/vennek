@@ -1,9 +1,22 @@
 import type { Pool, PoolClient } from "pg";
+import { validateSourceRegistry, type SourceRegistryEntry } from "./sourceRegistry.js";
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const VECTOR_SIZE = 1_536;
 const PG_BIGINT_MAX = "9223372036854775807";
 const PG_INTEGER_MAX = 2_147_483_647;
+const MAX_ENDPOINT_STATE_BYTES = 4_096;
+
+export const GITHUB_ENDPOINTS = ["organization", "repository", "readme", "releases", "tags"] as const;
+export type GithubEndpoint = typeof GITHUB_ENDPOINTS[number];
+
+export type GithubEndpointState = {
+  etag?: string;
+  checkedAt?: string;
+  retryAt?: string;
+  rateLimitResetAt?: string;
+  rateLimitRemaining?: number;
+};
 
 export type StoreVersionInput = {
   sourceId: string;
@@ -128,8 +141,110 @@ function serializeEmbedding(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
+function assertSourceId(value: string): void {
+  assertNonEmpty(value, "Source ID");
+}
+
+function assertGithubEndpoint(value: string): asserts value is GithubEndpoint {
+  if (!(GITHUB_ENDPOINTS as readonly string[]).includes(value)) {
+    throw new Error(`Unknown GitHub endpoint: ${value}`);
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function assertIsoDate(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string") throw new Error(`${field} must be an ISO timestamp.`);
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()) || date.toISOString() !== value) {
+    throw new Error(`${field} must be an ISO timestamp.`);
+  }
+}
+
+function validateGithubEndpointState(value: unknown, field = "Endpoint state"): GithubEndpointState {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${field} must be a plain JSON object.`);
+  }
+  const allowed = new Set(["etag", "checkedAt", "retryAt", "rateLimitResetAt", "rateLimitRemaining"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`${field} contains unknown field: ${key}`);
+  }
+  if ("etag" in value) {
+    if (typeof value.etag !== "string" || value.etag.length === 0 || value.etag.length > 256 || !/^[\x20-\x7e]+$/.test(value.etag)) {
+      throw new Error(`${field} etag is invalid.`);
+    }
+  }
+  if ("checkedAt" in value) assertIsoDate(value.checkedAt, `${field} checkedAt`);
+  if ("retryAt" in value) assertIsoDate(value.retryAt, `${field} retryAt`);
+  if ("rateLimitResetAt" in value) assertIsoDate(value.rateLimitResetAt, `${field} rateLimitResetAt`);
+  if ("rateLimitRemaining" in value) {
+    const remaining = value.rateLimitRemaining;
+    if (typeof remaining !== "number" || !Number.isSafeInteger(remaining) || remaining < 0) {
+      throw new Error(`${field} rateLimitRemaining is invalid.`);
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_ENDPOINT_STATE_BYTES) {
+    throw new Error(`${field} is too large.`);
+  }
+  return value as GithubEndpointState;
+}
+
+function serializeEndpointState(value: GithubEndpointState | null): string {
+  if (value === null) return "null";
+  validateGithubEndpointState(value);
+  return JSON.stringify(value);
+}
+
 export class KnowledgeRepository {
   constructor(private readonly db: Pool) {}
+
+  async ensureSource(entry: SourceRegistryEntry): Promise<void> {
+    const [validated] = validateSourceRegistry([entry]);
+    await this.db.query(
+      `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (id) DO UPDATE SET
+         owner = EXCLUDED.owner,
+         trust_tier = EXCLUDED.trust_tier,
+         registry = EXCLUDED.registry`,
+      [validated.id, validated.owner, validated.trustTier, JSON.stringify(validated)],
+    );
+  }
+
+  async getGithubEndpointState(sourceId: string, endpoint: GithubEndpoint): Promise<GithubEndpointState | null> {
+    assertSourceId(sourceId);
+    assertGithubEndpoint(endpoint);
+    const result = await this.db.query<{ state: unknown }>(
+      `SELECT fetch_state -> $2 AS state FROM knowledge_sources WHERE id = $1`,
+      [sourceId, endpoint],
+    );
+    const state = result.rows[0]?.state;
+    return state === null || state === undefined ? null : validateGithubEndpointState(state);
+  }
+
+  async compareAndSetGithubEndpointState(
+    sourceId: string,
+    endpoint: GithubEndpoint,
+    expectedState: GithubEndpointState | null,
+    nextState: GithubEndpointState | null,
+  ): Promise<boolean> {
+    assertSourceId(sourceId);
+    assertGithubEndpoint(endpoint);
+    if (expectedState !== null) validateGithubEndpointState(expectedState, "Expected endpoint state");
+    if (nextState !== null) validateGithubEndpointState(nextState, "Next endpoint state");
+    const result = await this.db.query(
+      `UPDATE knowledge_sources
+       SET fetch_state = jsonb_set(COALESCE(fetch_state, '{}'::jsonb), ARRAY[$2]::text[], $3::jsonb, true)
+       WHERE id = $1
+         AND COALESCE(fetch_state -> $2, 'null'::jsonb) = $4::jsonb`,
+      [sourceId, endpoint, serializeEndpointState(nextState), serializeEndpointState(expectedState)],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
 
   async storeVersion(input: StoreVersionInput): Promise<KnowledgeVersion> {
     validateVersion(input);

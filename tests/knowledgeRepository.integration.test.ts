@@ -1,9 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { KnowledgeRepository, createDatabase } from "@vennek/cardano-agent";
+import { KnowledgeRepository, createDatabase, type SourceRegistryEntry } from "@vennek/cardano-agent";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const embedding = () => Array.from({ length: 1_536 }, (_, index) => index / 1_536);
+const githubEntry: SourceRegistryEntry = {
+  id: "test-github",
+  owner: "Test Org",
+  trustTier: "official",
+  kind: "github",
+  url: "https://github.com/test-org/test-repo",
+  allowedDomains: ["github.com", "raw.githubusercontent.com", "api.github.com"],
+  github: { owner: "test-org", repository: "test-repo" },
+  topics: ["developer"],
+  networks: ["mainnet"],
+  refresh: "daily"
+};
 
 describe("knowledge repository validation", () => {
   it("rejects invalid versions before touching the pool", async () => {
@@ -144,9 +156,80 @@ describe("knowledge repository validation", () => {
     ]);
     expect(release).toHaveBeenCalledWith(insertError);
   });
+
+  it("validates endpoint state before issuing CAS queries", async () => {
+    const query = vi.fn(async () => ({ rowCount: 1, rows: [] }));
+    const repository = new KnowledgeRepository({ query } as unknown as Pool);
+    const now = "2026-08-24T00:00:00.000Z";
+    const state = { etag: 'W/"safe"', checkedAt: now, rateLimitRemaining: 10 };
+
+    await expect(repository.compareAndSetGithubEndpointState("test-github", "repository", null, state)).resolves.toBe(true);
+    expect(query).toHaveBeenCalledWith(expect.stringMatching(/jsonb_set/), [
+      "test-github",
+      "repository",
+      JSON.stringify(state),
+      "null"
+    ]);
+    await expect(repository.compareAndSetGithubEndpointState("test-github", "repository", null, {
+      etag: "bad\nvalue"
+    })).rejects.toThrow(/etag/i);
+    await expect(repository.getGithubEndpointState("test-github", "unknown" as never)).rejects.toThrow(/endpoint/i);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("upserts a validated source without overwriting fetch lifecycle columns", async () => {
+    const query = vi.fn(async () => ({ rowCount: 1, rows: [] }));
+    const repository = new KnowledgeRepository({ query } as unknown as Pool);
+
+    await repository.ensureSource(githubEntry);
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toMatch(/ON CONFLICT \(id\)/);
+    expect(params.slice(0, 3)).toEqual([githubEntry.id, githubEntry.owner, githubEntry.trustTier]);
+    expect(JSON.parse(params[3] as string)).toEqual(githubEntry);
+    await expect(repository.ensureSource({ ...githubEntry, url: "http://evil.test" } as SourceRegistryEntry)).rejects.toThrow(/https/i);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe.skipIf(!databaseUrl)("knowledge repository", () => {
+  it("preserves source lifecycle fields and rejects a stale endpoint CAS", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-github-${process.pid}-${Date.now()}`;
+    const entry = { ...githubEntry, id: sourceId };
+    const checkedAt = "2026-08-24T00:00:00.000Z";
+
+    try {
+      await db.query(
+        `INSERT INTO knowledge_sources (id, owner, trust_tier, registry, fetch_state, last_success_at, last_error_code)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+        [sourceId, "Old owner", "community", "{}", JSON.stringify({ repository: { etag: '"old"' } }), checkedAt, "old-error"],
+      );
+      await repository.ensureSource(entry);
+      const preserved = await db.query<{ owner: string; trust_tier: string; fetch_state: unknown; last_success_at: Date; last_error_code: string }>(
+        `SELECT owner, trust_tier, fetch_state, last_success_at, last_error_code
+         FROM knowledge_sources WHERE id = $1`,
+        [sourceId],
+      );
+      expect(preserved.rows[0]).toMatchObject({
+        owner: entry.owner,
+        trust_tier: entry.trustTier,
+        fetch_state: { repository: { etag: '"old"' } },
+        last_error_code: "old-error"
+      });
+      expect(preserved.rows[0]?.last_success_at.toISOString()).toBe(checkedAt);
+
+      const expected = await repository.getGithubEndpointState(sourceId, "repository");
+      const next = { ...expected, checkedAt };
+      await expect(repository.compareAndSetGithubEndpointState(sourceId, "repository", expected, next)).resolves.toBe(true);
+      await expect(repository.compareAndSetGithubEndpointState(sourceId, "repository", expected, { etag: '"stale"' })).resolves.toBe(false);
+      await expect(repository.getGithubEndpointState(sourceId, "repository")).resolves.toEqual(next);
+    } finally {
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
   it("deduplicates versions and replaces chunks atomically", async () => {
     const db = createDatabase(databaseUrl!);
     const repository = new KnowledgeRepository(db);

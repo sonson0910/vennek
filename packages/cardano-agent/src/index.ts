@@ -48,8 +48,17 @@ export type {
 export { extractContent } from "./knowledge/extractContent.js";
 export type { ExtractContentInput, ExtractedContent } from "./knowledge/extractContent.js";
 
+export { fetchGithubSource } from "./knowledge/githubSource.js";
+export type {
+  GithubSourceDocument,
+  GithubSourceInput,
+  GithubSourceResult,
+} from "./knowledge/githubSource.js";
+
 export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
 export type {
+  GithubEndpoint,
+  GithubEndpointState,
   KnowledgeChunkInput,
   KnowledgeVersion,
   StoreVersionInput,
