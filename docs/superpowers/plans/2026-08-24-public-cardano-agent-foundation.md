@@ -623,6 +623,7 @@ git commit -m "feat: queue authenticated Telegram webhooks"
 ### Task 8: Make Telegram Public and Run the Worker
 
 **Files:**
+- Create: `packages/cardano-agent/migrations/001_transport_admission.sql`
 - Create: `apps/telegram-bot/src/agentWorker.ts`
 - Modify: `apps/telegram-bot/src/main.ts`
 - Modify: `apps/telegram-bot/src/pollingRuntime.ts`
@@ -634,6 +635,8 @@ git commit -m "feat: queue authenticated Telegram webhooks"
 - [ ] **Step 1: Replace allowlist expectations with public-access tests**
 
 Delete tests for `parseAllowedChatIds` and `isAllowedChat`. Add a polling test proving a valid text update routes without `VENNEK_TELEGRAM_ALLOWED_CHAT_IDS`. Keep independent rate-limit tests and all delivery/offset tests.
+
+For the public webhook, retain an immediate database-backed fixed-window admission limit of ten accepted updates per minute for both user and chat. The update claim and admission decision must share the queue transaction so replays do not consume capacity and rejected updates are never queued. The later production admission task extends this baseline with configurable budgets, load shedding, and reservation settlement.
 
 Add this worker test:
 
@@ -661,7 +664,7 @@ Delete `parseAllowedChatIds` and `isAllowedChat`. Remove `allowedChatIds` from `
 
 - [ ] **Step 4: Implement the worker and runtime modes**
 
-`processAgentJob` calls the injected answer service once and the existing Telegram delivery path once. A wallet-secret marker bypasses the answer/persistence/provider path and sends only the fixed security warning. `--worker` starts pg-boss work for `telegram-answer`. `--webhook` starts a Node HTTP server whose only application route is `POST /telegram/webhook`; `--poll` remains available for local development and routes the same question service synchronously. Production webhook startup must create its handler options through `createWebhookOptions` so secret-strength validation cannot be bypassed.
+`processAgentJob` calls the injected answer service once and the existing Telegram delivery path once. A wallet-secret marker bypasses the answer/persistence/provider path and sends only the fixed security warning. `--worker` starts pg-boss work for `telegram-answer`. `--webhook` starts a Node HTTP server whose only application route is `POST /telegram/webhook`; `--poll` remains available for local development and routes the same question service synchronously. Polling must require the full agent configuration and must never fall back to the legacy command router. Production webhook startup must create its handler options through `createWebhookOptions` so secret-strength validation cannot be bypassed.
 
 Webhook and worker startup must call `ensureConversationPartitions` before accepting work. The worker's pg-boss instance must also schedule it as a daily maintenance job so future monthly partitions are created automatically.
 
