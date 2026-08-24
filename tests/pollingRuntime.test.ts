@@ -2,12 +2,60 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { abortableSleep, createTelegramApi, runPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { abortableSleep, createTelegramApi, runPolling as runTelegramPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
+import { routeTelegramText } from "@vennek/telegram-bot";
 
 const now = new Date("2026-07-04T00:00:00.000Z");
 
+type PollingOptions = Parameters<typeof runTelegramPolling>[0];
+function runPolling(options: Omit<PollingOptions, "answer"> & { answer?: PollingOptions["answer"] }): Promise<void> {
+  const api = {
+    ...options.api,
+    getUpdates: async (params: Parameters<PollingOptions["api"]["getUpdates"]>[0]) => {
+      const updates = await options.api.getUpdates(params);
+      return updates.map((update) => update.message?.text !== undefined && update.message.from === undefined
+        ? { ...update, message: { ...update.message, from: { id: 1 } } }
+        : update);
+    },
+  };
+  return runTelegramPolling({
+    ...options,
+    api,
+    answer: options.answer ?? ((input) => routeTelegramText(input.text, options.context ?? {})),
+  });
+}
+
 describe("Telegram polling runtime", () => {
+  it("routes a public text update through the injected agent answer", async () => {
+    const answer = vi.fn(async () => "agent answer");
+    const api = fakeApi({ updates: [{ update_id: 1, message: { from: { id: 42 }, chat: { id: 99 }, text: "hello" } }] });
+
+    await runPolling({ api, answer, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(answer).toHaveBeenCalledOnce();
+    expect(answer).toHaveBeenCalledWith({ telegramUserId: "42", telegramChatId: "99", text: "hello" });
+    expect(api.sentMessages).toHaveLength(1);
+  });
+
+  it("skips malformed runtime identifiers without invoking the agent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-malformed-"));
+    const answer = vi.fn(async () => "must not answer");
+    const api = fakeApi({
+      updates: [
+        { update_id: "12" as unknown as number, message: { from: { id: 1 }, chat: { id: 2 }, text: "bad update" } },
+        { update_id: 12, message: { from: { id: 1 }, chat: { id: "01" }, text: "bad chat" } },
+        { update_id: 13, message: { from: { id: "01" }, chat: { id: 2 }, text: "bad user" } },
+        { update_id: 14, message: { from: { id: 1 }, chat: { id: 2 }, text: "good" } },
+      ] as unknown as TelegramUpdate[],
+    });
+
+    await runTelegramPolling({ api, answer, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(answer).toHaveBeenCalledOnce();
+    expect(readTelegramOffset(root)).toBe(15);
+  });
+
   it("starts from persisted offset and advances after a handled update", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     writeTelegramOffset(root, 10, now);
@@ -303,7 +351,7 @@ describe("Telegram polling runtime", () => {
       retryDelayMs: 0
     });
 
-    expect(consumedChats).toEqual([999]);
+    expect(consumedChats).toEqual(["999"]);
     expect(readTelegramOffset(root)).toBe(9);
     expect(api.sentMessages).toHaveLength(1);
     expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 8)).toBe(true);
@@ -344,8 +392,8 @@ describe("Telegram polling runtime", () => {
 
   it("keeps the default rate limiter across polling cycles", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
-    const updates = Array.from({ length: 11 }, (_, updateId) => ({
-      update_id: updateId,
+    const updates = Array.from({ length: 11 }, (_, index) => ({
+      update_id: index + 1,
       message: { chat: { id: 12345 }, text: "/proof rate-limit-test" }
     }));
     const batches = [updates.slice(0, 6), updates.slice(6)];
@@ -373,16 +421,16 @@ describe("Telegram polling runtime", () => {
       retryDelayMs: 0
     });
 
-    expect(offsets).toEqual([0, 6]);
+    expect(offsets).toEqual([0, 7]);
     expect(sentMessages).toHaveLength(10);
-    expect(readTelegramOffset(root)).toBe(11);
+    expect(readTelegramOffset(root)).toBe(12);
     expect(logs.events.filter((event) => event.event === "telegram_update_rate_limited")).toEqual([
       {
         level: "warn",
         event: "telegram_update_rate_limited",
-        updateId: 10,
+        updateId: 11,
         chatHash: expect.any(String),
-        offset: 11
+        offset: 12
       }
     ]);
   });
@@ -413,7 +461,9 @@ function fakeApi(input: {
     },
     async getUpdates(params) {
       input.onGetUpdates?.(params);
-      return input.updates;
+      return input.updates.map((update) => update.message?.text !== undefined && update.message.from === undefined
+        ? { ...update, message: { ...update.message, from: { id: 1 } } }
+        : update);
     },
     async sendMessage(params) {
       sendAttempts += 1;

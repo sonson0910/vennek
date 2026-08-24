@@ -370,12 +370,14 @@ describe("Telegram webhook", () => {
 });
 
 describe("PgBossAgentQueue", () => {
-  function fakeDatabase(claimRows: unknown[] = [{ update_id: "77" }]) {
+  function fakeDatabase(claimRows: unknown[] = [{ update_id: "77" }], admissionRows: unknown[] = []) {
     const queries: Array<{ text: string; values?: unknown[] }> = [];
     const client = {
       query: vi.fn(async (text: string, values?: unknown[]) => {
         queries.push({ text, values });
         if (text.startsWith("INSERT INTO telegram_updates")) return { rows: claimRows };
+        if (text.startsWith("SELECT clock_timestamp")) return { rows: [{ now: new Date("2026-08-24T00:00:00.000Z") }] };
+        if (text.startsWith("SELECT window_started_at")) return { rows: admissionRows };
         return { rows: [] };
       }),
       release: vi.fn(),
@@ -407,6 +409,13 @@ describe("PgBossAgentQueue", () => {
     expect(queries.map(({ text }) => text)).toEqual([
       "BEGIN",
       expect.stringContaining("INSERT INTO telegram_updates"),
+      "SELECT clock_timestamp() AS now",
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
       "SELECT 1",
       "COMMIT",
     ]);
@@ -419,7 +428,18 @@ describe("PgBossAgentQueue", () => {
     const queue = new PgBossAgentQueue({ send }, database);
 
     await expect(queue.enqueue({ ...update, updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).rejects.toThrow(/queue insertion failed/i);
-    expect(queries.map(({ text }) => text)).toEqual(["BEGIN", expect.stringContaining("INSERT INTO telegram_updates"), "ROLLBACK"]);
+    expect(queries.map(({ text }) => text)).toEqual([
+      "BEGIN",
+      expect.stringContaining("INSERT INTO telegram_updates"),
+      "SELECT clock_timestamp() AS now",
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
+      "ROLLBACK",
+    ]);
   });
 
   it("keeps the claim atomic and skips a replay without calling pg-boss", async () => {
@@ -430,6 +450,30 @@ describe("PgBossAgentQueue", () => {
     await expect(queue.enqueue({ updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).resolves.toBe(false);
     expect(send).not.toHaveBeenCalled();
     expect(queries.map(({ text }) => text)).toEqual(["BEGIN", expect.stringContaining("INSERT INTO telegram_updates"), "ROLLBACK"]);
+  });
+
+  it("commits a terminal failed claim when the user or chat admission window is full", async () => {
+    const { database, client, queries } = fakeDatabase(
+      [{ update_id: "77" }],
+      [{ window_started_at: new Date("2026-08-24T00:00:00.000Z"), accepted_count: 10 }],
+    );
+    const send = vi.fn();
+    const queue = new PgBossAgentQueue({ send }, database);
+
+    await expect(queue.enqueue({ updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).resolves.toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(queries.map(({ text }) => text)).toEqual([
+      "BEGIN",
+      expect.stringContaining("INSERT INTO telegram_updates"),
+      "SELECT clock_timestamp() AS now",
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("UPDATE telegram_updates SET status = 'failed'"),
+      "COMMIT",
+    ]);
+    expect(client.release).toHaveBeenCalledOnce();
   });
 
   it("allows only one concurrent claim to reach pg-boss", async () => {
@@ -454,7 +498,18 @@ describe("PgBossAgentQueue", () => {
     const queue = new PgBossAgentQueue({ send }, database);
 
     await expect(queue.enqueue({ updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).rejects.toThrow("db sentinel");
-    expect(queries.map(({ text }) => text)).toEqual(["BEGIN", expect.stringContaining("INSERT INTO telegram_updates"), "ROLLBACK"]);
+    expect(queries.map(({ text }) => text)).toEqual([
+      "BEGIN",
+      expect.stringContaining("INSERT INTO telegram_updates"),
+      "SELECT clock_timestamp() AS now",
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("INSERT INTO telegram_admission_windows"),
+      expect.stringContaining("SELECT window_started_at"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
+      expect.stringContaining("UPDATE telegram_admission_windows"),
+      "ROLLBACK",
+    ]);
   });
 
   it("replaces mnemonic and signing-key text with the fixed safe job marker", async () => {
@@ -503,6 +558,56 @@ describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration",
       }
       await boss.stop().catch(() => undefined);
       await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await db.end();
+    }
+  }, 30_000);
+
+  it("enforces atomic per-user and per-chat admission without creating rejected jobs", async () => {
+    const db = createDatabase(databaseUrl!);
+    const boss = new PgBoss(databaseUrl!);
+    const queue = new PgBossAgentQueue(boss, db);
+    const base = 8_100_000_000_000_000 + randomInt(0, 100_000_000);
+    const updateIds: number[] = [];
+    try {
+      await boss.start();
+      await boss.createQueue("telegram-answer");
+
+      const sameUserJobs = Array.from({ length: 11 }, (_, index) => ({
+        updateId: base + index,
+        telegramUserId: `admission-user-${base}`,
+        telegramChatId: `admission-chat-${base}-${index}`,
+        text: "accepted",
+      }));
+      updateIds.push(...sameUserJobs.map(({ updateId }) => updateId));
+      const sameUserResults = await Promise.all(sameUserJobs.map((job) => queue.enqueue(job)));
+      expect(sameUserResults.filter(Boolean)).toHaveLength(10);
+      expect(sameUserResults.filter((result) => !result)).toHaveLength(1);
+      const rejectedUserUpdate = sameUserJobs[sameUserResults.findIndex((result) => !result)]!.updateId;
+
+      const sameChatJobs = Array.from({ length: 11 }, (_, index) => ({
+        updateId: base + 100 + index,
+        telegramUserId: `admission-other-user-${base}-${index}`,
+        telegramChatId: `admission-chat-${base}`,
+        text: "accepted",
+      }));
+      updateIds.push(...sameChatJobs.map(({ updateId }) => updateId));
+      const sameChatResults = await Promise.all(sameChatJobs.map((job) => queue.enqueue(job)));
+      expect(sameChatResults.filter(Boolean)).toHaveLength(10);
+      expect(sameChatResults.filter((result) => !result)).toHaveLength(1);
+      const rejectedChatUpdate = sameChatJobs[sameChatResults.findIndex((result) => !result)]!.updateId;
+
+      updateIds.push(base + 200);
+      await expect(queue.enqueue({ updateId: base + 200, telegramUserId: `admission-independent-user-${base}`, telegramChatId: `admission-independent-chat-${base}`, text: "accepted" })).resolves.toBe(true);
+      const rejectedJobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(rejectedUserUpdate), queued: true });
+      expect(rejectedJobs).toHaveLength(0);
+      const rejectedChatJobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { key: String(rejectedChatUpdate), queued: true });
+      expect(rejectedChatJobs).toHaveLength(0);
+    } finally {
+      const jobs = await boss.findJobs<{ updateId: number }>("telegram-answer", { queued: true }).catch(() => []);
+      for (const job of jobs) await boss.deleteJob("telegram-answer", job.id).catch(() => undefined);
+      if (updateIds.length > 0) await db.query("DELETE FROM telegram_updates WHERE update_id = ANY($1::bigint[])", [updateIds]).catch(() => undefined);
+      await db.query("DELETE FROM telegram_admission_windows WHERE subject_id LIKE $1 OR subject_id LIKE $2 OR subject_id LIKE $3 OR subject_id LIKE $4", [`admission-user-${base}%`, `admission-chat-${base}%`, `admission-other-user-${base}%`, `admission-independent-%`]).catch(() => undefined);
+      await boss.stop().catch(() => undefined);
       await db.end();
     }
   }, 30_000);

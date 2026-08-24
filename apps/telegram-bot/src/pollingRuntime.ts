@@ -1,6 +1,5 @@
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { FixedWindowRateLimiter, type RateLimiter } from "./accessControl.js";
-import { routeTelegramText } from "./router.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
 
 export type TelegramUpdate = {
@@ -28,7 +27,7 @@ export type RuntimeLogger = (level: RuntimeLogLevel, event: string, fields?: Rec
 export type PollingOptions = {
   api: TelegramApi;
   context?: CommandContext;
-  answer?: (input: { telegramUserId: string; telegramChatId: string; text: string }) => Promise<string>;
+  answer: (input: { telegramUserId: string; telegramChatId: string; text: string }) => Promise<string>;
   logger?: RuntimeLogger;
   signal?: AbortSignal;
   pollTimeoutSeconds?: number;
@@ -83,21 +82,40 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           if (options.signal?.aborted) {
             break;
           }
-          const nextOffset = update.update_id + 1;
-          const chatId = update.message?.chat?.id;
-          const text = update.message?.text?.trim();
-          if (chatId === undefined || !text) {
-            offset = Math.max(offset, nextOffset);
-            writeTelegramOffset(context.persistenceRoot, offset);
-            logger("info", "telegram_update_skipped", { updateId: update.update_id, offset });
+          const updateId = validUpdateId(update?.update_id);
+          if (updateId === undefined) {
+            logger("info", "telegram_update_skipped", { reason: "invalid_update_id" });
             continue;
           }
+          const message = isRecord(update?.message) ? update.message : undefined;
+          const rawChatId = isRecord(message?.chat) ? message.chat.id : undefined;
+          const chatId = canonicalTelegramIdentifier(rawChatId, false);
+          const rawText = message?.text;
+          const text = typeof rawText === "string" ? rawText.trim() : undefined;
+          if (chatId === undefined || !text) {
+            const nextOffset = updateId + 1;
+            offset = Math.max(offset, nextOffset);
+            writeTelegramOffset(context.persistenceRoot, offset);
+            logger("info", "telegram_update_skipped", { updateId, offset });
+            continue;
+          }
+
+          const userId = canonicalTelegramIdentifier(isRecord(message?.from) ? message.from.id : undefined, true);
+          if (userId === undefined) {
+            const nextOffset = updateId + 1;
+            offset = Math.max(offset, nextOffset);
+            writeTelegramOffset(context.persistenceRoot, offset);
+            logger("info", "telegram_update_skipped", { updateId, offset });
+            continue;
+          }
+
+          const nextOffset = updateId + 1;
 
           if (!rateLimiter.allow(chatId)) {
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
             logger("warn", "telegram_update_rate_limited", {
-              updateId: update.update_id,
+              updateId,
               chatHash: chatHash(chatId),
               offset
             });
@@ -105,23 +123,11 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           }
 
           const startedAt = Date.now();
-          let response: string;
-          if (options.answer) {
-            const userId = update.message?.from?.id;
-            if (!isTelegramIdentifier(userId, true)) {
-              offset = Math.max(offset, nextOffset);
-              writeTelegramOffset(context.persistenceRoot, offset);
-              logger("info", "telegram_update_skipped", { updateId: update.update_id, offset });
-              continue;
-            }
-            response = await options.answer({
-              telegramUserId: String(userId),
-              telegramChatId: String(chatId),
-              text,
-            });
-          } else {
-            response = await routeTelegramText(text, context);
-          }
+          const response = await options.answer({
+            telegramUserId: userId,
+            telegramChatId: chatId,
+            text,
+          });
           const delivery = await deliverMessage(options.api, {
             chat_id: chatId,
             text: response,
@@ -134,7 +140,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           writeTelegramOffset(context.persistenceRoot, offset);
           if (!delivery.delivered) {
             logger("warn", "telegram_delivery_abandoned", {
-              updateId: update.update_id,
+              updateId,
               chatHash: chatHash(chatId),
               ...(delivery.status === undefined ? {} : { status: delivery.status }),
               attempts: delivery.attempts,
@@ -143,7 +149,7 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             continue;
           }
           logger("info", "telegram_update_processed", {
-            updateId: update.update_id,
+            updateId,
             chatHash: chatHash(chatId),
             commandHash: sha256Hex(text.split(/\s+/, 1)[0] ?? "").slice(0, 12),
             durationMs: Date.now() - startedAt,
@@ -254,19 +260,30 @@ function chatHash(chatId: number | string): string {
   return `chat-${sha256Hex(String(chatId)).slice(0, 12)}`;
 }
 
-function isTelegramIdentifier(value: unknown, user: boolean): value is number | string {
+function validUpdateId(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value < Number.MAX_SAFE_INTEGER ? value : undefined;
+}
+
+function canonicalTelegramIdentifier(value: unknown, user: boolean): string | undefined {
   if (typeof value === "number") {
-    return Number.isSafeInteger(value) && (user ? value > 0 : value !== 0);
+    if (!Number.isSafeInteger(value) || (user ? value <= 0 : value === 0)) return undefined;
+    const parsed = BigInt(value);
+    return parsed >= BigInt("-9223372036854775808") && parsed <= BigInt("9223372036854775807") ? String(value) : undefined;
   }
   if (typeof value !== "string" || !/^-?[1-9][0-9]*$/u.test(value) || (user && value.startsWith("-"))) {
-    return false;
+    return undefined;
   }
   try {
     const parsed = BigInt(value);
-    return parsed >= BigInt("-9223372036854775808") && parsed <= BigInt("9223372036854775807") && (user ? parsed > 0n : parsed !== 0n);
+    if (parsed < BigInt("-9223372036854775808") || parsed > BigInt("9223372036854775807") || (user ? parsed <= 0n : parsed === 0n)) return undefined;
+    return value;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function sanitizeRuntimeError(error: unknown): string {

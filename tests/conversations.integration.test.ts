@@ -15,13 +15,13 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
     const telegramUserId = `f4-${process.pid}-${Date.now()}`;
 
     try {
-      await repository.append({
+      const first = await repository.append({
         telegramUserId,
         telegramChatId: "99",
         role: "user",
         text: "Cardano là gì?",
       });
-      await repository.append({
+      const second = await repository.append({
         telegramUserId,
         telegramChatId: "99",
         role: "assistant",
@@ -32,6 +32,8 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
         { role: "user", text: "Cardano là gì?" },
         { role: "assistant", text: "Cardano là một blockchain." },
       ]);
+      expect(first).toEqual({ firstInteraction: true });
+      expect(second).toEqual({ firstInteraction: false });
     } finally {
       await db.end();
     }
@@ -206,6 +208,24 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
         ),
       ).rejects.toThrow(/duplicate key|already exists/i);
     } finally {
+      await db.end();
+    }
+  });
+
+  it("marks exactly one concurrent first append for a new user", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new ConversationRepository(db, Buffer.alloc(32, 3));
+    const telegramUserId = `concurrent-first-${process.pid}-${Date.now()}`;
+
+    try {
+      const results = await Promise.all([
+        repository.append({ telegramUserId, telegramChatId: "first-chat", role: "user", text: "first" }),
+        repository.append({ telegramUserId, telegramChatId: "second-chat", role: "user", text: "second" }),
+      ]);
+      expect(results.filter(({ firstInteraction }) => firstInteraction)).toHaveLength(1);
+      expect(results.filter(({ firstInteraction }) => !firstInteraction)).toHaveLength(1);
+    } finally {
+      await db.query("DELETE FROM telegram_users WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
       await db.end();
     }
   });

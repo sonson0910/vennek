@@ -8,11 +8,10 @@ import {
   parseAgentConfig,
   type AgentConfig,
 } from "@vennek/cardano-agent";
-import { createAgentAnswer, processAgentJob, type AgentAnswer } from "./agentWorker.js";
+import { createAgentAnswer, processAgentJob } from "./agentWorker.js";
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
 import { createTelegramApi, deliverMessage, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js";
-import { routeTelegramText } from "./router.js";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 
 const TELEGRAM_QUEUE = "telegram-answer";
@@ -30,7 +29,8 @@ export async function main(): Promise<void> {
   if (args.includes("--webhook")) return runWebhook();
   if (args.includes("--poll")) return runPoll();
   const input = args.join(" ").trim() || "/proposal catalyst-review-workbench";
-  const agent = await createOptionalAgentAnswer();
+  const { config } = agentRuntimeConfig();
+  const agent = await createConfiguredAgentAnswer(config);
   try {
     console.log(await agent.answer(input, runtimeContext()));
   } finally {
@@ -39,16 +39,18 @@ export async function main(): Promise<void> {
 }
 
 async function runPoll(): Promise<void> {
-  const token = requiredEnv("TELEGRAM_BOT_TOKEN");
+  const { config, token } = agentRuntimeConfig();
+  const db = createDatabase(config.databaseUrl);
+  await ensureConversationPartitions(db);
+  const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
   const controller = new AbortController();
   const stop = (): void => controller.abort();
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
-  const agent = await createOptionalAgentAnswer();
   try {
     await runPolling({
       api: createTelegramApi(token, controller.signal),
-      answer: agent.agentAnswer,
+      answer: agentAnswer,
       context: runtimeContext(),
       logger: (level, event, fields) => logJson(level, event, fields),
       signal: controller.signal,
@@ -56,7 +58,7 @@ async function runPoll(): Promise<void> {
   } finally {
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
-    await agent.close();
+    await db.end();
   }
 }
 
@@ -66,7 +68,6 @@ async function runWorker(): Promise<void> {
   const boss = new PgBoss({ db: { executeSql: (text, values) => db.query(text, values) } });
   const repository = new ConversationRepository(db, config.encryptionKey);
   const api = createTelegramApi(token);
-  const queue = new PgBossAgentQueue(boss, db);
   try {
     await ensureConversationPartitions(db);
     await boss.start();
@@ -110,35 +111,42 @@ async function runWebhook(): Promise<void> {
   const boss = new PgBoss({ db: { executeSql: (text, values) => db.query(text, values) } });
   const queue = new PgBossAgentQueue(boss, db);
   const options = createWebhookOptions(webhookSecret, queue.enqueue.bind(queue));
-  const server = createServer((request, response) => {
-    void handleNodeRequest(request, response, options).catch(() => {
+  const server = createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
+    const requestAbort = new AbortController();
+    const abort = (): void => {
+      if (!response.writableEnded) requestAbort.abort();
+    };
+    request.once("aborted", abort);
+    response.once("close", abort);
+    void handleNodeRequest(request, response, options, requestAbort.signal).catch(() => {
       response.statusCode = 500;
       response.end("Internal server error");
+    }).finally(() => {
+      request.off("aborted", abort);
+      response.off("close", abort);
     });
   });
-  const close = (): void => { server.close(); };
-  process.once("SIGTERM", close);
-  process.once("SIGINT", close);
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
+  server.timeout = 15_000;
+  server.maxHeadersCount = 64;
   try {
     await ensureConversationPartitions(db);
     await boss.start();
     await boss.createQueue(TELEGRAM_QUEUE);
-    await boss.createQueue(PARTITION_QUEUE);
-    await boss.schedule(PARTITION_QUEUE, "0 0 * * *");
-    await boss.work(PARTITION_QUEUE, async () => ensureConversationPartitions(db));
     await listen(server, Number(process.env.PORT ?? 8080));
-    await waitForSignal();
+    await waitForServerDrain(server);
   } finally {
-    process.off("SIGTERM", close);
-    process.off("SIGINT", close);
-    server.close();
+    await closeServer(server);
     await boss.stop().catch(() => undefined);
     await db.end().catch(() => undefined);
   }
 }
 
-async function handleNodeRequest(request: IncomingMessage, response: ServerResponse, options: ReturnType<typeof createWebhookOptions>): Promise<void> {
-  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+async function handleNodeRequest(request: IncomingMessage, response: ServerResponse, options: ReturnType<typeof createWebhookOptions>, signal: AbortSignal): Promise<void> {
+  const requestPath = request.url?.startsWith("/") ? request.url : "/";
+  const url = new URL(requestPath, "http://127.0.0.1");
   if (url.pathname !== "/telegram/webhook") {
     response.statusCode = 404;
     response.end("Not found");
@@ -151,9 +159,10 @@ async function handleNodeRequest(request: IncomingMessage, response: ServerRespo
   }
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : request;
   const webRequest = new Request(url, {
-    method: request.method,
+    method: request.method ?? "GET",
     headers,
     body: body as unknown as BodyInit,
+    signal,
     duplex: "half",
   } as RequestInit & { duplex: "half" });
   const result = await handleTelegramWebhook(webRequest, options);
@@ -162,32 +171,26 @@ async function handleNodeRequest(request: IncomingMessage, response: ServerRespo
   response.end(await result.text());
 }
 
-async function createOptionalAgentAnswer(): Promise<{
-  agentAnswer?: AgentAnswer;
+async function createConfiguredAgentAnswer(config: AgentConfig): Promise<{
   answer(input: string, context: CommandContext): Promise<string>;
   close(): Promise<void>;
 }> {
-  if (!hasAgentEnvironment()) {
-    return { answer: (input, context) => routeTelegramText(input, context), close: async () => undefined };
-  }
-  const config = parseAgentConfig(process.env);
   const db = createDatabase(config.databaseUrl);
   await ensureConversationPartitions(db);
   const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
   return {
-    agentAnswer,
     answer: (input) => agentAnswer({ telegramUserId: "1", telegramChatId: "1", text: input }),
     close: () => db.end(),
   };
 }
 
-function runtimeConfig(): { config: AgentConfig; token: string; webhookSecret: string } {
-  const config = parseAgentConfig(process.env);
-  return { config, token: requiredEnv("TELEGRAM_BOT_TOKEN"), webhookSecret: requiredEnv("TELEGRAM_WEBHOOK_SECRET") };
+function agentRuntimeConfig(): { config: AgentConfig; token: string } {
+  return { config: parseAgentConfig(process.env), token: requiredEnv("TELEGRAM_BOT_TOKEN") };
 }
 
-function hasAgentEnvironment(): boolean {
-  return ["DATABASE_URL", "VENNEK_ENCRYPTION_KEY", "LITELLM_BASE_URL", "LITELLM_API_KEY", "VENNEK_MODEL_FAST", "VENNEK_MODEL_QUALITY", "VENNEK_MODEL_VERIFIER"].every((key) => Boolean(process.env[key]?.trim()));
+function runtimeConfig(): { config: AgentConfig; token: string; webhookSecret: string } {
+  const { config, token } = agentRuntimeConfig();
+  return { config, token, webhookSecret: requiredEnv("TELEGRAM_WEBHOOK_SECRET") };
 }
 
 function requiredEnv(name: string): string {
@@ -238,6 +241,33 @@ function waitForSignal(): Promise<void> {
     };
     process.once("SIGTERM", done);
     process.once("SIGINT", done);
+  });
+}
+
+function waitForServerDrain(server: ReturnType<typeof createServer>): Promise<void> {
+  return new Promise((resolve) => {
+    let closing = false;
+    const close = (): void => {
+      if (closing) return;
+      closing = true;
+      process.off("SIGTERM", close);
+      process.off("SIGINT", close);
+      if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+      if (!server.listening) {
+        resolve();
+        return;
+      }
+      server.close(() => resolve());
+    };
+    process.once("SIGTERM", close);
+    process.once("SIGINT", close);
+  });
+}
+
+function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve) => {
+    server.close(() => resolve());
   });
 }
 

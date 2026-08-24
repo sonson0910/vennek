@@ -65,4 +65,26 @@ describe("agent worker", () => {
     expect(append).toHaveBeenNthCalledWith(1, { telegramUserId: "1", telegramChatId: "2", text: "xin chào", role: "user" });
     expect(append).toHaveBeenNthCalledWith(2, expect.objectContaining({ telegramUserId: "1", telegramChatId: "2", role: "assistant" }));
   });
+
+  it("does not persist a wallet secret, then marks the next safe contact as first use", async () => {
+    const mnemonic = `${Array.from({ length: 11 }, () => "abandon").join(" ")} about`;
+    const append = vi.fn().mockResolvedValueOnce({ firstInteraction: true }).mockResolvedValueOnce({ firstInteraction: false });
+    const answer = createAgentAnswer({ append } as never);
+
+    await expect(answer({ telegramUserId: "1", telegramChatId: "2", text: mnemonic })).resolves.toMatch(/wallet|secret|seed|private/i);
+    const safe = await answer({ telegramUserId: "1", telegramChatId: "2", text: "xin chào" });
+
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(safe).toContain("Vennek lưu lịch sử hội thoại vô thời hạn");
+    expect(append).toHaveBeenNthCalledWith(1, { telegramUserId: "1", telegramChatId: "2", text: "xin chào", role: "user" });
+    expect(append).toHaveBeenNthCalledWith(2, expect.objectContaining({ role: "assistant" }));
+  });
+
+  it("does not append an assistant response when user persistence fails", async () => {
+    const append = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    const answer = createAgentAnswer({ append } as never);
+
+    await expect(answer({ telegramUserId: "1", telegramChatId: "2", text: "xin chào" })).resolves.toMatch(/safely|xử lý/i);
+    expect(append).toHaveBeenCalledOnce();
+  });
 });

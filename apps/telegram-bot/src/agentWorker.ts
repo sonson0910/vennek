@@ -37,11 +37,16 @@ export async function processAgentJob(
 
 export function createAgentAnswer(repository: ConversationRepository): AgentAnswer {
   return async (input) => {
+    let persisted = false;
     const answer = await answerQuestion(input, {
-      persist: () => repository.append({ ...input, role: "user" }),
+      persist: async () => {
+        const result = await repository.append({ ...input, role: "user" });
+        persisted = true;
+        return result;
+      },
       retrieve: async () => [],
     });
-    await repository.append({ ...input, role: "assistant", text: answer });
+    if (persisted) await repository.append({ ...input, role: "assistant", text: answer });
     return answer;
   };
 }
