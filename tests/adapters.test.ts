@@ -8,7 +8,9 @@ import {
   isPrivateAddress,
   normalizeCatalystSnapshot,
   normalizeGovernanceSnapshot,
-  readResponseTextLimited
+  readResponseTextLimited,
+  requestPublicHttps,
+  type PublicHttpsRequest
 } from "@vennek/cardano-governance-skills";
 
 afterEach(() => {
@@ -42,13 +44,79 @@ describe("adapters URL classification and fetch guards", () => {
   });
 
   it("detects private IP address ranges", () => {
-    expect(isPrivateAddress("10.0.0.1")).toBe(true);
-    expect(isPrivateAddress("172.16.0.1")).toBe(true);
-    expect(isPrivateAddress("192.168.1.1")).toBe(true);
-    expect(isPrivateAddress("169.254.1.1")).toBe(true);
-    expect(isPrivateAddress("127.0.0.1")).toBe(true);
+    for (const address of [
+      "10.0.0.1",
+      "100.64.0.1",
+      "172.16.0.1",
+      "192.168.1.1",
+      "192.0.2.1",
+      "198.18.0.1",
+      "169.254.1.1",
+      "127.0.0.1",
+      "2001:db8::1",
+      "2002::1",
+      "fe90::1",
+      "::ffff:127.0.0.1",
+      "64:ff9b::1"
+    ]) {
+      expect(isPrivateAddress(address)).toBe(true);
+    }
     expect(isPrivateAddress("8.8.8.8")).toBe(false);
+    expect(isPrivateAddress("2001:4860:4860::8888")).toBe(false);
     expect(isPrivateAddress("::1")).toBe(true);
+  });
+
+  it("pins one validated public DNS answer while preserving HTTPS hostname and SNI", async () => {
+    const controller = new AbortController();
+    let requestOptions: Record<string, unknown> | undefined;
+    let destroyed = false;
+    const fakeRequest: PublicHttpsRequest = ((options, callback) => {
+      requestOptions = options as Record<string, unknown>;
+      callback({
+        statusCode: 200,
+        headers: { "content-type": "text/html" },
+        destroy: () => {
+          destroyed = true;
+        }
+      } as never);
+      return { once: () => undefined, end: () => undefined } as never;
+    }) as PublicHttpsRequest;
+    const lookup = vi.fn(async (_hostname, options) => {
+      expect(options.all).toBe(true);
+      expect(options.order).toBe("ipv4first");
+      expect(options.signal).toBe(controller.signal);
+      return [{ address: "93.184.216.34", family: 4 }];
+    });
+
+    const response = await requestPublicHttps({
+      url: "https://example.com:443/source?x=1",
+      allowedDomains: ["example.com"],
+      signal: controller.signal,
+      lookup,
+      request: fakeRequest
+    });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(requestOptions?.hostname).toBe("example.com");
+    expect(requestOptions?.servername).toBe("example.com");
+    expect(requestOptions?.agent).toBe(false);
+    expect((requestOptions?.headers as Record<string, string>)["accept-encoding"]).toBe("identity");
+    response.cancel();
+    expect(destroyed).toBe(true);
+  });
+
+  it("rejects a mixed public and private DNS answer set before requesting", async () => {
+    const request = vi.fn() as unknown as PublicHttpsRequest;
+    await expect(requestPublicHttps({
+      url: "https://example.com/source",
+      allowedDomains: ["example.com"],
+      signal: new AbortController().signal,
+      lookup: async () => [
+        { address: "93.184.216.34", family: 4 },
+        { address: "100.64.0.1", family: 4 }
+      ],
+      request
+    })).rejects.toThrow(/Private/);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("rejects a byte response with no content-type before reading its body", async () => {

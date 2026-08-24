@@ -33,10 +33,12 @@ export type {
 
 export {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  urlMatchesSourceScope,
   validateSourceRegistry,
 } from "./knowledge/sourceRegistry.js";
 export type {
   CardanoNetwork,
+  GithubScope,
   RefreshRate,
   SourceKind,
   SourceRegistryEntry,

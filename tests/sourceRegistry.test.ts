@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  checkLive,
+  liveValidationSucceeded,
+  runLiveValidation,
+  validateRequiredRefreshPolicies,
+  validateSourceConfig
+} from "../scripts/validate-source-registry";
+import {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  urlMatchesSourceScope,
   validateSourceRegistry,
   type SourceRegistryEntry
 } from "@vennek/cardano-agent";
@@ -37,6 +45,53 @@ describe("Cardano source registry", () => {
     expect(() => validateSourceRegistry([{ ...official, url: "https://user:pass@docs.cardano.org" }])).toThrow(/credential/i);
     expect(() => validateSourceRegistry([{ ...official, url: "https://127.0.0.1" }])).toThrow(/ip literal/i);
     expect(() => validateSourceRegistry([{ ...official, allowedDomains: ["127.0.0.1"] }])).toThrow(/ip literal/i);
+    expect(() => validateSourceRegistry([{ ...official, allowedDomains: ["127.0.0.01"] }])).toThrow(/ip literal/i);
+  });
+
+  it("enforces explicit GitHub owner and repository scopes", () => {
+    const org = {
+      ...official,
+      id: "iog-github",
+      kind: "github" as const,
+      url: "https://github.com/input-output-hk",
+      allowedDomains: ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      github: { owner: "input-output-hk" }
+    };
+    const repo = {
+      ...org,
+      id: "cardano-cips",
+      url: "https://github.com/cardano-foundation/CIPs",
+      github: { owner: "cardano-foundation", repository: "CIPs" }
+    };
+    expect(validateSourceRegistry([org, repo])).toHaveLength(2);
+    expect(urlMatchesSourceScope("https://github.com/input-output-hk/cardano-node", org)).toBe(true);
+    expect(urlMatchesSourceScope("https://raw.githubusercontent.com/input-output-hk/cardano-node/main/README.md", org)).toBe(true);
+    expect(urlMatchesSourceScope("https://api.github.com/repos/input-output-hk/cardano-node/releases", org)).toBe(true);
+    expect(urlMatchesSourceScope("https://github.com/cardano-foundation/CIPs/pull/1", repo)).toBe(true);
+    expect(urlMatchesSourceScope("https://raw.githubusercontent.com/cardano-foundation/CIPs/main/README.md", repo)).toBe(true);
+    expect(urlMatchesSourceScope("https://api.github.com/repos/cardano-foundation/CIPs/releases", repo)).toBe(true);
+    expect(urlMatchesSourceScope("https://api.github.com/orgs/cardano-foundation/repos", repo)).toBe(false);
+    expect(urlMatchesSourceScope("https://github.com/attacker/cardano-node", org)).toBe(false);
+    expect(urlMatchesSourceScope("https://github.com/input-output-hk-evil/cardano-node", org)).toBe(false);
+    expect(urlMatchesSourceScope("https://github.com/cardano-foundation/CIPs-evil", repo)).toBe(false);
+    expect(urlMatchesSourceScope("https://github.com/cardano-foundation%2FCIPs", repo)).toBe(false);
+    expect(urlMatchesSourceScope("https://github.com/cardano-foundation\\CIPs", repo)).toBe(false);
+    expect(urlMatchesSourceScope("https://evil.github.com/input-output-hk/cardano-node", org)).toBe(false);
+  });
+
+  it("requires strict GitHub metadata and repository scope fields", () => {
+    const base = {
+      ...official,
+      id: "github-source",
+      kind: "github" as const,
+      url: "https://github.com/example-org/example-repo",
+      allowedDomains: ["github.com"],
+      github: { owner: "example-org", repository: "example-repo" }
+    };
+    expect(() => validateSourceRegistry([{ ...base, github: undefined }])).toThrow(/github metadata/i);
+    expect(() => validateSourceRegistry([{ ...base, github: { owner: "example-org", unexpected: true } }])).toThrow(/unknown field/i);
+    expect(() => validateSourceRegistry([{ ...base, kind: "page", github: base.github }])).toThrow(/only valid/i);
+    expect(() => validateSourceRegistry([{ ...base, github: { owner: "example-org" } }])).toThrow(/repository is required/i);
   });
 
   it("rejects empty arrays and invalid enum values", () => {
@@ -70,5 +125,47 @@ describe("Cardano source registry", () => {
     expect(validateSourceRegistry([...config.official, ...config.community])).toHaveLength(
       config.official.length + config.community.length
     );
+  });
+
+  it("enforces the required refresh policy table", () => {
+    const config = JSON.parse(readFileSync(new URL("../config/cardano-sources.json", import.meta.url), "utf8")) as {
+      official: SourceRegistryEntry[];
+      community: SourceRegistryEntry[];
+    };
+    const entries = validateSourceConfig(config);
+    expect(() => validateRequiredRefreshPolicies(entries.map((entry) => entry.id === "intersect" ? { ...entry, refresh: "daily" } : entry))).toThrow(/intersect.*hourly/i);
+    expect(() => validateRequiredRefreshPolicies(entries.filter((entry) => entry.id !== "cardano-org"))).toThrow(/cardano-org.*missing/i);
+  });
+
+  it("uses one source deadline across HEAD and GET fallback and aggregates failures", async () => {
+    const calls: string[] = [];
+    const request = async (input: { method?: string; signal: AbortSignal }) => {
+      calls.push(input.method ?? "GET");
+      expect(input.signal).toBeInstanceOf(AbortSignal);
+      return {
+        statusCode: input.method === "HEAD" ? 405 : 200,
+        headers: { "content-type": "text/plain" },
+        cancel: () => undefined
+      };
+    };
+    const signal = new AbortController().signal;
+    const before = JSON.stringify(official);
+    await expect(checkLive(official, signal, request)).resolves.toBeUndefined();
+    expect(calls).toEqual(["HEAD", "GET"]);
+    expect(JSON.stringify(official)).toBe(before);
+
+    const failingRequest = async () => ({
+      statusCode: 503,
+      headers: { "content-type": "text/plain" },
+      cancel: () => undefined
+    });
+    const results = await runLiveValidation([official, { ...official, id: "second-source" }], {
+      request: failingRequest,
+      sourceTimeoutMs: 100,
+      overallTimeoutMs: 1_000
+    });
+    expect(results).toHaveLength(2);
+    expect(results.every((result) => !result.ok)).toBe(true);
+    expect(liveValidationSucceeded(results)).toBe(false);
   });
 });

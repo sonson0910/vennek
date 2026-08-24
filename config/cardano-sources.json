@@ -50,7 +50,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/input-output-hk",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      "github": {"owner": "input-output-hk"},
       "topics": ["developer", "infrastructure", "research"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"
@@ -72,7 +73,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/cardano-foundation",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      "github": {"owner": "cardano-foundation"},
       "topics": ["developer", "governance", "infrastructure"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"
@@ -105,7 +107,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/IntersectMBO",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      "github": {"owner": "IntersectMBO"},
       "topics": ["governance", "developer", "infrastructure"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "hourly"
@@ -116,7 +119,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/cardano-foundation/CIPs",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com", "cips.cardano.org"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com", "cips.cardano.org"],
+      "github": {"owner": "cardano-foundation", "repository": "CIPs"},
       "topics": ["governance", "developer", "standards"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "hourly"
@@ -149,7 +153,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/IntersectMBO/cardano-node/releases",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      "github": {"owner": "IntersectMBO", "repository": "cardano-node"},
       "topics": ["node", "developer", "releases"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "hourly"
@@ -160,7 +165,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/IntersectMBO/cardano-ledger",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com"],
+      "github": {"owner": "IntersectMBO", "repository": "cardano-ledger"},
       "topics": ["ledger", "developer", "infrastructure"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"
@@ -171,7 +177,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/IntersectMBO/ouroboros-consensus",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com", "ouroboros-consensus.cardano.intersectmbo.org"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com", "ouroboros-consensus.cardano.intersectmbo.org"],
+      "github": {"owner": "IntersectMBO", "repository": "ouroboros-consensus"},
       "topics": ["consensus", "developer", "research"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"
@@ -182,7 +189,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/IntersectMBO/plutus",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com", "plutus.cardano.intersectmbo.org"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com", "plutus.cardano.intersectmbo.org"],
+      "github": {"owner": "IntersectMBO", "repository": "plutus"},
       "topics": ["plutus", "developer", "smart-contracts"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"
@@ -193,7 +201,8 @@
       "trustTier": "official",
       "kind": "github",
       "url": "https://github.com/aiken-lang/aiken",
-      "allowedDomains": ["github.com", "raw.githubusercontent.com", "aiken-lang.org"],
+      "allowedDomains": ["github.com", "raw.githubusercontent.com", "api.github.com", "aiken-lang.org"],
+      "github": {"owner": "aiken-lang", "repository": "aiken"},
       "topics": ["developer", "smart-contracts", "tooling"],
       "networks": ["mainnet", "preprod", "preview"],
       "refresh": "daily"

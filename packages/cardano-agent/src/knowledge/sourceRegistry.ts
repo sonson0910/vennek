@@ -5,6 +5,10 @@ export type TrustTier = "official" | "community" | "unverified";
 export type SourceKind = "sitemap" | "github" | "feed" | "page";
 export type RefreshRate = "hourly" | "daily";
 export type CardanoNetwork = "mainnet" | "preprod" | "preview";
+export type GithubScope = {
+  owner: string;
+  repository?: string;
+};
 
 export type SourceRegistryEntry = {
   id: string;
@@ -16,6 +20,7 @@ export type SourceRegistryEntry = {
   topics: string[];
   networks: CardanoNetwork[];
   refresh: RefreshRate;
+  github?: GithubScope;
 };
 
 export const REQUIRED_OFFICIAL_SOURCE_IDS = [
@@ -47,7 +52,8 @@ const ENTRY_FIELDS = new Set([
   "allowedDomains",
   "topics",
   "networks",
-  "refresh"
+  "refresh",
+  "github"
 ]);
 const TRUST_TIERS = new Set<TrustTier>(["official", "community", "unverified"]);
 const SOURCE_KINDS = new Set<SourceKind>(["sitemap", "github", "feed", "page"]);
@@ -106,6 +112,7 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
   const topics = validateTopics(candidate.topics, index);
   const networks = validateNetworks(candidate.networks, index);
   const refresh = enumValue(candidate.refresh, REFRESH_RATES, "refresh", index);
+  const github = validateGithubScope(candidate.github, kind, index);
 
   let parsedUrl: URL;
   try {
@@ -123,11 +130,10 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
   if (isIP(hostname.replace(/^\[|\]$/g, ""))) {
     throw new Error(`Source entry ${index} url must not use an IP literal.`);
   }
-  if (!hostMatches(hostname, allowedDomains)) {
-    throw new Error(`Source entry ${index} url host is outside the allowed domain list.`);
+  if (kind === "github" && github?.repository === undefined && requiresGithubRepository(parsedUrl)) {
+    throw new Error(`Source entry ${index} github repository is required for repository or release URLs.`);
   }
-
-  return {
+  const entry: SourceRegistryEntry = {
     id,
     owner,
     trustTier,
@@ -136,8 +142,39 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
     allowedDomains,
     topics,
     networks,
-    refresh
+    refresh,
+    ...(github ? { github } : {})
   };
+  if (!urlMatchesSourceScope(url, entry)) {
+    throw new Error(`Source entry ${index} url is outside the allowed domain or declared source scope.`);
+  }
+  return entry;
+}
+
+function validateGithubScope(value: unknown, kind: SourceKind, index: number): GithubScope | undefined {
+  if (kind !== "github") {
+    if (value !== undefined) {
+      throw new Error(`Source entry ${index} github metadata is only valid for github sources.`);
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Source entry ${index} github metadata must be an object.`);
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "owner" && key !== "repository") {
+      throw new Error(`Unknown field in source entry ${index} github metadata: ${key}`);
+    }
+  }
+  const owner = value.owner;
+  if (typeof owner !== "string" || owner.length === 0 || owner.length > 100 || !/^[A-Za-z0-9-]+$/.test(owner)) {
+    throw new Error(`Source entry ${index} github owner is invalid.`);
+  }
+  const repository = value.repository;
+  if (repository !== undefined && (typeof repository !== "string" || repository.length === 0 || repository.length > 100 || !/^[A-Za-z0-9._-]+$/.test(repository))) {
+    throw new Error(`Source entry ${index} github repository is invalid.`);
+  }
+  return repository === undefined ? { owner } : { owner, repository };
 }
 
 function validateDomains(value: unknown, index: number): string[] {
@@ -147,7 +184,7 @@ function validateDomains(value: unknown, index: number): string[] {
     if (typeof domain !== "string" || domain.length === 0 || domain.length > MAX_DOMAIN_LENGTH) {
       throw new Error(`Source entry ${index} allowedDomains contains an invalid domain.`);
     }
-    if (domain !== domain.toLowerCase() || isIP(domain.replace(/^\[|\]$/g, "")) || domain.includes("/") || domain.endsWith(".")) {
+    if (domain !== domain.toLowerCase() || domain.includes("/") || domain.endsWith(".")) {
       throw new Error(`Source entry ${index} allowedDomains contains an IP literal or malformed domain.`);
     }
     const labels = domain.split(".");
@@ -156,6 +193,14 @@ function validateDomains(value: unknown, index: number): string[] {
       labels.some((label) => label.length === 0 || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))
     ) {
       throw new Error(`Source entry ${index} allowedDomains contains a malformed domain.`);
+    }
+    try {
+      const canonical = new URL(`https://${domain}/`).hostname;
+      if (canonical !== domain || isIP(canonical)) {
+        throw new Error("IP literal");
+      }
+    } catch {
+      throw new Error(`Source entry ${index} allowedDomains contains an IP literal or malformed domain.`);
     }
     if (seen.has(domain)) {
       throw new Error(`Duplicate domain in source entry ${index}: ${domain}`);
@@ -221,4 +266,106 @@ function enumValue<T extends string>(value: unknown, allowed: Set<T>, name: stri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Checks a URL against both its transport allowlist and its optional GitHub tenant scope. */
+export function urlMatchesSourceScope(
+  value: string,
+  entry: Pick<SourceRegistryEntry, "kind" | "allowedDomains" | "github">
+): boolean {
+  let url: URL;
+  try {
+    if (value.includes("\\") || /%(?:2f|5c)/i.test(value)) {
+      return false;
+    }
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || (url.port !== "" && url.port !== "443") || url.username || url.password) {
+    return false;
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
+  if (!hostMatches(hostname, entry.allowedDomains)) {
+    return false;
+  }
+  if (entry.kind !== "github") {
+    return entry.github === undefined;
+  }
+  if (!entry.github) {
+    return false;
+  }
+
+  const sharedHost = hostname === "github.com" || hostname === "raw.githubusercontent.com" || hostname === "api.github.com";
+  if (!sharedHost && (hostname.endsWith(".github.com") || hostname.endsWith(".raw.githubusercontent.com"))) {
+    return false;
+  }
+  if (!sharedHost) {
+    return true;
+  }
+
+  const segments = decodedPathSegments(value, url.pathname);
+  if (!segments) {
+    return false;
+  }
+  if (hostname === "api.github.com") {
+    if (segments[0] === "repos") {
+      return segments[1] === entry.github.owner &&
+        (entry.github.repository === undefined
+          ? segments.length >= 3
+          : segments[2] === entry.github.repository && segments.length >= 3);
+    }
+    return entry.github.repository === undefined &&
+      (segments[0] === "orgs" || segments[0] === "users") &&
+      segments[1] === entry.github.owner;
+  }
+
+  const ownerMatches = segments[0] === entry.github.owner;
+  if (!ownerMatches) {
+    return false;
+  }
+  if (hostname === "raw.githubusercontent.com" && segments.length < 2) {
+    return false;
+  }
+  return entry.github.repository === undefined ||
+    (segments[1] === entry.github.repository && segments.length >= 2);
+}
+
+function requiresGithubRepository(url: URL): boolean {
+  const hostname = url.hostname.toLowerCase();
+  if (hostname !== "github.com" && hostname !== "raw.githubusercontent.com" && hostname !== "api.github.com") {
+    return false;
+  }
+  const segments = decodedPathSegments(url.toString(), url.pathname);
+  if (!segments) {
+    return true;
+  }
+  if (hostname === "api.github.com") {
+    return segments[0] === "repos" && segments.length >= 3;
+  }
+  return hostname === "raw.githubusercontent.com" ? segments.length >= 2 : segments.length >= 2;
+}
+
+function decodedPathSegments(rawValue: string, pathname: string): string[] | undefined {
+  if (rawValue.includes("\\") || /%(?:2f|5c)/i.test(rawValue)) {
+    return undefined;
+  }
+  const rawSegments = pathname.split("/");
+  if (rawSegments[0] !== "") {
+    return undefined;
+  }
+  if (rawSegments.at(-1) === "") {
+    rawSegments.pop();
+  }
+  if (rawSegments.some((segment, index) => index > 0 && segment === "")) {
+    return undefined;
+  }
+  try {
+    const segments = rawSegments.slice(1).map((segment) => decodeURIComponent(segment));
+    return segments.some((segment) => segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))
+      ? undefined
+      : segments;
+  } catch {
+    return undefined;
+  }
 }

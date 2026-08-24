@@ -1,5 +1,8 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
+import * as https from "node:https";
+import { BlockList, isIP } from "node:net";
+import type { ClientRequest, IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { createCitation, sha256Hex, type ProposalDocument, type SourceType } from "@vennek/shared";
 
 const MAX_FETCH_BYTES = 2 * 1024 * 1024;
@@ -152,61 +155,193 @@ export function hostMatches(host: string, allowedDomains: string[]): boolean {
 }
 
 export async function assertPublicFetchUrl(value: string, allowedDomains: string[] = []): Promise<string> {
-  const url = new URL(value);
+  return (await resolvePublicHttpsUrl(value, allowedDomains, new AbortController().signal)).url.toString();
+}
+
+const NON_GLOBAL_IPV4 = new BlockList();
+for (const [subnet, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.88.99.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4]
+] as const) {
+  NON_GLOBAL_IPV4.addSubnet(subnet, prefix, "ipv4");
+}
+
+const GLOBAL_IPV6 = new BlockList();
+GLOBAL_IPV6.addSubnet("2000::", 3, "ipv6");
+const NON_GLOBAL_IPV6 = new BlockList();
+for (const [subnet, prefix] of [
+  ["2001::", 23],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["3fff::", 20]
+] as const) {
+  NON_GLOBAL_IPV6.addSubnet(subnet, prefix, "ipv6");
+}
+
+export function isPrivateAddress(address: string): boolean {
+  const normalized = address.replace(/^\[|\]$/g, "");
+  const family = isIP(normalized);
+  if (family === 4) {
+    return NON_GLOBAL_IPV4.check(normalized, "ipv4") === true;
+  }
+  if (family !== 6) {
+    return true;
+  }
+  return !GLOBAL_IPV6.check(normalized, "ipv6") || NON_GLOBAL_IPV6.check(normalized, "ipv6");
+}
+
+export type PublicHttpsLookup = (
+  hostname: string,
+  options: { all: true; order: "ipv4first"; signal: AbortSignal }
+) => Promise<LookupAddress[]>;
+
+export type PublicHttpsResponse = {
+  statusCode: number;
+  headers: IncomingHttpHeaders;
+  cancel: () => void;
+};
+
+export type PublicHttpsRequest = (
+  options: https.RequestOptions,
+  callback: (response: IncomingMessage) => void
+) => ClientRequest;
+
+/** Resolves once, rejects mixed DNS answers, and connects to the selected safe address. */
+export async function requestPublicHttps(input: {
+  url: string;
+  allowedDomains: string[];
+  signal: AbortSignal;
+  method?: "HEAD" | "GET";
+  headers?: Record<string, string>;
+  lookup?: PublicHttpsLookup;
+  request?: PublicHttpsRequest;
+}): Promise<PublicHttpsResponse> {
+  const resolved = await resolvePublicHttpsUrl(input.url, input.allowedDomains, input.signal, input.lookup);
+  input.signal.throwIfAborted();
+  const requestImpl = input.request ?? ((options, callback) => https.request(options, callback));
+  const headers: Record<string, string> = Object.fromEntries(
+    Object.entries(input.headers ?? {}).filter(([name]) => name.toLowerCase() !== "accept-encoding")
+  );
+  headers["accept-encoding"] = "identity";
+  const requestOptions: https.RequestOptions = {
+    protocol: "https:",
+    hostname: resolved.hostname,
+    servername: resolved.hostname,
+    port: 443,
+    path: `${resolved.url.pathname}${resolved.url.search}` || "/",
+    method: input.method ?? "GET",
+    headers,
+    agent: false,
+    signal: input.signal,
+    lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family)
+  };
+
+  return new Promise<PublicHttpsResponse>((resolve, reject) => {
+    let settled = false;
+    let request: ClientRequest | undefined;
+    const abort = () => {
+      request?.destroy(input.signal.reason as Error | undefined);
+      if (!settled) {
+        reject(input.signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+      }
+    };
+    const cleanup = () => input.signal.removeEventListener("abort", abort);
+    input.signal.addEventListener("abort", abort, { once: true });
+    try {
+      request = requestImpl(requestOptions, (response) => {
+        if (response.statusCode === undefined) {
+          response.destroy();
+          cleanup();
+          reject(new Error("HTTPS response did not include a status code."));
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve({
+          statusCode: response.statusCode,
+          headers: response.headers,
+          cancel: () => response.destroy()
+        });
+      });
+      request.once("error", (error) => {
+        if (!settled) {
+          cleanup();
+          reject(error);
+        }
+      });
+      request.end();
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
+async function resolvePublicHttpsUrl(
+  value: string,
+  allowedDomains: string[],
+  signal: AbortSignal,
+  lookupImpl: PublicHttpsLookup = (hostname, options) => dnsLookup(hostname, options as never) as unknown as Promise<LookupAddress[]>
+): Promise<{ url: URL; hostname: string; address: string; family: 4 | 6 }> {
+  signal.throwIfAborted();
+  let url: URL;
+  try {
+    if (value.includes("\\") || /%(?:2f|5c)/i.test(value)) {
+      throw new Error("Encoded path separators are not accepted.");
+    }
+    url = new URL(value);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("Malformed source URL.");
+  }
   if (url.protocol !== "https:") {
     throw new Error("Only https URLs are accepted for remote source fetching.");
   }
-
+  if (url.port !== "" && url.port !== "443") {
+    throw new Error("Only HTTPS port 443 is accepted for remote source fetching.");
+  }
   if (url.username || url.password) {
     throw new Error("Credentials in source URLs are not accepted.");
   }
 
-  const host = url.hostname;
-  if (allowedDomains.length === 0 || !hostMatches(host, allowedDomains)) {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  if (allowedDomains.length === 0 || !hostMatches(hostname, allowedDomains)) {
     throw new Error("Remote URL source host is not on the configured allowlist. Paste text instead for untrusted sources.");
   }
 
-  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: false });
-  if (addresses.length === 0) {
-    throw new Error("Source host did not resolve.");
+  const literalFamily = isIP(hostname);
+  const addresses = literalFamily
+    ? [{ address: hostname, family: literalFamily }]
+    : await abortableLookup(lookupImpl(hostname, { all: true, order: "ipv4first", signal }), signal);
+  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error("Private, loopback, link-local, multicast, and reserved hosts are not accepted.");
   }
-
-  for (const { address } of addresses) {
-    if (isPrivateAddress(address)) {
-      throw new Error("Private, loopback, link-local, multicast, and reserved hosts are not accepted.");
-    }
+  const selected = addresses.find(({ address }) => !isPrivateAddress(address));
+  if (!selected || (selected.family !== 4 && selected.family !== 6)) {
+    throw new Error("Source host did not resolve to a public IP address.");
   }
-
-  return url.toString();
+  return { url, hostname, address: selected.address, family: selected.family };
 }
 
-export function isPrivateAddress(address: string): boolean {
-  if (address.includes(":")) {
-    const lower = address.toLowerCase();
-    return (
-      lower === "::1" ||
-      lower === "::" ||
-      lower.startsWith("fc") ||
-      lower.startsWith("fd") ||
-      lower.startsWith("fe80:") ||
-      lower.startsWith("ff")
-    );
-  }
-
-  const octets = address.split(".").map((part) => Number(part));
-  if (octets.length !== 4 || octets.some((part) => Number.isNaN(part))) {
-    return true;
-  }
-  const [a, b] = octets;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    a === 169 && b === 254 ||
-    a === 172 && b >= 16 && b <= 31 ||
-    a === 192 && b === 168 ||
-    a >= 224
-  );
+async function abortableLookup<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 function inferTitle(text: string): string {
