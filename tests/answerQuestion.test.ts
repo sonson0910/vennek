@@ -77,6 +77,37 @@ describe("natural-language question service", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["¿Qué es Cardano?", /fuentes fiables|suficientes fuentes/i],
+    ["Cardanoとは何ですか？", /信頼できる情報源|十分/i],
+  ])("returns zero-evidence responses in the detected language: %s", async (text, expected) => {
+    const answer = await answerQuestion(input(text), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [],
+      complete: vi.fn(),
+    });
+
+    expect(answer).toMatch(expected);
+  });
+
+  it.each([
+    ["¡Hola!", /hola|cardano/i],
+    ["こんにちは！", /こんにちは|Cardano/],
+  ])("recognizes supported-language greetings without model work: %s", async (text, expected) => {
+    const retrieve = vi.fn();
+    const complete = vi.fn();
+
+    const answer = await answerQuestion(input(text), {
+      persist: vi.fn(async () => undefined),
+      retrieve,
+      complete,
+    });
+
+    expect(answer).toMatch(expected);
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("completes an evidence-backed question through the injected dependency", async () => {
     const complete = vi.fn(async ({ evidence }: { evidence: unknown[] }) => {
       expect(evidence).toHaveLength(1);
@@ -147,5 +178,124 @@ describe("natural-language question service", () => {
         },
       }),
     ).resolves.not.toContain(secret);
+  });
+
+  it("keeps the first-use notice on every post-persistence return path", async () => {
+    const firstUse = vi.fn(async () => ({ firstInteraction: true }));
+    const expectNoticeOnce = (answer: string) => {
+      expect(answer.startsWith(RETENTION_NOTICE)).toBe(true);
+      expect(answer.match(/Vennek lưu lịch sử hội thoại vô thời hạn/g)).toHaveLength(1);
+    };
+
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => "malformed",
+        complete: async () => "unused",
+      }),
+    );
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => {
+          throw new Error("retrieve failed");
+        },
+        complete: async () => "unused",
+      }),
+    );
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => [],
+        complete: async () => "unused",
+      }),
+    );
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => [{ id: "E1" }],
+        complete: async () => " ",
+      }),
+    );
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => [{ id: "E1" }],
+        complete: async () => {
+          throw new Error("complete failed");
+        },
+      }),
+    );
+    const phrase = Array.from({ length: 24 }, (_, index) => `word${index}`).join(" ");
+    expectNoticeOnce(
+      await answerQuestion(input("What is Cardano?"), {
+        persist: firstUse,
+        retrieve: async () => [{ id: "E1" }],
+        complete: async () => phrase,
+      }),
+    );
+  });
+
+  it("does not show a first-use notice when persistence never succeeds", async () => {
+    const beforePersistence = await answerQuestion(input("What is Cardano?"), {
+      persist: async () => {
+        throw new Error("database unavailable");
+      },
+      retrieve: async () => [],
+      complete: async () => "unused",
+    });
+    expect(beforePersistence).not.toContain(RETENTION_NOTICE);
+
+    const phrase = Array.from({ length: 24 }, (_, index) => `word${index}`).join(" ");
+    const secret = await answerQuestion(input(phrase), {
+      persist: vi.fn(),
+      retrieve: vi.fn(),
+      complete: vi.fn(),
+    });
+    expect(secret).not.toContain(RETENTION_NOTICE);
+  });
+
+  it("blocks a wallet secret nested in retrieved evidence before completion", async () => {
+    const phrase = Array.from({ length: 24 }, (_, index) => `word${index + 1}`).join(" ");
+    const signingKey = JSON.stringify({
+      type: "PaymentSigningKeyShelley_ed25519",
+      description: "nested evidence",
+      cborHex: "5820abcdef",
+    });
+    const complete = vi.fn(async () => "should not be returned");
+
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => ({ firstInteraction: true })),
+      retrieve: async () => [{ source: { snippets: ["safe context", { raw: phrase, key: signingKey }] } }],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(answer).toContain(RETENTION_NOTICE);
+    expect(answer).not.toContain(phrase);
+    expect(answer).not.toContain(signingKey);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on cyclic or throwing evidence without calling completion", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const throwing = Object.defineProperty({}, "secret", {
+      enumerable: true,
+      get: () => {
+        throw new Error("untrusted getter");
+      },
+    });
+    const complete = vi.fn(async () => "should not be returned");
+
+    for (const evidence of [cyclic, throwing]) {
+      const answer = await answerQuestion(input("What is Cardano?"), {
+        persist: vi.fn(async () => undefined),
+        retrieve: async () => [evidence],
+        complete,
+      });
+      expect(answer).toMatch(/wallet secret|can't process/i);
+    }
+    expect(complete).not.toHaveBeenCalled();
   });
 });
