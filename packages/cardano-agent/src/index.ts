@@ -55,6 +55,14 @@ export type {
   GithubSourceResult,
 } from "./knowledge/githubSource.js";
 
+export { crawlSource, fetchCrawlResponse } from "./knowledge/crawlSource.js";
+export type {
+  CrawlResponse,
+  CrawlSourceInput,
+  CrawlSourceResult,
+  CrawledDocument,
+} from "./knowledge/crawlSource.js";
+
 export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
 export type {
   GithubEndpoint,

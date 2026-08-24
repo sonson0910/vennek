@@ -173,6 +173,42 @@ describe("fixed GitHub source retrieval", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("uses a derived per-endpoint deadline signal and cancels an in-flight body on caller abort", async () => {
+    const controller = new AbortController();
+    const endpointSignals: AbortSignal[] = [];
+    const canceled: boolean[] = [];
+    const request = ((options, callback) => {
+      endpointSignals.push(options.signal as AbortSignal);
+      const body = Readable.from((async function* () {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          yield Buffer.from("{}");
+        } finally {
+          canceled.push(true);
+        }
+      })());
+      Object.assign(body, {
+        statusCode: 200,
+        headers: { "content-type": "application/json", "content-length": "2" }
+      });
+      const originalDestroy = body.destroy.bind(body);
+      body.destroy = ((error?: Error) => originalDestroy(error)) as typeof body.destroy;
+      callback(body as never);
+      return Object.assign(new EventEmitter(), { end() {} }) as never;
+    }) as PublicHttpsRequest;
+
+    const startedAt = Date.now();
+    const pending = fetchGithubSource(input({ signal: controller.signal, request }));
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(endpointSignals[0]).toBeDefined();
+    expect(endpointSignals[0]).not.toBe(controller.signal);
+    expect(endpointSignals[0]?.aborted).toBe(true);
+    expect(canceled.length).toBeGreaterThan(0);
+  });
+
   it("rejects a registry entry whose GitHub tenant or repository scope was altered", async () => {
     const attacker = {
       ...repositoryEntry,

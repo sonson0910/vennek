@@ -93,10 +93,11 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
     };
     if (input.token !== undefined) headers.authorization = `Bearer ${input.token}`;
     if (state?.etag !== undefined) headers["if-none-match"] = state.etag;
+    const endpointSignal = AbortSignal.any([input.signal, AbortSignal.timeout(8_000)]);
     const response = await requestPublicHttps({
       url: plan.requestUrl,
       allowedDomains: validated.allowedDomains,
-      signal: input.signal,
+      signal: endpointSignal,
       method: "GET",
       headers,
       lookup: input.lookup,
@@ -127,7 +128,7 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
       response,
       MAX_GITHUB_RESPONSE_BYTES,
       ["application/json"],
-      input.signal,
+      endpointSignal,
     );
     const document = plan.endpoint === "readme"
       ? { endpoint: plan.endpoint, canonicalUrl: plan.canonicalUrl, mime: "text/markdown" as const, bytes: decodeReadme(bytes) }
