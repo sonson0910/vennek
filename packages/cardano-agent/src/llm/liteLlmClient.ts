@@ -1,5 +1,6 @@
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_EMPTY_READS = 32;
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -77,18 +78,24 @@ async function readBoundedBody(response: Response): Promise<string> {
 
   if (!response.body) throw malformedResponse();
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const bytes = new Uint8Array(MAX_RESPONSE_BYTES);
   let total = 0;
+  let emptyReads = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!(value instanceof Uint8Array)) throw malformedResponse();
-      total += value.byteLength;
-      if (total > MAX_RESPONSE_BYTES) {
+      if (value.byteLength === 0) {
+        if (++emptyReads >= MAX_EMPTY_READS) throw malformedResponse();
+        continue;
+      }
+      emptyReads = 0;
+      if (total + value.byteLength > MAX_RESPONSE_BYTES) {
         throw new LiteLlmFailure("LiteLLM response too large");
       }
-      chunks.push(value);
+      bytes.set(value, total);
+      total += value.byteLength;
     }
   } catch (error) {
     try {
@@ -101,16 +108,18 @@ async function readBoundedBody(response: Response): Promise<string> {
     reader.releaseLock();
   }
 
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, total));
   } catch {
     throw malformedResponse();
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation is best effort and must not replace the safe client error.
   }
 }
 
@@ -162,7 +171,9 @@ export class LiteLlmClient {
     if (typeof apiKey !== "string" || !apiKey.trim()) {
       throw new Error("LiteLLM API key is required");
     }
-    this.endpoint = new URL("/v1/chat/completions", baseUrl).toString();
+    const normalizedBaseUrl = new URL(baseUrl.toString());
+    if (!normalizedBaseUrl.pathname.endsWith("/")) normalizedBaseUrl.pathname += "/";
+    this.endpoint = new URL("v1/chat/completions", normalizedBaseUrl).toString();
     this.apiKey = apiKey.trim();
   }
 
@@ -193,9 +204,13 @@ export class LiteLlmClient {
       throw new Error("LiteLLM request failed");
     }
 
-    if (!response.ok) throw new Error("LiteLLM request failed");
+    if (!response.ok) {
+      await cancelResponseBody(response);
+      throw new Error("LiteLLM request failed");
+    }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "application/json") {
+      await cancelResponseBody(response);
       throw new Error("LiteLLM response content-type invalid");
     }
 
@@ -203,6 +218,7 @@ export class LiteLlmClient {
     try {
       body = await readBoundedBody(response);
     } catch (error) {
+      await cancelResponseBody(response);
       if (error instanceof LiteLlmFailure) throw error;
       throw malformedResponse();
     }
