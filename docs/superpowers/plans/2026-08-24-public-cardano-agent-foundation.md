@@ -607,7 +607,7 @@ Expected: FAIL because the webhook handler is missing.
 
 - [ ] **Step 3: Implement strict parsing and idempotent enqueueing**
 
-`handleTelegramWebhook` must accept only POST, compare the exact secret header with `timingSafeEqual`, require JSON, cap the body at 256 KiB, validate safe integer `update_id`, require `message.from.id`, `message.chat.id`, and non-empty text, and return 202 for accepted or already-seen updates. It must never log or return the message body.
+`handleTelegramWebhook` must accept only POST, compare the exact secret header with `timingSafeEqual`, require JSON, cap the body at 256 KiB, and validate a positive safe-integer `update_id`. For updates carrying `message.text`, require `message.from.id`, `message.chat.id`, and non-empty bounded text. Authenticated updates without a text message are unsupported input and must return 202 without enqueueing so Telegram does not retry them indefinitely. Return 202 for accepted or already-seen updates. It must never log or return the message body.
 
 Implement `PgBossAgentQueue.enqueue()` with job name `telegram-answer`, `singletonKey: String(updateId)`, and three retry attempts with exponential backoff.
 
