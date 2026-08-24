@@ -1,9 +1,34 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { AgentQueue, TelegramAnswerJob } from "./agentQueue.js";
+import { protectWalletSecret, type AgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_EMPTY_READS = 8;
+export const TELEGRAM_TEXT_MAX_BYTES = 16_384;
+const MIN_WEBHOOK_SECRET_LENGTH = 32;
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
+const UNSUPPORTED_UPDATE_FIELDS = new Set([
+  "edited_message",
+  "channel_post",
+  "edited_channel_post",
+  "business_message",
+  "edited_business_message",
+  "callback_query",
+  "inline_query",
+  "shipping_query",
+  "pre_checkout_query",
+  "poll",
+  "poll_answer",
+  "my_chat_member",
+  "chat_member",
+  "chat_join_request",
+  "message_reaction",
+  "message_reaction_count",
+  "chat_boost",
+  "removed_chat_boost",
+  "business_connection",
+  "deleted_business_messages",
+  "purchased_paid_media",
+]);
 
 export type WebhookOptions = {
   secret: string;
@@ -12,8 +37,21 @@ export type WebhookOptions = {
 
 class PayloadTooLargeError extends Error {}
 class InvalidPayloadError extends Error {}
+class RequestAbortedError extends Error {}
+
+export function createWebhookOptions(secret: string, enqueue: AgentQueue["enqueue"]): WebhookOptions {
+  assertWebhookSecret(secret);
+  return Object.freeze({ secret, enqueue });
+}
+
+export function assertWebhookSecret(secret: unknown): asserts secret is string {
+  if (typeof secret !== "string" || secret.length < MIN_WEBHOOK_SECRET_LENGTH || !/^[A-Za-z0-9_-]+$/u.test(secret)) {
+    throw new Error("Telegram webhook secret must be at least 32 ASCII token characters.");
+  }
+}
 
 export async function handleTelegramWebhook(request: Request, options: WebhookOptions): Promise<Response> {
+  assertWebhookSecret(options.secret);
   if (!safeSecretEqual(request.headers.get(SECRET_HEADER), options.secret)) {
     await cancelBody(request);
     return genericResponse(401, "Unauthorized");
@@ -31,8 +69,12 @@ export async function handleTelegramWebhook(request: Request, options: WebhookOp
 
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null) {
+    if (!/^[0-9]+$/u.test(declaredLength)) {
+      await cancelBody(request);
+      return genericResponse(400, "Bad request");
+    }
     const length = Number(declaredLength);
-    if (!Number.isSafeInteger(length) || length < 0) {
+    if (!Number.isSafeInteger(length)) {
       await cancelBody(request);
       return genericResponse(400, "Bad request");
     }
@@ -52,12 +94,17 @@ export async function handleTelegramWebhook(request: Request, options: WebhookOp
     return genericResponse(400, "Bad request");
   }
 
-  let job: TelegramAnswerJob;
+  if (request.signal.aborted) return genericResponse(400, "Bad request");
+
+  let parsed: TelegramAnswerJob | undefined;
   try {
-    job = parseTelegramJob(body);
+    parsed = parseTelegramJob(body);
   } catch {
     return genericResponse(400, "Bad request");
   }
+
+  if (!parsed) return new Response(null, { status: 202 });
+  const job = protectWalletSecret(parsed);
 
   try {
     await options.enqueue(job);
@@ -84,12 +131,12 @@ async function readBody(request: Request): Promise<Uint8Array> {
   if (!body) throw new InvalidPayloadError("Missing request body");
 
   const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
+  const buffer = new Uint8Array(MAX_BODY_BYTES);
   let total = 0;
   let emptyReads = 0;
   try {
     while (true) {
-      const result = await reader.read();
+      const result = await readChunk(reader, request.signal);
       if (result.done) break;
       const chunk = result.value;
       if (chunk.byteLength === 0) {
@@ -98,7 +145,7 @@ async function readBody(request: Request): Promise<Uint8Array> {
         continue;
       }
       if (chunk.byteLength > MAX_BODY_BYTES - total) throw new PayloadTooLargeError("Request body too large");
-      chunks.push(chunk);
+      buffer.set(chunk, total);
       total += chunk.byteLength;
     }
   } catch (error) {
@@ -112,16 +159,27 @@ async function readBody(request: Request): Promise<Uint8Array> {
     reader.releaseLock();
   }
 
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
+  return buffer.subarray(0, total);
 }
 
-function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob {
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read();
+  if (signal.aborted) throw new RequestAbortedError("Request aborted");
+
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      void reader.cancel().catch(() => undefined);
+      reject(new RequestAbortedError("Request aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
@@ -129,20 +187,42 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob {
     throw new InvalidPayloadError("Invalid JSON");
   }
 
-  if (!isPlainObject(value) || !isSafeNonnegativeInteger(value.update_id)) {
+  if (!isPlainObject(value) || !isPositiveSafeInteger(value.update_id)) {
     throw new InvalidPayloadError("Invalid update");
   }
   const message = value.message;
+  if (message === undefined) {
+    if (Object.keys(value).some((key) => key !== "update_id" && UNSUPPORTED_UPDATE_FIELDS.has(key))) return undefined;
+    throw new InvalidPayloadError("Missing message");
+  }
   if (!isPlainObject(message)) throw new InvalidPayloadError("Invalid message");
   const from = message.from;
   const chat = message.chat;
   const userId = isPlainObject(from) ? from.id : undefined;
   const chatId = isPlainObject(chat) ? chat.id : undefined;
+  const unsupportedMessage = Object.keys(message).some((key) => !["from", "chat", "text"].includes(key));
+  const hasText = Object.prototype.hasOwnProperty.call(message, "text");
+  if (hasText && message.text !== undefined && typeof message.text !== "string") {
+    throw new InvalidPayloadError("Invalid text");
+  }
   if (!isPositiveSafeInteger(userId) || !isSafeNonzeroInteger(chatId)) {
+    if (unsupportedMessage) return undefined;
     throw new InvalidPayloadError("Invalid identifiers");
   }
-  if (typeof message.text !== "string" || message.text.trim().length === 0) {
+  if (message.text === undefined) {
+    if (unsupportedMessage) return undefined;
+    throw new InvalidPayloadError("Missing text");
+  }
+  if (typeof message.text !== "string") {
+    if (unsupportedMessage) return undefined;
     throw new InvalidPayloadError("Invalid text");
+  }
+  if (message.text.trim().length === 0) {
+    if (unsupportedMessage) return undefined;
+    throw new InvalidPayloadError("Invalid text");
+  }
+  if (message.text.length > TELEGRAM_TEXT_MAX_BYTES || Buffer.byteLength(message.text, "utf8") > TELEGRAM_TEXT_MAX_BYTES) {
+    throw new InvalidPayloadError("Text too large");
   }
 
   return {
@@ -155,10 +235,6 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function isSafeNonnegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
