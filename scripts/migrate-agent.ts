@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PgBoss } from "pg-boss";
 import type { PoolClient } from "pg";
 import { createDatabase } from "@vennek/cardano-agent";
 
@@ -10,14 +11,15 @@ const migrationDirectory = resolve(
   "../packages/cardano-agent/migrations",
 );
 
-const databaseUrl = process.env.DATABASE_URL?.trim();
-if (!databaseUrl) throw new Error("DATABASE_URL is required");
+const databaseUrl = process.env.DATABASE_OWNER_URL?.trim() || process.env.DATABASE_URL?.trim();
+if (!databaseUrl) throw new Error("DATABASE_OWNER_URL or DATABASE_URL is required");
 
 const migrationFiles = (await readdir(migrationDirectory))
   .filter((filename) => filename.endsWith(".sql"))
   .sort((left, right) => left.localeCompare(right));
 
 const db = createDatabase(databaseUrl);
+let boss: PgBoss | undefined;
 let client: PoolClient | undefined;
 let lockAcquired = false;
 
@@ -54,7 +56,13 @@ try {
       throw error;
     }
   }
+
+  boss = new PgBoss({ connectionString: databaseUrl });
+  await boss.start();
+  await boss.createQueue("telegram-answer");
+  await boss.createQueue("conversation-partition-maintenance");
 } finally {
+  await boss?.stop().catch(() => undefined);
   if (client) {
     if (lockAcquired) {
       try {

@@ -2,13 +2,117 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: vennek
-      POSTGRES_USER: vennek
-      POSTGRES_PASSWORD: vennek
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:?POSTGRES_OWNER_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?POSTGRES_OWNER_PASSWORD is required}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - vennek-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vennek -d vennek"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 2s
-      timeout: 2s
-      retries: 20
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_OWNER_URL: ${DATABASE_OWNER_URL:?DATABASE_OWNER_URL is required}
+    command: ["npm", "run", "migrate:agent"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  provision-app-role:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_OWNER_URL: ${DATABASE_OWNER_URL:?DATABASE_OWNER_URL is required}
+      VENNEK_APP_DB_USER: ${VENNEK_APP_DB_USER:?VENNEK_APP_DB_USER is required}
+      VENNEK_APP_DB_PASSWORD: ${VENNEK_APP_DB_PASSWORD:?VENNEK_APP_DB_PASSWORD is required}
+    command: ["npm", "run", "provision:app-role"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.98.0
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY is required}
+      OPENAI_FAST_MODEL: ${OPENAI_FAST_MODEL:?OPENAI_FAST_MODEL is required}
+      OPENAI_QUALITY_MODEL: ${OPENAI_QUALITY_MODEL:?OPENAI_QUALITY_MODEL is required}
+      OPENAI_VERIFIER_MODEL: ${OPENAI_VERIFIER_MODEL:?OPENAI_VERIFIER_MODEL is required}
+      ANTHROPIC_FAST_MODEL: ${ANTHROPIC_FAST_MODEL:?ANTHROPIC_FAST_MODEL is required}
+      ANTHROPIC_QUALITY_MODEL: ${ANTHROPIC_QUALITY_MODEL:?ANTHROPIC_QUALITY_MODEL is required}
+      ANTHROPIC_VERIFIER_MODEL: ${ANTHROPIC_VERIFIER_MODEL:?ANTHROPIC_VERIFIER_MODEL is required}
+      GEMINI_FAST_MODEL: ${GEMINI_FAST_MODEL:?GEMINI_FAST_MODEL is required}
+      GEMINI_QUALITY_MODEL: ${GEMINI_QUALITY_MODEL:?GEMINI_QUALITY_MODEL is required}
+      GEMINI_VERIFIER_MODEL: ${GEMINI_VERIFIER_MODEL:?GEMINI_VERIFIER_MODEL is required}
+    volumes:
+      - ./config/litellm.example.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+
+  telegram-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_APP_URL:?DATABASE_APP_URL is required}
+      VENNEK_ENCRYPTION_KEY: ${VENNEK_ENCRYPTION_KEY:?VENNEK_ENCRYPTION_KEY is required}
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:?LITELLM_API_KEY is required}
+      VENNEK_MODEL_FAST: ${VENNEK_MODEL_FAST:?VENNEK_MODEL_FAST is required}
+      VENNEK_MODEL_QUALITY: ${VENNEK_MODEL_QUALITY:?VENNEK_MODEL_QUALITY is required}
+      VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET is required}
+      PORT: ${WEBHOOK_PORT:-8080}
+    command: ["node", "apps/telegram-bot/dist/main.js", "--webhook"]
+    ports:
+      - "127.0.0.1:${WEBHOOK_PORT:-8080}:8080"
+    depends_on:
+      provision-app-role:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/telegram/webhook').then((r) => process.exit(r.status === 401 ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_APP_URL:?DATABASE_APP_URL is required}
+      VENNEK_ENCRYPTION_KEY: ${VENNEK_ENCRYPTION_KEY:?VENNEK_ENCRYPTION_KEY is required}
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:?LITELLM_API_KEY is required}
+      VENNEK_MODEL_FAST: ${VENNEK_MODEL_FAST:?VENNEK_MODEL_FAST is required}
+      VENNEK_MODEL_QUALITY: ${VENNEK_MODEL_QUALITY:?VENNEK_MODEL_QUALITY is required}
+      VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+    command: ["node", "apps/telegram-bot/dist/main.js", "--worker"]
+    depends_on:
+      provision-app-role:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  vennek-postgres:

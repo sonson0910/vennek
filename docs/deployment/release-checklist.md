@@ -1,19 +1,15 @@
-# Release Checklist
+# Public Cardano agent release checklist
 
-Use this checklist before presenting Vennek as a pilot/staging build.
+## Safety and product scope
 
-## Scope Guard
+- [ ] Public Telegram natural-language path is enabled only behind authenticated webhooks and the worker.
+- [ ] Foundation returns the explicit insufficient-evidence response for factual Cardano questions until the knowledge/RAG plan is complete.
+- [ ] Approved official Cardano sources are ingested and evaluated before factual-answer canary.
+- [ ] Wallet secrets are rejected before persistence/provider calls; no keys, signing, or transaction submission path exists.
+- [ ] Financial information remains general and cited; no personalized buy/sell advice is enabled.
+- [ ] Conversation history remains encrypted at rest, with the first-use retention notice and administrator-only deletion policy.
 
-- [ ] Positioning remains: Cardano Governance Copilot for Catalyst reviewers and DReps.
-- [ ] No TapTools replacement claim.
-- [ ] No AI Agent OS claim.
-- [ ] No runtime wallet connector, signing, auto-vote, or transaction submission.
-- [ ] `/proof` remains payload-only.
-- [ ] `/proof-verify` only reads externally submitted metadata through Blockfrost.
-
-## Verification Gate
-
-Run locally:
+## Offline verification
 
 ```bash
 npm ci
@@ -21,71 +17,56 @@ npm test -- --run
 npm run typecheck
 npm run build
 npm run verify:imports
-npm run health
-npm run validate:sources
-npm run validate:sources:live
-npm run eval:citations
 npm audit --audit-level=moderate
-npm audit --omit=dev --audit-level=moderate
+git diff --check
 ```
 
-Required result:
+- [ ] Docker Compose renders with a sanitized environment file:
 
-- [ ] Tests pass.
-- [ ] Typecheck pass.
-- [ ] Build pass.
-- [ ] Package import verification pass.
-- [ ] Healthcheck emits JSON.
-- [ ] Mixed live source validation passes.
-- [ ] Citation eval passes threshold.
-- [ ] Full and production-only audits report 0 moderate+ vulnerabilities.
+  ```bash
+  docker compose --env-file .env.example config
+  ```
 
-## Demo Transcript (Informational)
+- [ ] Docker image builds with the pinned Node runtime.
+- [ ] Migration owner installs pg-boss and creates both queues.
+- [ ] Application role cannot `CREATE` in `public` or `pgboss`.
+- [ ] Application role can perform required conversation DML, pg-boss send/work/schedule, and partition maintenance execution.
+- [ ] Existing owner-only integration tests pass; credential-gated role tests are recorded as skipped when credentials are absent.
 
-`npm run demo` generates a deterministic transcript for review. It is not a verification gate and does not replace tests, typecheck, build, health, source, citation, or audit checks.
+## Staging deployment
 
-## Staging Gate
+- [ ] Encryption key is generated with `umask 077` and `openssl rand -base64 32`, stored outside the repository, and loaded without echoing.
+- [ ] Owner and application database credentials are distinct; only the migration/provisioning services receive owner access.
+- [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0` is Cosign-verified and its read-only config contains only environment references.
+- [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file.
+- [ ] PostgreSQL health, migration completion, role provisioning, webhook health, worker startup, and LiteLLM readiness are recorded.
+- [ ] Telegram webhook is registered with HTTPS and `allowed_updates=["message"]`.
+- [ ] One authorized staging message is queued, answered, persisted encrypted, and delivered.
+- [ ] A wallet-secret message produces only the fixed safety warning and leaves no secret in PostgreSQL, pg-boss, logs, or provider payloads.
+- [ ] A repeated Telegram `update_id` creates no duplicate job or answer.
+- [ ] Partition maintenance succeeds as the app role while direct `CREATE TABLE` fails.
 
-- [ ] `TELEGRAM_BOT_TOKEN` configured in secret manager or `0600` env file.
-- [ ] `VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` configured as the explicit direct/group allowlist.
-- [ ] `VENNEK_DATA_DIR` points to durable storage.
-- [ ] `VENNEK_ENABLE_FIXTURES=false`.
-- [ ] Exactly one poller per Telegram bot token.
-- [ ] `npm run health` passes with staging env.
-- [ ] Systemd or process supervisor restarts on failure.
-- [ ] JSON logs are collected.
-- [ ] Offset persists across restart.
-- [ ] Allowed chat command is delivered and advances its offset.
-- [ ] Rejected chat advances its offset and emits a sanitized runtime log without command routing or command audit/cache/proof side effects.
-- [ ] Rate-limited chat advances its offset and emits a sanitized runtime log without command routing or command audit/cache/proof side effects.
-- [ ] Permanent/exhausted delivery (“poison”) advances its offset and emits only a sanitized abandoned event; cancellation preserves the offset.
+## Rollout and monitoring
 
-## Blockfrost Gate
+- [ ] Internal staging passes for at least one full source-sync/maintenance cycle.
+- [ ] Canary is expanded only through small public traffic, 1,000 DAU, then 10,000 DAU.
+- [ ] Dashboards cover webhook p95, queue age/depth, provider errors/latency, Telegram failures, citation precision, retrieval recall@10, source freshness, and spend.
+- [ ] Expansion pauses automatically at p95 acknowledgement >500 ms, error rate >1%, citation precision <95%, recall@10 <90%, critical-source staleness, or budget ceiling.
 
-- [ ] `BLOCKFROST_PROJECT_ID` configured.
-- [ ] `BLOCKFROST_NETWORK` selected: `mainnet`, `preprod`, or `preview`.
-- [ ] Integration test has known tx hash containing `vennek.proof.v1` metadata.
-- [ ] `/proof-verify <tx_hash> <expected_content_hash>` verifies with a valid 64-hex SHA-256 expected hash.
-- [ ] `/proof-verify` rejects an invalid expected hash.
-- [ ] No runtime wallet/signing/submission code path exists.
-- [ ] Dev-only preprod fixture script, if present, is excluded from deployed runtime and documented as non-production.
+## Rollback and key/role operations
 
-Blockfrost verification and staging smoke are credential-gated checks: run them with real `BLOCKFROST_PROJECT_ID`/Telegram staging credentials, record an explicit not-verified result when credentials are absent, and do not replace the gate with a mock.
+- [ ] Previous verified application image and Compose environment are available.
+- [ ] Application rollback is rehearsed without destructive database down-migrations.
+- [ ] Backup restore is rehearsed into an explicitly named isolated database.
+- [ ] Application-role password rotation is rehearsed; owner credentials remain separate.
+- [ ] Encryption-key loss consequence is documented: retained history cannot be decrypted.
+- [ ] Incident response names the operator who can disable the webhook, stop workers, rotate secrets, and preserve sanitized logs.
 
-## Pilot Gate
-
-- [ ] Pilot participants recruited.
-- [ ] `docs/pilot/onboarding.md` sent.
-- [ ] `docs/pilot/demo-scenarios.md` prepared.
-- [ ] `docs/pilot/feedback-form.md` ready.
-- [ ] `docs/pilot/results.md` initialized.
-
-## Release Notes
-
-Record:
+## Release record
 
 - Version/tag:
 - Commit SHA:
-- Verification command output summary:
+- Verification output:
+- Credential-gated checks not run:
 - Known limitations:
-- Rollback plan:
+- Rollback owner and command:

@@ -1,5 +1,5 @@
 [Unit]
-Description=Vennek Telegram Governance Copilot
+Description=Vennek Public Cardano Agent (local polling)
 After=network-online.target
 Wants=network-online.target
 

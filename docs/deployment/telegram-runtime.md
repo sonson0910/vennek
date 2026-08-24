@@ -1,117 +1,87 @@
-# Telegram Runtime Deployment
+# Public Telegram runtime
 
-This is the minimal production runtime path for the Vennek Telegram bot.
+This runbook covers the foundation staging path. Keep the migration-owner credentials separate from the application role. The webhook and worker must never receive `DATABASE_OWNER_URL`.
 
-## Required Secrets
+## Secret setup
 
-Store these values in an environment file with mode `0600` (for example `/etc/vennek/vennek.env`):
-
-```bash
-TELEGRAM_BOT_TOKEN=...
-VENNEK_TELEGRAM_ALLOWED_CHAT_IDS=12345,-1001234567890
-VENNEK_DATA_DIR=/var/lib/vennek
-```
-
-`VENNEK_TELEGRAM_ALLOWED_CHAT_IDS` is required only in polling mode and is a comma-separated allowlist of direct and approved group chat IDs. Polling startup fails closed when it is absent or invalid; CLI and `--health` are unaffected.
-
-Optional local demo mode:
+Create a mode-0600 environment file outside the repository. Generate the 32-byte encryption key without printing it:
 
 ```bash
-VENNEK_ENABLE_FIXTURES=true
+umask 077
+openssl rand -base64 32 > /secure/path/vennek-encryption-key
 ```
 
-Do not enable fixtures in production.
+Load the key into `VENNEK_ENCRYPTION_KEY` through the deployment secret manager or a protected file loader. Never commit it, echo it, or put it in shell history. Set all values in `.env.example`; placeholders are not production credentials.
 
-## Healthcheck
+## Compose staging
+
+Verify the pinned LiteLLM image before deployment. The image package is listed at [GHCR](https://github.com/BerriAI/litellm/pkgs/container/litellm). With Sigstore Cosign installed, verify the pinned tag using the publishing workflow identity:
 
 ```bash
-node apps/telegram-bot/dist/main.js --health
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github.com/BerriAI/litellm/.github/workflows/.*' \
+  ghcr.io/berriai/litellm:v1.98.0
 ```
 
-Expected JSON log:
-
-```json
-{"level":"info","event":"healthcheck","ok":true}
-```
-
-## Start Polling
-
-From the repository after `npm run build`, load the `0600` environment file without echoing it and start the built runtime:
+Start the ordered stack with the protected environment file:
 
 ```bash
-chmod 0600 /etc/vennek/vennek.env
-set -a
-. /etc/vennek/vennek.env
-set +a
-npm run start:telegram
+chmod 0600 /secure/path/vennek.env
+docker compose --env-file /secure/path/vennek.env config
+docker compose --env-file /secure/path/vennek.env up -d --build
+docker compose --env-file /secure/path/vennek.env ps
 ```
 
-Never put a `TELEGRAM_BOT_TOKEN` assignment in a shell command or history. For service-managed staging, use the systemd unit below with the same mode-`0600` `EnvironmentFile`.
+The order is PostgreSQL health, owner migration plus pg-boss installation/queue creation, restricted application-role provisioning, then webhook/worker. The role-provisioning step grants application DML on the required public tables, pg-boss DML, and execution of the fixed partition-maintenance function; it grants no schema `CREATE` privilege.
 
-Runtime behavior:
+## Migration and role rotation
 
-- reads last Telegram offset from `<VENNEK_DATA_DIR>/runtime/telegram-state.json`;
-- writes offset atomically after each skipped or successfully processed update;
-- requires the chat allowlist before routing, fetching, Blockfrost access, or persistence;
-- applies an in-memory per-chat limit of 10 updates per 60 seconds;
-- unauthorized and rate-limited updates write the offset and a sanitized runtime log, but do not route a command or create command audit, source-cache, or proof-receipt side effects;
-- delivers with at most 3 send-only attempts; HTTP 429 is retryable, while permanent HTTP 4xx errors except 429 or an exhausted retry budget produce a sanitized `telegram_delivery_abandoned` event and advance the offset;
-- cancellation during delivery/retry preserves the offset; a send that resolves successfully is committed even if cancellation arrives immediately afterward;
-- logs structured JSON events with hashed chat IDs, not raw message text;
-- abandoned-event logs contain no raw message text, and there is no persistent dead-letter queue;
-- handles `SIGTERM`/`SIGINT` via `AbortController` and abortable sleep;
-- keeps command persistence fail-open so user responses are not blocked by audit-store failures.
-
-## Source Boundaries
-
-- Remote source fetching requires HTTPS, a strict allowed MIME type, and a streaming 2 MiB byte cap.
-- Optional local file imports canonicalize the allowed root and target, reject symlinks, outside-root/non-regular files, oversized files, and invalid `ProposalDocument` schemas. Production Telegram keeps local files disabled.
-
-## State Files
-
-```text
-<VENNEK_DATA_DIR>/
-  runtime/telegram-state.json
-  audit-logs/commands.jsonl
-  source-cache/*.json
-  proof-receipts/*.json
-```
-
-File permissions:
-
-```text
-directories: 0700
-files:       0600
-```
-
-## Systemd Example
-
-Use `deploy/systemd/vennek-telegram.service` for a system service or `deploy/systemd/vennek-telegram.user.service` for a non-root user staging service. Put secrets in an EnvironmentFile such as `/etc/vennek/vennek.env` or `~/.config/vennek/vennek.env` with mode `0600`.
-
-## Staging Smoke Test
-
-Before starting the poller, run:
+Run these commands when operating outside Compose, using owner credentials only in the migration/provisioning process:
 
 ```bash
-chmod 0600 ~/.config/vennek/vennek.env
-set -a
-. ~/.config/vennek/vennek.env
-set +a
-npm run staging:smoke
+DATABASE_OWNER_URL='postgresql://…' npm run migrate:agent
+DATABASE_OWNER_URL='postgresql://…' \
+  VENNEK_APP_DB_USER=vennek_app \
+  VENNEK_APP_DB_PASSWORD='…' \
+  npm run provision:app-role
 ```
 
-This loads the token without echoing it; never place a token assignment in the command line or shell history.
+The migration owner installs/upgrades pg-boss and pre-creates `telegram-answer` and `conversation-partition-maintenance`. Runtime pg-boss constructors are deliberately `migrate: false, createSchema: false`.
 
-The smoke test verifies:
+To rotate the application password, provision the same validated role with a new password, update only the protected application URL, and restart webhook/worker. Do not print either URL or password. Rotate the owner credential separately through the PostgreSQL secret manager; do not give it to the app containers.
 
-- `VENNEK_DATA_DIR` is configured;
-- Telegram token is accepted by `getMe` without printing the token;
-- Blockfrost project id can read the latest block without printing the key;
-- optional proof fixture tx verifies when `BLOCKFROST_TEST_TX_HASH` and `BLOCKFROST_TEST_CONTENT_HASH` are present.
+## Telegram webhook
 
-## Operational Notes
+Expose the webhook service behind an HTTPS reverse proxy at a stable URL. Set `TELEGRAM_WEBHOOK_SECRET` to at least 32 URL-safe characters. Register only the `message` update type after the service is healthy:
 
-- Long polling is acceptable for MVP/pilot. Webhook mode can come later.
-- Monitor stderr/stdout JSON logs.
-- Back up `VENNEK_DATA_DIR` if audit/source/proof history matters.
-- Rotate `commands.jsonl` or migrate to SQLite/Postgres before high-volume production.
+```bash
+curl --fail-with-body --silent --show-error -X POST \
+  -H 'content-type: application/json' \
+  --data "{\"url\":\"${PUBLIC_WEBHOOK_URL}/telegram/webhook\",\"secret_token\":\"${TELEGRAM_WEBHOOK_SECRET}\",\"allowed_updates\":[\"message\"]}" \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+```
+
+Do not paste token assignments into a command or commit them. Check status without logging the token:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+```
+
+The webhook returns quickly after authentication, validates and bounds the update, and queues work. It does not answer synchronously. The worker owns provider calls, encrypted history writes, Telegram delivery, and daily partition maintenance.
+
+## Health and monitoring
+
+```bash
+docker compose --env-file /secure/path/vennek.env ps
+docker compose --env-file /secure/path/vennek.env logs --since=10m telegram-webhook agent-worker
+```
+
+Monitor webhook acknowledgement p95, queue depth/age, provider errors and latency, Telegram delivery failures, citation precision, retrieval recall@10, source freshness, and daily/monthly spend. Pause expansion if p95 acknowledgement exceeds 500 ms, errors exceed 1%, citation precision falls below 95%, retrieval recall@10 falls below 90%, a critical source is stale, or a budget ceiling is reached. Logs must not contain message text, wallet secrets, tokens, or database URLs.
+
+## Rollback and staged rollout
+
+Roll out internal staging first, then a small public canary, 1,000 DAU, and 10,000 DAU. Keep the last verified application image tag and Compose environment. To roll back application code, stop the current runtime and start the previous image tag; keep database migrations forward-compatible and do not run destructive down-migrations during an incident. Restore PostgreSQL only into an explicitly isolated database after verifying a backup.
+
+Foundation staging intentionally refuses factual Cardano answers until the knowledge/RAG plan has ingested and evaluated the approved official sources. Do not open a public factual-answer canary before that gate and the independent security review pass.

@@ -66,14 +66,12 @@ async function runPoll(): Promise<void> {
 async function runWorker(): Promise<void> {
   const { config, token } = runtimeConfig();
   const db = createDatabase(config.databaseUrl);
-  const boss = new PgBoss({ db: { executeSql: (text, values) => db.query(text, values) } });
+  const boss = createRuntimePgBoss(db);
   const repository = new ConversationRepository(db, config.encryptionKey);
   const api = createTelegramApi(token);
   try {
     await ensureConversationPartitions(db);
     await boss.start();
-    await boss.createQueue(TELEGRAM_QUEUE);
-    await boss.createQueue(PARTITION_QUEUE);
     await boss.schedule(PARTITION_QUEUE, "0 0 * * *");
     await boss.work(PARTITION_QUEUE, async () => ensureConversationPartitions(db));
     const answer = createAgentAnswer(repository);
@@ -109,7 +107,7 @@ async function runWorker(): Promise<void> {
 async function runWebhook(): Promise<void> {
   const { config, webhookSecret } = runtimeConfig();
   const db = createDatabase(config.databaseUrl);
-  const boss = new PgBoss({ db: { executeSql: (text, values) => db.query(text, values) } });
+  const boss = createRuntimePgBoss(db);
   const queue = new PgBossAgentQueue(boss, db);
   const options = createWebhookOptions(webhookSecret, queue.enqueue.bind(queue));
   const server = createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
@@ -135,7 +133,6 @@ async function runWebhook(): Promise<void> {
   try {
     await ensureConversationPartitions(db);
     await boss.start();
-    await boss.createQueue(TELEGRAM_QUEUE);
     await listen(server, Number(process.env.PORT ?? 8080));
     await waitForServerDrain(server);
   } finally {
@@ -143,6 +140,14 @@ async function runWebhook(): Promise<void> {
     await boss.stop().catch(() => undefined);
     await db.end().catch(() => undefined);
   }
+}
+
+function createRuntimePgBoss(db: ReturnType<typeof createDatabase>): PgBoss {
+  return new PgBoss({
+    db: { executeSql: (text, values) => db.query(text, values) },
+    migrate: false,
+    createSchema: false,
+  });
 }
 
 async function handleNodeRequest(request: IncomingMessage, response: ServerResponse, options: ReturnType<typeof createWebhookOptions>, signal: AbortSignal): Promise<void> {

@@ -1,0 +1,48 @@
+model_list:
+  - model_name: cardano-fast
+    litellm_params:
+      model: os.environ/OPENAI_FAST_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: cardano-fast
+    litellm_params:
+      model: os.environ/ANTHROPIC_FAST_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: cardano-fast
+    litellm_params:
+      model: os.environ/GEMINI_FAST_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: cardano-quality
+    litellm_params:
+      model: os.environ/OPENAI_QUALITY_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: cardano-quality
+    litellm_params:
+      model: os.environ/ANTHROPIC_QUALITY_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: cardano-quality
+    litellm_params:
+      model: os.environ/GEMINI_QUALITY_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: cardano-verifier
+    litellm_params:
+      model: os.environ/OPENAI_VERIFIER_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: cardano-verifier
+    litellm_params:
+      model: os.environ/ANTHROPIC_VERIFIER_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: cardano-verifier
+    litellm_params:
+      model: os.environ/GEMINI_VERIFIER_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+
+router_settings:
+  num_retries: 1
+  allowed_fails: 2
+  routing_strategy: least-busy
+
+litellm_settings:
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
