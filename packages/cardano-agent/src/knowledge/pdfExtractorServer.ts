@@ -99,15 +99,21 @@ export function createPdfExtractorServer(options: PdfExtractorServerOptions): Pd
     }
     active = true;
     const requestAbort = new AbortController();
-    const abortRequest = () => requestAbort.abort();
+    const deadlineAt = Date.now() + timeoutMs;
+    const deadlineTimer = setTimeout(() => {
+      requestAbort.abort(new PdfExtractorError("PDF extractor timed out", 504));
+    }, timeoutMs);
+    const abortRequest = () => requestAbort.abort(new PdfExtractorError("PDF extractor request aborted", 504));
     const abortResponse = () => {
-      if (!response.writableEnded) requestAbort.abort();
+      if (!response.writableEnded) requestAbort.abort(new PdfExtractorError("PDF extractor request aborted", 504));
     };
     request.once("aborted", abortRequest);
     response.once("close", abortResponse);
     try {
-      const bytes = await readRequestBody(request, contentLength);
-      const result = await runPdfExtractorWorker(bytes, workerFactory, timeoutMs, requestAbort.signal);
+      const bytes = await readRequestBody(request, contentLength, requestAbort.signal);
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) throw new PdfExtractorError("PDF extractor timed out", 504);
+      const result = await runPdfExtractorWorker(bytes, workerFactory, remainingMs, requestAbort.signal);
       const validated = validatePdfExtractionResult(result);
       if (Buffer.byteLength(JSON.stringify(validated)) > PDF_MAX_WIRE_RESPONSE_BYTES) {
         throw new PdfExtractorError("PDF extractor output is too large", 422);
@@ -129,6 +135,7 @@ export function createPdfExtractorServer(options: PdfExtractorServerOptions): Pd
     } finally {
       request.off("aborted", abortRequest);
       response.off("close", abortResponse);
+      clearTimeout(deadlineTimer);
       active = false;
     }
   }
@@ -167,21 +174,49 @@ export async function runPdfExtractorWorker(
   const exactBuffer = Uint8Array.from(bytes).buffer;
   const worker = workerFactory();
   return new Promise<PdfExtractionResult>((resolve, reject) => {
+    const deadlineAt = Date.now() + timeoutMs;
     let settled = false;
-    const timer = setTimeout(() => finish(new PdfExtractorError("PDF extractor timed out")), timeoutMs);
-    const onAbort = () => finish(new PdfExtractorError("PDF extractor request aborted", 504));
+    let finishing = false;
+    let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => finish(new PdfExtractorError("PDF extractor timed out", 504)), timeoutMs);
+    const onAbort = () => {
+      const reason = signal?.reason;
+      finish(reason instanceof PdfExtractorError ? reason : new PdfExtractorError("PDF extractor request aborted", 504));
+    };
     const finish = (error?: Error, result?: PdfExtractionResult) => {
-      if (settled) return;
-      settled = true;
+      if (finishing || settled) return;
+      finishing = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       worker.removeListener("message", onMessage);
       worker.removeListener("error", onError);
       worker.removeListener("exit", onExit);
-      void worker.terminate().catch(() => undefined).finally(() => {
-        if (error) reject(error);
-        else resolve(result!);
-      });
+      let termination: Promise<number> | undefined;
+      try {
+        termination = worker.terminate();
+      } catch {
+        termination = undefined;
+      }
+      const settle = (terminationTimedOut: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (terminationTimer !== undefined) clearTimeout(terminationTimer);
+        if (terminationTimedOut || Date.now() >= deadlineAt) {
+          reject(new PdfExtractorError("PDF extractor timed out", 504));
+        } else if (error) {
+          reject(error);
+        } else {
+          resolve(result!);
+        }
+      };
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        if (termination !== undefined) void termination.catch(() => undefined);
+        settle(true);
+        return;
+      }
+      terminationTimer = setTimeout(() => settle(true), remainingMs);
+      if (termination !== undefined) void termination.then(() => settle(false), () => undefined);
     };
     const onMessage = (message: unknown) => {
       if (!message || typeof message !== "object") {
@@ -229,25 +264,50 @@ function headerValue(value: string | string[] | undefined): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-async function readRequestBody(request: http.IncomingMessage, expectedLength: number): Promise<Uint8Array> {
+async function readRequestBody(request: http.IncomingMessage, expectedLength: number, signal?: AbortSignal): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   let total = 0;
-  try {
-    for await (const chunk of request) {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += bytes.byteLength;
-      if (total > expectedLength || total > PDF_MAX_INPUT_BYTES) {
-        request.destroy();
-        throw new PdfExtractorError("PDF body is larger than Content-Length", 413);
+  const read = async (): Promise<Uint8Array> => {
+    try {
+      for await (const chunk of request) {
+        if (signal?.aborted) throw abortReason(signal);
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += bytes.byteLength;
+        if (total > expectedLength || total > PDF_MAX_INPUT_BYTES) {
+          request.resume();
+          throw new PdfExtractorError("PDF body is larger than Content-Length", 413);
+        }
+        chunks.push(bytes);
       }
-      chunks.push(bytes);
+      if (signal?.aborted) throw abortReason(signal);
+    } catch (error) {
+      if (error instanceof PdfExtractorError) throw error;
+      if (signal?.aborted) throw abortReason(signal);
+      throw new PdfExtractorError("PDF request body failed", 422);
     }
-  } catch (error) {
-    if (error instanceof PdfExtractorError) throw error;
-    throw new PdfExtractorError("PDF request body failed", 422);
+    if (total !== expectedLength) throw new PdfExtractorError("PDF body does not match Content-Length", 422);
+    return Buffer.concat(chunks, total);
+  };
+  if (!signal) return read();
+  let abort!: () => void;
+  const aborted = new Promise<Uint8Array>((_, reject) => {
+    abort = () => {
+      request.resume();
+      reject(abortReason(signal));
+    };
+  });
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([read(), aborted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
   }
-  if (total !== expectedLength) throw new PdfExtractorError("PDF body does not match Content-Length", 422);
-  return Buffer.concat(chunks, total);
+}
+
+function abortReason(signal: AbortSignal): PdfExtractorError {
+  return signal.reason instanceof PdfExtractorError
+    ? signal.reason
+    : new PdfExtractorError("PDF extractor request aborted", 504);
 }
 
 function sendError(response: http.ServerResponse, statusCode: number, message: string): void {

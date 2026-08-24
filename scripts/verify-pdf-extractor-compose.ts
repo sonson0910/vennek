@@ -6,7 +6,6 @@ const exec = promisify(execFile);
 const composeFile = "docker-compose.yml";
 const envFile = process.env.PDF_EXTRACTOR_ENV_FILE ?? ".env.example";
 const project = `vennek-pdf-${process.pid}-${randomBytes(5).toString("hex")}`;
-const token = process.env.PDF_EXTRACTOR_TOKEN ?? "A".repeat(43);
 
 async function docker(args: string[], options: { allowFailure?: boolean; label?: string } = {}): Promise<string> {
   try {
@@ -37,6 +36,11 @@ async function main(): Promise<void> {
   const extractor = config.services["pdf-extractor"];
   const worker = config.services["agent-worker"];
   const image = extractor?.image as string;
+  const renderedToken = extractor?.environment?.PDF_EXTRACTOR_TOKEN;
+  assert(typeof renderedToken === "string" && /^[A-Za-z0-9_-]{43}$/.test(renderedToken), "rendered PDF extractor token is invalid");
+  const tokenBytes = Buffer.from(renderedToken, "base64url");
+  assert(tokenBytes.byteLength === 32 && tokenBytes.toString("base64url") === renderedToken, "rendered PDF extractor token must decode to 32 bytes");
+  const token = renderedToken;
   assert(extractor?.command?.join(" ") === "node packages/cardano-agent/dist/knowledge/pdfExtractorServer.js", "unexpected extractor command");
   assert(!extractor?.ports, "PDF extractor must not publish ports");
   assert(extractor?.networks?.["pdf-sandbox"] === null, "extractor must use pdf-sandbox");
@@ -204,7 +208,22 @@ async function main(): Promise<void> {
     `;
     await docker(["run", "--rm", "--network", network, "-e", `PDF_EXTRACTOR_TOKEN=${token}`, image, "node", "-e", nodeScript], { label: "service checks" });
     const agentProbe = "import { PdfExtractorClient } from '@vennek/cardano-agent'; const client = new PdfExtractorClient({ url: process.env.PDF_EXTRACTOR_URL, token: process.env.PDF_EXTRACTOR_TOKEN }); const result = await client.extract(Buffer.from('JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MjAgVGQgKENhcmRhbm8gd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDI0MSAwMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNQolJUVPRgo=', 'base64')); if (!result.text.includes('Cardano works')) process.exit(1);";
-    await docker(compose("run", "--rm", "--no-deps", "agent-worker", "node", "-e", agentProbe), { label: "configured agent-to-service probe" });
+    const pollAgentExtraction = async (): Promise<void> => {
+      const deadline = Date.now() + 30_000;
+      let lastError = "not attempted";
+      while (Date.now() <= deadline) {
+        try {
+          await docker(compose("run", "--rm", "--no-deps", "agent-worker", "node", "-e", agentProbe), { label: "configured agent-to-service probe" });
+          return;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          if (!/(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|network.+(?:not ready|unavailable)|service.+(?:starting|not running))/i.test(lastError)) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      throw new Error(`configured agent-to-service probe timed out: ${lastError}`);
+    };
+    await pollAgentExtraction();
     console.log(`PDF extractor Compose verification passed (${project})`);
   } finally {
     await docker(compose("down", "--volumes", "--remove-orphans"), { allowFailure: true });

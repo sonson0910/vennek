@@ -9,6 +9,45 @@ import {
 
 const MAX_PAGES = 300;
 
+export function appendTextItem(parts: string[], item: { str: string; hasEOL?: boolean }, total: number, hasFollowingContent: boolean): number {
+  if (item.str.length > 0) {
+    total += item.str.length;
+    if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
+    parts.push(item.str);
+  }
+  if (!hasFollowingContent) return total;
+  if (item.hasEOL) {
+    total += 1;
+    if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
+    parts.push("\n");
+  } else if (item.str.length > 0) {
+    total += 1;
+    if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
+    parts.push(" ");
+  }
+  return total;
+}
+
+export function appendTextItems(
+  parts: string[],
+  items: ReadonlyArray<{ str: string; hasEOL?: boolean }>,
+  total: number
+): { total: number; hasContent: boolean } {
+  const followsContent = new Array<boolean>(items.length);
+  let contentFollows = false;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    followsContent[index] = contentFollows;
+    if (items[index].str.length > 0) contentFollows = true;
+  }
+  let hasContent = false;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    total = appendTextItem(parts, item, total, followsContent[index]);
+    hasContent ||= item.str.length > 0 || item.hasEOL === true;
+  }
+  return { total, hasContent };
+}
+
 export async function extractPdf(bytes: ArrayBuffer): Promise<PdfExtractionResult> {
   if (bytes.byteLength < 1 || bytes.byteLength > PDF_MAX_INPUT_BYTES) throw new Error("PDF input limit exceeded");
   const loadingTask = pdfjs.getDocument({
@@ -25,21 +64,25 @@ export async function extractPdf(bytes: ArrayBuffer): Promise<PdfExtractionResul
     }
     const parts: string[] = [];
     let total = 0;
+    let pageBreakPending = false;
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       try {
         const content = await page.getTextContent();
-        for (const item of content.items) {
-          if (!("str" in item) || typeof item.str !== "string" || item.str.length === 0) continue;
-          total += item.str.length;
-          if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
-          parts.push(item.str);
+        const textItems = content.items.map((item) => ({
+          str: "str" in item && typeof item.str === "string" ? item.str : "",
+          hasEOL: "hasEOL" in item && item.hasEOL === true
+        }));
+        const hasContent = textItems.some((item) => item.str.length > 0 || item.hasEOL === true);
+        if (pageBreakPending && hasContent) {
+            total += 1;
+            if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
+            parts.push("\n");
+            pageBreakPending = false;
         }
-        if (pageNumber < document.numPages) {
-          total += 1;
-          if (total > PDF_MAX_OUTPUT_CHARS) throw new Error("PDF output limit exceeded");
-          parts.push("\n");
-        }
+        const appended = appendTextItems(parts, textItems, total);
+        total = appended.total;
+        if (appended.hasContent && pageNumber < document.numPages) pageBreakPending = true;
       } finally {
         page.cleanup();
       }

@@ -120,5 +120,9 @@ describe("PDF extractor verifier contract", () => {
     expect(verifier).toContain("pdfExtractorWorker.js");
     expect(verifier).toContain("pdfjs-dist");
     expect(verifier).toContain("pollValidExtraction");
+    expect(verifier).toContain("environment?.PDF_EXTRACTOR_TOKEN");
+    expect(verifier).not.toContain("process.env.PDF_EXTRACTOR_TOKEN ??");
+    expect(verifier).toContain("pollAgentExtraction");
+    expect(verifier).toContain("ENOTFOUND");
   });
 });

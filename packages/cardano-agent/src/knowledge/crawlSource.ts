@@ -82,6 +82,26 @@ class SharedByteBudget implements CrawlByteBudget {
   }
 }
 
+class PdfExtractionQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  }
+}
+
+const pdfExtractionQueue = new PdfExtractionQueue();
+
 // Kept off the package root; direct-path tests use the production reservation accounting.
 export function createCrawlByteBudget(): CrawlByteBudget {
   return new SharedByteBudget();
@@ -165,12 +185,15 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
           await addUrls(discoverSitemapUrls(response.bytes, entry));
           return;
         }
-        const extracted = await extractContent({
+        const extract = () => extractContent({
           mime: response.mime,
           bytes: response.bytes,
           signal: crawlSignal,
           pdfExtractor: input.pdfExtractor
         });
+        const extracted = response.mime === "application/pdf"
+          ? await pdfExtractionQueue.run(extract)
+          : await extract();
         documents.push({
           sourceId: entry.id,
           canonicalUrl: requestedUrl,

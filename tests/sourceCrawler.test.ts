@@ -172,6 +172,75 @@ describe("bounded source crawler", () => {
     expect(extractor.extract).toHaveBeenCalledOnce();
   });
 
+  it("serializes PDF extraction while keeping page fetches concurrent", async () => {
+    const active = { value: 0, max: 0 };
+    const { request } = fakeRequest({
+      "/start": html('<h1>Index</h1><p>Cardano PDFs.</p><a href="/a.pdf">A</a><a href="/b.pdf">B</a>'),
+      "/a.pdf": { body: "%PDF-1.4 A", contentType: "application/pdf" },
+      "/b.pdf": { body: "%PDF-1.4 B", contentType: "application/pdf" }
+    });
+    const extractor = {
+      extract: vi.fn(async (bytes: Uint8Array) => {
+        active.value += 1;
+        active.max = Math.max(active.max, active.value);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (active.value > 1) throw new Error("PDF extractor overlap");
+          return { title: `PDF ${bytes.at(-1)}`, text: "PDF text" };
+        } finally {
+          active.value -= 1;
+        }
+      })
+    };
+
+    const result = await crawlSource({
+      entry: pageEntry,
+      repository: fakeRepository(),
+      signal: new AbortController().signal,
+      now,
+      lookup: publicLookup,
+      request,
+      pdfExtractor: extractor
+    });
+
+    expect(result.documents).toHaveLength(3);
+    expect(result.documents.filter((document) => document.canonicalUrl.endsWith(".pdf"))).toHaveLength(2);
+    expect(active.max).toBe(1);
+  });
+
+  it("serializes PDF extraction across concurrent crawls", async () => {
+    const active = { value: 0, max: 0 };
+    const extractor = {
+      extract: vi.fn(async () => {
+        active.value += 1;
+        active.max = Math.max(active.max, active.value);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (active.value > 1) throw new Error("PDF extractor overlap");
+          return { title: "Remote PDF", text: "PDF text" };
+        } finally {
+          active.value -= 1;
+        }
+      })
+    };
+    const crawl = (id: string) => {
+      const entry = { ...pageEntry, id, url: `https://docs.example.com/${id}.pdf` };
+      return crawlSource({
+        entry,
+        repository: fakeRepository(),
+        signal: new AbortController().signal,
+        now,
+        lookup: publicLookup,
+        request: fakeRequest({ [`/${id}.pdf`]: { body: "%PDF-1.4", contentType: "application/pdf" } }).request,
+        pdfExtractor: extractor
+      });
+    };
+
+    const results = await Promise.all([crawl("first"), crawl("second")]);
+    expect(results.flatMap((result) => result.documents)).toHaveLength(2);
+    expect(active.max).toBe(1);
+  });
+
   it("caps concurrency at four and stops at 500 requests", async () => {
     const concurrency: { active: number; max: number } = { active: 0, max: 0 };
     const responses: Record<string, ResponseSpec> = {};

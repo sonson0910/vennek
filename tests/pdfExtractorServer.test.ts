@@ -11,7 +11,7 @@ const token = Buffer.alloc(32, 7).toString("base64url");
 const pdf = Buffer.from("%PDF-1.4\nbody");
 
 class FakeWorker extends EventEmitter implements WorkerLike {
-  constructor(private readonly result: unknown, private readonly delayMs = 0) {
+  constructor(private readonly result: unknown, private readonly delayMs = 0, private readonly hangTermination = false, private readonly rejectTermination = false, private readonly throwTermination = false) {
     super();
   }
 
@@ -20,9 +20,12 @@ class FakeWorker extends EventEmitter implements WorkerLike {
     setTimeout(() => this.emit("message", { ok: true, result: this.result }), this.delayMs);
   }
 
-  async terminate(): Promise<number> {
+  terminate(): Promise<number> {
+    if (this.hangTermination) return new Promise<number>(() => undefined);
+    if (this.rejectTermination) return Promise.reject(new Error("termination failed"));
+    if (this.throwTermination) throw new Error("termination threw");
     this.emit("exit", 0);
-    return 0;
+    return Promise.resolve(0);
   }
 }
 
@@ -125,4 +128,56 @@ describe("PDF extractor server", () => {
       expect((await request(port)).status).toBe(504);
     }, 100);
   });
+
+  it("times out a slow authenticated upload and releases the slot", async () => {
+    await withServer(() => new FakeWorker({ title: "ok", text: "text" }), async (port) => {
+      const slow = await new Promise<{ status: number }>((resolve, reject) => {
+        let gotResponse = false;
+        const req = http.request({
+          host: "127.0.0.1",
+          port,
+          path: "/v1/extract/pdf",
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/pdf", "content-length": pdf.byteLength }
+        }, (res) => {
+          gotResponse = true;
+          res.resume();
+          res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
+        });
+        req.on("error", (error) => {
+          if (!gotResponse) reject(error);
+        });
+        req.write(pdf.subarray(0, 1));
+        setTimeout(() => {
+          if (!req.destroyed) req.end(pdf.subarray(1));
+        }, 60);
+      });
+      expect(slow.status).toBe(504);
+      expect((await request(port)).status).toBe(200);
+    }, 30);
+  }, 1_000);
+
+  it("bounds worker termination and releases the slot after a valid result", async () => {
+    let workers = 0;
+    await withServer(() => new FakeWorker({ title: "ok", text: "text" }, 0, workers++ === 0), async (port) => {
+      expect((await request(port)).status).toBe(504);
+      expect((await request(port)).status).toBe(200);
+    }, 30);
+  }, 1_000);
+
+  it("does not confirm a valid result when worker termination rejects", async () => {
+    let workers = 0;
+    await withServer(() => new FakeWorker({ title: "ok", text: "text" }, 0, false, workers++ === 0), async (port) => {
+      expect((await request(port)).status).toBe(504);
+      expect((await request(port)).status).toBe(200);
+    }, 30);
+  }, 1_000);
+
+  it("does not confirm a valid result when worker termination throws", async () => {
+    let workers = 0;
+    await withServer(() => new FakeWorker({ title: "ok", text: "text" }, 0, false, false, workers++ === 0), async (port) => {
+      expect((await request(port)).status).toBe(504);
+      expect((await request(port)).status).toBe(200);
+    }, 30);
+  }, 1_000);
 });
