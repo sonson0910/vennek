@@ -2,6 +2,8 @@ import type { Pool, PoolClient } from "pg";
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const VECTOR_SIZE = 1_536;
+const PG_BIGINT_MAX = "9223372036854775807";
+const PG_INTEGER_MAX = 2_147_483_647;
 
 export type StoreVersionInput = {
   sourceId: string;
@@ -69,6 +71,9 @@ function normalizeVersionId(value: string | number): string {
   if (!/^[1-9][0-9]*$/.test(value)) {
     throw new Error("Version ID must be a positive integer.");
   }
+  if (value.length > PG_BIGINT_MAX.length || (value.length === PG_BIGINT_MAX.length && value > PG_BIGINT_MAX)) {
+    throw new Error("Version ID exceeds the PostgreSQL bigint range.");
+  }
   return value;
 }
 
@@ -92,7 +97,7 @@ function validateChunks(versionId: string | number, chunks: KnowledgeChunkInput[
     if (!chunk || typeof chunk !== "object") {
       throw new Error("Chunk must be an object.");
     }
-    if (!Number.isSafeInteger(chunk.ordinal) || chunk.ordinal < 0) {
+    if (!Number.isSafeInteger(chunk.ordinal) || chunk.ordinal < 0 || chunk.ordinal > PG_INTEGER_MAX) {
       throw new Error("Chunk ordinal must be a nonnegative integer.");
     }
     if (ordinals.has(chunk.ordinal)) {
@@ -103,8 +108,17 @@ function validateChunks(versionId: string | number, chunks: KnowledgeChunkInput[
     assertNonEmpty(chunk.content, "Chunk content");
     assertContentHash(chunk.contentHash, "Chunk content hash");
     assertNonEmpty(chunk.embeddingModel, "Embedding model");
-    if (!Array.isArray(chunk.embedding) || chunk.embedding.length !== VECTOR_SIZE || !chunk.embedding.every(Number.isFinite)) {
+    if (!Array.isArray(chunk.embedding) || chunk.embedding.length !== VECTOR_SIZE) {
       throw new Error("Chunk embedding must contain exactly 1,536 finite numbers.");
+    }
+    for (let index = 0; index < VECTOR_SIZE; index += 1) {
+      const value = chunk.embedding[index];
+      if (!(index in chunk.embedding) || typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error("Chunk embedding must contain exactly 1,536 finite numbers.");
+      }
+      if (!Number.isFinite(Math.fround(value))) {
+        throw new Error("Chunk embedding values must fit PostgreSQL float4.");
+      }
     }
   }
   return normalizedVersionId;
@@ -148,6 +162,7 @@ export class KnowledgeRepository {
     const normalizedVersionId = validateChunks(versionId, chunks);
     const client: PoolClient = await this.db.connect();
     let inTransaction = false;
+    let releaseError: Error | undefined;
     try {
       await client.query("BEGIN");
       inTransaction = true;
@@ -175,12 +190,14 @@ export class KnowledgeRepository {
         try {
           await client.query("ROLLBACK");
         } catch {
-          // Preserve the original database error.
+          releaseError = error instanceof Error ? error : new Error("Knowledge transaction failed.");
         }
+      } else {
+        releaseError = error instanceof Error ? error : new Error("Knowledge transaction failed.");
       }
       throw error;
     } finally {
-      client.release();
+      client.release(releaseError);
     }
   }
 }
