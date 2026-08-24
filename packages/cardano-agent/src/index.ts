@@ -12,3 +12,12 @@ export { createDatabase } from "./database.js";
 export { ConversationRepository } from "./conversations.js";
 export type { ConversationRole } from "./conversations.js";
 export { ensureConversationPartitions } from "./conversationPartitions.js";
+
+export { LiteLlmClient } from "./llm/liteLlmClient.js";
+export type {
+  ChatMessage,
+  CompletionInput,
+  CompletionOutput,
+} from "./llm/liteLlmClient.js";
+export { selectModelProfile } from "./llm/modelRouter.js";
+export type { ModelProfile } from "./llm/modelRouter.js";
