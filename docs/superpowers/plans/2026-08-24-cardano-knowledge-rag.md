@@ -445,7 +445,7 @@ Send each claim plus only its cited excerpts to the verifier profile. Require a 
 
 - [ ] **Step 5: Wire retrieval into `answerQuestion`**
 
-Retrieve evidence, trigger live discovery when current evidence is absent/stale, select the model profile, generate, verify, render inline numbered links, persist the final assistant message, and record only token counts/model/latency in `usage_ledger`. Greetings remain deterministic and do not call retrieval or a model.
+Retrieve evidence, trigger live discovery when current evidence is absent/stale, validate an immutable bounded evidence snapshot, and reject wallet-secret material before any provider call. Then select the model profile, generate, verify, render inline numbered links, persist the final assistant message, and record only token counts/model/latency in `usage_ledger`. Greetings remain deterministic and do not call retrieval or a model.
 
 - [ ] **Step 6: Verify and commit**
 
