@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
 import {
   decryptText,
   encryptText,
@@ -70,6 +71,21 @@ describe("wallet secret detection", () => {
       cborHex: "5820abcdef",
     });
     expect(findWalletSecret(signingKey)).toBe("signing-key");
+  });
+
+  it("bounds oversized repeated mnemonic scans and fails closed", () => {
+    const oversizedInput = "abandon ".repeat(4096);
+    const startedAt = performance.now();
+    const result = findWalletSecret(oversizedInput);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result).toBe("recovery-phrase");
+    expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it("detects escaped signing-key JSON in a code fence", () => {
+    const escapedJson = String.raw`{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","cbor\u0048ex":"5820abcdef"}`;
+    expect(findWalletSecret(`\`\`\`json\n${escapedJson}\n\`\`\``)).toBe("signing-key");
   });
 
   it("does not flag blank or ordinary short text", () => {
