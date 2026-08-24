@@ -66,6 +66,11 @@ export async function provisionAppRole(
            UNION ALL
            SELECT 'type' FROM pg_catalog.pg_type WHERE typowner = $1::oid
            UNION ALL
+           SELECT 'owned object' FROM pg_catalog.pg_shdepend
+             WHERE refclassid = 'pg_catalog.pg_authid'::regclass
+               AND refobjid = $1::oid
+               AND deptype = 'o'
+           UNION ALL
            SELECT 'membership' FROM pg_catalog.pg_auth_members
              WHERE roleid = $1::oid OR member = $1::oid
          ) owned
@@ -77,6 +82,7 @@ export async function provisionAppRole(
           `Application role ${safeRoleName} must not own database objects or have role memberships (${ownership.rows[0].kind}).`,
         );
       }
+      await client.query(`DROP OWNED BY ${roleIdentifier}`);
       await client.query(
         `ALTER ROLE ${roleIdentifier} LOGIN PASSWORD ${passwordLiteral}
          NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
@@ -109,17 +115,11 @@ export async function provisionAppRole(
         public.usage_ledger_id_seq
       TO ${roleIdentifier}
     `);
-    const legacyPartitionFunction = await client.query<{ present: boolean }>(
-      "SELECT pg_catalog.to_regprocedure($1) IS NOT NULL AS present",
-      ["public.ensure_conversation_partitions(timestamptz)"],
-    );
-    if (legacyPartitionFunction.rows[0]?.present) {
-      await client.query(
-        `REVOKE ALL ON FUNCTION public.ensure_conversation_partitions(timestamptz) FROM ${roleIdentifier}`,
-      );
-    }
     await client.query(
-      `GRANT EXECUTE ON FUNCTION public.ensure_conversation_partitions() TO ${roleIdentifier}`,
+      `GRANT EXECUTE ON FUNCTION
+         public.ensure_conversation_partitions(),
+         public.ensure_conversation_partitions(timestamptz)
+       TO ${roleIdentifier}`,
     );
     await client.query(`
       GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss
@@ -131,17 +131,21 @@ export async function provisionAppRole(
     `);
 
     const createPrivileges = await client.query<{
-      public_create: boolean;
-      pgboss_create: boolean;
+      database_create: boolean;
+      schema_create: boolean;
     }>(
       `SELECT
-         has_schema_privilege($1, 'public', 'CREATE') AS public_create,
-         has_schema_privilege($1, 'pgboss', 'CREATE') AS pgboss_create`,
+         has_database_privilege($1, current_database(), 'CREATE') AS database_create,
+         EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_namespace
+           WHERE has_schema_privilege($1, oid, 'CREATE')
+         ) AS schema_create`,
       [safeRoleName],
     );
     const privileges = createPrivileges.rows[0];
-    if (privileges?.public_create || privileges?.pgboss_create) {
-      throw new Error(`Application role ${safeRoleName} must not have CREATE on public or pgboss.`);
+    if (privileges?.database_create || privileges?.schema_create) {
+      throw new Error(`Application role ${safeRoleName} must not have CREATE on the database or any schema.`);
     }
 
     await client.query("COMMIT");

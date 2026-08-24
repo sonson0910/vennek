@@ -21,7 +21,7 @@ Verify the pinned LiteLLM image before deployment. The image package is listed a
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp 'https://github.com/BerriAI/litellm/.github/workflows/.*' \
-  ghcr.io/berriai/litellm:v1.98.0
+  ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4
 ```
 
 Start the ordered stack with the protected environment file:
@@ -37,15 +37,14 @@ The order is PostgreSQL health, owner migration plus pg-boss installation/queue 
 
 ## Migration and role rotation
 
-Run these commands when operating outside Compose, using owner credentials only in the migration/provisioning process:
+With `DATABASE_OWNER_URL`, `VENNEK_APP_DB_USER`, and `VENNEK_APP_DB_PASSWORD` already loaded by the deployment secret manager into the protected environment, run:
 
 ```bash
-DATABASE_OWNER_URL='postgresql://…' npm run migrate:agent
-DATABASE_OWNER_URL='postgresql://…' \
-  VENNEK_APP_DB_USER=vennek_app \
-  VENNEK_APP_DB_PASSWORD='…' \
-  npm run provision:app-role
+npm run migrate:agent
+npm run provision:app-role
 ```
+
+The equivalent Compose one-shot services are `docker compose --env-file /secure/path/vennek.env run --rm migrate` and `docker compose --env-file /secure/path/vennek.env run --rm provision-app-role`. Provisioning an existing application role clears its prior direct grants before applying the exact runtime privileges.
 
 The migration owner installs/upgrades pg-boss and pre-creates `telegram-answer` and `conversation-partition-maintenance`. Runtime pg-boss constructors are deliberately `migrate: false, createSchema: false`.
 
@@ -57,16 +56,20 @@ Expose the webhook service behind an HTTPS reverse proxy at a stable URL. Set `T
 
 ```bash
 curl --fail-with-body --silent --show-error -X POST \
-  -H 'content-type: application/json' \
-  --data "{\"url\":\"${PUBLIC_WEBHOOK_URL}/telegram/webhook\",\"secret_token\":\"${TELEGRAM_WEBHOOK_SECRET}\",\"allowed_updates\":[\"message\"]}" \
-  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  --config - <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+header = "content-type: application/json"
+data-raw = "{\"url\":\"${PUBLIC_WEBHOOK_URL}/telegram/webhook\",\"secret_token\":\"${TELEGRAM_WEBHOOK_SECRET}\",\"allowed_updates\":[\"message\"]}"
+EOF
 ```
 
 Do not paste token assignments into a command or commit them. Check status without logging the token:
 
 ```bash
 curl --fail-with-body --silent --show-error \
-  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+  --config - <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+EOF
 ```
 
 The webhook returns quickly after authentication, validates and bounds the update, and queues work. It does not answer synchronously. The worker owns provider calls, encrypted history writes, Telegram delivery, and daily partition maintenance.

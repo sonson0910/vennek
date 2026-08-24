@@ -30,6 +30,7 @@ git diff --check
 - [ ] Docker image builds with the pinned Node runtime.
 - [ ] Migration owner installs pg-boss and creates both queues.
 - [ ] Application role cannot `CREATE` in `public` or `pgboss`.
+- [ ] Application role cannot `CREATE` in the database or any schema; reprovisioning clears prior direct grants.
 - [ ] Application role can perform required conversation DML, pg-boss send/work/schedule, and partition maintenance execution.
 - [ ] Existing owner-only integration tests pass; credential-gated role tests are recorded as skipped when credentials are absent.
 
@@ -37,7 +38,7 @@ git diff --check
 
 - [ ] Encryption key is generated with `umask 077` and `openssl rand -base64 32`, stored outside the repository, and loaded without echoing.
 - [ ] Owner and application database credentials are distinct; only the migration/provisioning services receive owner access.
-- [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0` is Cosign-verified and its read-only config contains only environment references.
+- [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4` is Cosign-verified and its read-only config contains only environment references.
 - [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file.
 - [ ] PostgreSQL health, migration completion, role provisioning, webhook health, worker startup, and LiteLLM readiness are recorded.
 - [ ] Telegram webhook is registered with HTTPS and `allowed_updates=["message"]`.

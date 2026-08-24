@@ -64,7 +64,7 @@ async function runPoll(): Promise<void> {
 }
 
 async function runWorker(): Promise<void> {
-  const { config, token } = runtimeConfig();
+  const { config, token } = agentRuntimeConfig();
   const db = createDatabase(config.databaseUrl);
   const boss = createRuntimePgBoss(db);
   const repository = new ConversationRepository(db, config.encryptionKey);
@@ -105,8 +105,8 @@ async function runWorker(): Promise<void> {
 }
 
 async function runWebhook(): Promise<void> {
-  const { config, webhookSecret } = runtimeConfig();
-  const db = createDatabase(config.databaseUrl);
+  const { databaseUrl, webhookSecret } = webhookRuntimeConfig();
+  const db = createDatabase(databaseUrl);
   const boss = createRuntimePgBoss(db);
   const queue = new PgBossAgentQueue(boss, db);
   const options = createWebhookOptions(webhookSecret, queue.enqueue.bind(queue));
@@ -199,9 +199,8 @@ function agentRuntimeConfig(): { config: AgentConfig; token: string } {
   return { config: parseAgentConfig(process.env), token: requiredEnv("TELEGRAM_BOT_TOKEN") };
 }
 
-function runtimeConfig(): { config: AgentConfig; token: string; webhookSecret: string } {
-  const { config, token } = agentRuntimeConfig();
-  return { config, token, webhookSecret: requiredEnv("TELEGRAM_WEBHOOK_SECRET") };
+function webhookRuntimeConfig(): { databaseUrl: string; webhookSecret: string } {
+  return { databaseUrl: requiredEnv("DATABASE_URL"), webhookSecret: requiredEnv("TELEGRAM_WEBHOOK_SECRET") };
 }
 
 function requiredEnv(name: string): string {

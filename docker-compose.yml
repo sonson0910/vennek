@@ -66,13 +66,6 @@ services:
     image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
     environment:
       DATABASE_URL: ${DATABASE_APP_URL:?DATABASE_APP_URL is required}
-      VENNEK_ENCRYPTION_KEY: ${VENNEK_ENCRYPTION_KEY:?VENNEK_ENCRYPTION_KEY is required}
-      LITELLM_BASE_URL: http://litellm:4000
-      LITELLM_API_KEY: ${LITELLM_API_KEY:?LITELLM_API_KEY is required}
-      VENNEK_MODEL_FAST: ${VENNEK_MODEL_FAST:?VENNEK_MODEL_FAST is required}
-      VENNEK_MODEL_QUALITY: ${VENNEK_MODEL_QUALITY:?VENNEK_MODEL_QUALITY is required}
-      VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET is required}
       PORT: "8080"
     command: ["node", "apps/telegram-bot/dist/main.js", "--webhook"]
@@ -101,7 +94,6 @@ services:
       VENNEK_MODEL_QUALITY: ${VENNEK_MODEL_QUALITY:?VENNEK_MODEL_QUALITY is required}
       VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
-      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET is required}
     command: ["node", "apps/telegram-bot/dist/main.js", "--worker"]
     depends_on:
       provision-app-role:

@@ -87,6 +87,14 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       await expect(ensureConversationPartitions(app, new Date("2031-04-15T00:00:00.000Z")))
         .rejects.toThrow(/permission denied/i);
       await ensureConversationPartitions(owner, new Date("2031-04-15T00:00:00.000Z"));
+      await expect(app.query(
+        "SELECT public.ensure_conversation_partitions($1::timestamptz)",
+        [new Date("2099-04-15T00:00:00.000Z")],
+      )).resolves.toBeDefined();
+      const compatibilityPartition = await owner.query<{ partition: string | null }>(
+        "SELECT pg_catalog.to_regclass('public.conversation_messages_2099_04')::text AS partition",
+      );
+      expect(compatibilityPartition.rows[0]?.partition).toBeNull();
       await expect(app.query("CREATE TABLE public.vennek_forbidden_table (id integer)"))
         .rejects.toThrow(/permission denied|must be owner/i);
       await expect(app.query("CREATE TABLE pgboss.vennek_forbidden_table (id integer)"))
@@ -130,6 +138,69 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
             }
           }
         }
+      }
+    }
+  }, 30_000);
+
+  it("normalizes a pre-existing role and allows password rotation", async () => {
+    const roleName = `vennek_reprovision_${process.pid}_${Date.now()}`;
+    const initialPassword = randomBytes(24).toString("base64");
+    const rotatedPassword = randomBytes(24).toString("base64");
+    const roleIdentifier = quoteIdentifier(roleName);
+    const owner = createDatabase(ownerUrl!);
+    const initialAppUrl = new URL(ownerUrl!);
+    initialAppUrl.username = roleName;
+    initialAppUrl.password = initialPassword;
+    const rotatedAppUrl = new URL(ownerUrl!);
+    rotatedAppUrl.username = roleName;
+    rotatedAppUrl.password = rotatedPassword;
+
+    try {
+      await owner.query(`CREATE ROLE ${roleIdentifier} LOGIN PASSWORD '${initialPassword}'`);
+      const database = await owner.query<{ name: string }>("SELECT current_database() AS name");
+      await owner.query(`GRANT CREATE ON DATABASE ${quoteIdentifier(database.rows[0]!.name)} TO ${roleIdentifier}`);
+      await owner.query(`GRANT SELECT ON TABLE public.schema_migrations TO ${roleIdentifier}`);
+
+      await provisionAppRole(ownerUrl!, roleName, initialPassword);
+
+      const privileges = await owner.query<{
+        database_create: boolean;
+        unrelated_select: boolean;
+        schema_create_count: string;
+      }>(
+        `SELECT
+           has_database_privilege($1, current_database(), 'CREATE') AS database_create,
+           has_table_privilege($1, 'public.schema_migrations', 'SELECT') AS unrelated_select,
+           (SELECT count(*) FROM pg_catalog.pg_namespace
+            WHERE has_schema_privilege($1, oid, 'CREATE'))::text AS schema_create_count`,
+        [roleName],
+      );
+      expect(privileges.rows[0]).toEqual({
+        database_create: false,
+        unrelated_select: false,
+        schema_create_count: "0",
+      });
+
+      const initialApp = createDatabase(initialAppUrl.toString());
+      try {
+        await expect(initialApp.query("SELECT 1")).resolves.toBeDefined();
+      } finally {
+        await initialApp.end();
+      }
+
+      await provisionAppRole(ownerUrl!, roleName, rotatedPassword);
+
+      const rotatedApp = createDatabase(rotatedAppUrl.toString());
+      try {
+        await expect(rotatedApp.query("SELECT public.ensure_conversation_partitions()")).resolves.toBeDefined();
+      } finally {
+        await rotatedApp.end();
+      }
+    } finally {
+      try {
+        await cleanupRole(owner, roleName);
+      } finally {
+        await owner.end();
       }
     }
   }, 30_000);
