@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p packages/shared/tsconfig.build.json && tsc -p packages/cardano-governance-skills/tsconfig.build.json && tsc -p packages/cardano-agent/tsconfig.build.json && tsc -p apps/telegram-bot/tsconfig.build.json",
     "verify:imports": "node -e \"Promise.all([import('@vennek/shared'), import('@vennek/cardano-governance-skills'), import('@vennek/cardano-agent'), import('@vennek/telegram-bot')]).then(() => console.log('package imports ok'))\"",
+    "migrate:agent": "tsx scripts/migrate-agent.ts",
     "health": "node apps/telegram-bot/dist/main.js --health",
     "start:telegram": "node apps/telegram-bot/dist/main.js --poll",
     "demo": "tsx scripts/run-demo.ts",
