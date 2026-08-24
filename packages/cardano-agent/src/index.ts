@@ -27,6 +27,7 @@ export type {
   AnswerQuestionDependencies,
   QuestionCompletionInput,
   QuestionEvidence,
+  QuestionEvidenceTrustTier,
   QuestionInput,
   QuestionLanguage,
   QuestionPersistenceResult,

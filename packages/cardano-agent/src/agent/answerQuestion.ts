@@ -9,6 +9,21 @@ export type QuestionInput = {
   text: string;
 };
 
+export type QuestionEvidenceTrustTier = "official" | "community" | "unverified";
+
+export type QuestionEvidence = {
+  id: string;
+  sourceId: string;
+  trustTier: QuestionEvidenceTrustTier;
+  title: string;
+  url: string;
+  excerpt: string;
+  publishedAt?: string;
+  retrievedAt: string;
+  versionHash: string;
+  score: number;
+};
+
 export type QuestionLanguage =
   | "vi"
   | "en"
@@ -26,8 +41,6 @@ export type QuestionLanguage =
   | "id"
   | "tr";
 
-export type QuestionEvidence = unknown;
-
 export type QuestionPersistenceResult = {
   firstInteraction?: boolean;
 };
@@ -35,7 +48,7 @@ export type QuestionPersistenceResult = {
 export type QuestionCompletionInput = {
   question: string;
   language: QuestionLanguage;
-  evidence: QuestionEvidence[];
+  evidence: readonly QuestionEvidence[];
 };
 
 export type QuestionRetrievalInput = {
@@ -182,21 +195,12 @@ const LANGUAGE_DETECTORS: ReadonlyArray<readonly [QuestionLanguage, RegExp]> = [
   ["ru", /[а-яё]/iu],
   ["zh", /[一-龯]/u],
   ["es", /[¿¡]|\b(qué|cómo|dónde|por\s+qué|hola|gracias|español)\b/iu],
-  ["fr", /\b(bonjour|salut|merci|français|france|réponse|pourquoi|être)\b/iu],
-  ["pt", /\b(olá|você|não|obrigad[oa]|português|serve)\b/iu],
+  ["fr", /\b(bonjour|salut|merci|français|réponse|pourquoi|être)\b/iu],
+  ["pt", /\b(para\s+que|olá|você|não|obrigad[oa]|português)\b/iu],
   ["id", /\b(halo|apa|terima|kasih|sumber|pertanyaan|bahasa)\b/iu],
   ["tr", /[ğıış]|\b(merhaba|teşekkür|kaynak|soru|türkçe|nasıl)\b/iu],
   ["de", /[äöüß]|\b(hallo|danke|bitte|deutsch|antwort|warum)\b/iu],
 ];
-
-function languageFor(text: unknown): QuestionLanguage {
-  if (typeof text !== "string") return "en";
-  if (text.length > 16_384) return "en";
-  for (const [language, detector] of LANGUAGE_DETECTORS) {
-    if (detector.test(text)) return language;
-  }
-  return "en";
-}
 
 function normalizedGreeting(text: string): string {
   return text
@@ -225,16 +229,26 @@ const GREETING_PATTERNS: Record<QuestionLanguage, RegExp> = {
   tr: /^(?:merhaba|selam|günaydın|gunaydin)$/u,
 };
 
-function isGreeting(text: string, language: QuestionLanguage): boolean {
-  return GREETING_PATTERNS[language].test(normalizedGreeting(text));
+const GREETING_LANGUAGES = (Object.entries(GREETING_PATTERNS) as Array<
+  [QuestionLanguage, RegExp]
+>);
+
+function languageFor(text: unknown): QuestionLanguage {
+  if (typeof text !== "string") return "en";
+  if (text.length > 16_384) return "en";
+  const normalized = text.normalize("NFC");
+  const greeting = normalizedGreeting(normalized);
+  for (const [language, pattern] of GREETING_LANGUAGES) {
+    if (pattern.test(greeting)) return language;
+  }
+  for (const [language, detector] of LANGUAGE_DETECTORS) {
+    if (detector.test(normalized)) return language;
+  }
+  return "en";
 }
 
-function validQuestionInput(value: unknown): value is QuestionInput {
-  if (!isRecord(value)) return false;
-  return ["telegramUserId", "telegramChatId", "text"].every((field) => {
-    const fieldValue = value[field];
-    return typeof fieldValue === "string" && fieldValue.trim().length > 0 && fieldValue.length <= 16_384;
-  });
+function isGreeting(text: string, language: QuestionLanguage): boolean {
+  return GREETING_PATTERNS[language].test(normalizedGreeting(text));
 }
 
 function validDependencies(value: unknown): value is AnswerQuestionDependencies {
@@ -261,54 +275,265 @@ function withNotice(answer: string, firstInteraction: boolean): string {
   return `${RETENTION_NOTICE}\n\n${withoutDuplicateNotice}`;
 }
 
-const MAX_EVIDENCE_DEPTH = 8;
-const MAX_EVIDENCE_NODES = 256;
-const MAX_EVIDENCE_STRING_BYTES = 16_384;
+const MISSING = Symbol("missing");
+const MAX_ID_LENGTH = 128;
+const MAX_TEXT_LENGTH = 16_384;
+const MAX_EVIDENCE_COUNT = 10;
+const MAX_EVIDENCE_RECORD_BYTES = 16_384;
+const MAX_EVIDENCE_TOTAL_BYTES = 64 * 1024;
+const MAX_EVIDENCE_WINDOW_BYTES = 16_384;
+const EVIDENCE_WINDOW_OVERLAP = 4_096;
+const FIELD_LIMITS = {
+  id: 256,
+  sourceId: 256,
+  title: 2_048,
+  url: 2_048,
+  excerpt: 16_384,
+  publishedAt: 64,
+  retrievedAt: 64,
+  versionHash: 256,
+} as const;
 
-function evidenceContainsWalletSecret(root: unknown): boolean {
-  const pending: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
-  const visited = new Set<object>();
-  let nodes = 0;
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    if (Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
 
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) return true;
-    if (++nodes > MAX_EVIDENCE_NODES) return true;
-
-    if (typeof current.value === "string") {
-      if (Buffer.byteLength(current.value, "utf8") > MAX_EVIDENCE_STRING_BYTES) return true;
-      if (findWalletSecret(current.value)) return true;
-      continue;
+function readOwnDataProperty(value: object, key: PropertyKey): unknown | typeof MISSING {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) {
+      return MISSING;
     }
-    if (current.value === null || current.value === undefined) continue;
-    if (typeof current.value !== "object") {
-      if (typeof current.value === "function") return true;
-      continue;
-    }
-    if (current.depth >= MAX_EVIDENCE_DEPTH || visited.has(current.value)) return true;
-    visited.add(current.value);
+    return descriptor.value;
+  } catch {
+    return MISSING;
+  }
+}
 
-    let keys: (string | symbol)[];
-    try {
-      keys = Reflect.ownKeys(current.value);
-    } catch {
-      return true;
+function hasOwnProperty(value: object, key: PropertyKey): boolean {
+  try {
+    return Object.getOwnPropertyDescriptor(value, key) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+function boundedText(value: unknown, limit: number, requireContent = true): string | undefined {
+  if (typeof value !== "string" || value.length > limit || Buffer.byteLength(value, "utf8") > limit) {
+    return undefined;
+  }
+  if (requireContent && !value.trim()) return undefined;
+  return value;
+}
+
+function canonicalQuestionInput(value: unknown): QuestionInput | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const telegramUserId = readOwnDataProperty(value, "telegramUserId");
+  const telegramChatId = readOwnDataProperty(value, "telegramChatId");
+  const text = readOwnDataProperty(value, "text");
+  const userId = boundedText(telegramUserId, MAX_ID_LENGTH);
+  const chatId = boundedText(telegramChatId, MAX_ID_LENGTH);
+  const questionText = boundedText(text, MAX_TEXT_LENGTH);
+  if (!userId || !chatId || !questionText) return undefined;
+  return Object.freeze({ telegramUserId: userId, telegramChatId: chatId, text: questionText }) as QuestionInput;
+}
+
+function questionContainsWalletSecret(question: QuestionInput): boolean {
+  const fields = [question.telegramUserId, question.telegramChatId, question.text];
+  if (fields.some((field) => findWalletSecret(field) !== undefined)) return true;
+  return scanBoundedText(fields.join(" "));
+}
+
+function validTimestamp(value: unknown, limit: number): value is string {
+  const text = boundedText(value, limit);
+  return text !== undefined && Number.isFinite(Date.parse(text));
+}
+
+function validUrl(value: unknown): value is string {
+  const text = boundedText(value, FIELD_LIMITS.url);
+  if (!text) return false;
+  try {
+    const url = new URL(text);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isTrustTier(value: unknown): value is QuestionEvidenceTrustTier {
+  return value === "official" || value === "community" || value === "unverified";
+}
+
+function canonicalEvidenceRecord(value: unknown): QuestionEvidence | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const id = boundedText(readOwnDataProperty(value, "id"), FIELD_LIMITS.id);
+  const sourceId = boundedText(readOwnDataProperty(value, "sourceId"), FIELD_LIMITS.sourceId);
+  const trustTier = readOwnDataProperty(value, "trustTier");
+  const title = boundedText(readOwnDataProperty(value, "title"), FIELD_LIMITS.title);
+  const url = readOwnDataProperty(value, "url");
+  const excerpt = boundedText(readOwnDataProperty(value, "excerpt"), FIELD_LIMITS.excerpt);
+  const publishedAt = readOwnDataProperty(value, "publishedAt");
+  const retrievedAt = readOwnDataProperty(value, "retrievedAt");
+  const versionHash = boundedText(readOwnDataProperty(value, "versionHash"), FIELD_LIMITS.versionHash);
+  const score = readOwnDataProperty(value, "score");
+
+  if (
+    !id ||
+    !sourceId ||
+    !isTrustTier(trustTier) ||
+    !title ||
+    !validUrl(url) ||
+    !excerpt ||
+    !validTimestamp(retrievedAt, FIELD_LIMITS.retrievedAt) ||
+    !versionHash ||
+    typeof score !== "number" ||
+    !Number.isFinite(score)
+  ) {
+    return undefined;
+  }
+  if (hasOwnProperty(value, "publishedAt") && (publishedAt === MISSING || !validTimestamp(publishedAt, FIELD_LIMITS.publishedAt))) {
+    return undefined;
+  }
+
+  const canonical: QuestionEvidence = {
+    id,
+    sourceId,
+    trustTier,
+    title,
+    url,
+    excerpt,
+    retrievedAt,
+    versionHash,
+    score,
+  };
+  if (publishedAt !== MISSING) canonical.publishedAt = publishedAt as string;
+  return Object.freeze(canonical);
+}
+
+function evidenceValues(record: QuestionEvidence): string[] {
+  return [
+    record.id,
+    record.sourceId,
+    record.trustTier,
+    record.title,
+    record.url,
+    record.excerpt,
+    ...(record.publishedAt ? [record.publishedAt] : []),
+    record.retrievedAt,
+    record.versionHash,
+    String(record.score),
+  ];
+}
+
+function evidenceRecordText(record: QuestionEvidence): string {
+  return [
+    "id", record.id,
+    "sourceId", record.sourceId,
+    "trustTier", record.trustTier,
+    "title", record.title,
+    "url", record.url,
+    "excerpt", record.excerpt,
+    ...(record.publishedAt ? ["publishedAt", record.publishedAt] : []),
+    "retrievedAt", record.retrievedAt,
+    "versionHash", record.versionHash,
+    "score", String(record.score),
+  ].join(" ");
+}
+
+function nextWindowEnd(text: string, start: number): number {
+  let end = start;
+  let bytes = 0;
+  while (end < text.length) {
+    const codePoint = text.codePointAt(end);
+    if (codePoint === undefined) break;
+    const character = String.fromCodePoint(codePoint);
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > MAX_EVIDENCE_WINDOW_BYTES) break;
+    bytes += characterBytes;
+    end += character.length;
+  }
+  return end;
+}
+
+function scanBoundedText(text: string): boolean {
+  let start = 0;
+  while (start < text.length) {
+    const end = nextWindowEnd(text, start);
+    if (end <= start || findWalletSecret(text.slice(start, end))) return true;
+    if (end === text.length) return false;
+    start = Math.max(start + 1, end - EVIDENCE_WINDOW_OVERLAP);
+  }
+  return false;
+}
+
+type EvidenceSnapshot = {
+  records: readonly QuestionEvidence[];
+  containsSecret: boolean;
+};
+
+function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
+  let isArray = false;
+  try {
+    isArray = Array.isArray(value);
+  } catch {
+    return undefined;
+  }
+  if (!isArray || typeof value !== "object" || value === null) return undefined;
+
+  const lengthValue = readOwnDataProperty(value, "length");
+  if (typeof lengthValue !== "number" || !Number.isSafeInteger(lengthValue) || lengthValue < 0 || lengthValue > MAX_EVIDENCE_COUNT) {
+    return undefined;
+  }
+  try {
+    if ((value as { length: unknown }).length !== lengthValue || Object.getPrototypeOf(value) !== Array.prototype) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const records: QuestionEvidence[] = [];
+  const recordTexts: string[] = [];
+  const correlationTexts: string[] = [];
+  const excerptTexts: string[] = [];
+  let aggregateBytes = 0;
+  for (let index = 0; index < lengthValue; index += 1) {
+    const item = readOwnDataProperty(value, String(index));
+    if (item === MISSING) return undefined;
+    const record = canonicalEvidenceRecord(item);
+    if (!record) return undefined;
+    const recordText = evidenceRecordText(record);
+    const recordBytes = Buffer.byteLength(recordText, "utf8");
+    if (recordBytes > MAX_EVIDENCE_RECORD_BYTES || aggregateBytes + recordBytes + 1 > MAX_EVIDENCE_TOTAL_BYTES) {
+      return undefined;
     }
-    if (keys.length > MAX_EVIDENCE_NODES) return true;
-    for (const key of keys) {
-      if (typeof key === "string") {
-        if (Buffer.byteLength(key, "utf8") > MAX_EVIDENCE_STRING_BYTES) return true;
-        if (findWalletSecret(key)) return true;
-      }
-      try {
-        if (pending.length >= MAX_EVIDENCE_NODES) return true;
-        pending.push({ value: Reflect.get(current.value, key), depth: current.depth + 1 });
-      } catch {
-        return true;
+    aggregateBytes += recordBytes + 1;
+    records.push(record);
+    recordTexts.push(recordText);
+    const values = evidenceValues(record);
+    correlationTexts.push(...values);
+    excerptTexts.push(record.excerpt);
+
+    if (scanBoundedText(recordText)) return { records: Object.freeze(records), containsSecret: true };
+    for (let left = 0; left < values.length; left += 1) {
+      for (let right = left + 1; right < values.length; right += 1) {
+        if (scanBoundedText(`${values[left]} ${values[right]}`)) {
+          return { records: Object.freeze(records), containsSecret: true };
+        }
       }
     }
   }
-  return false;
+
+  const frozenRecords = Object.freeze(records);
+  if (scanBoundedText(recordTexts.join("\n")) || scanBoundedText(correlationTexts.join("\n")) || scanBoundedText(excerptTexts.join(" "))) {
+    return { records: frozenRecords, containsSecret: true };
+  }
+  return { records: frozenRecords, containsSecret: false };
 }
 
 export async function answerQuestion(
@@ -319,18 +544,18 @@ export async function answerQuestion(
   let persisted = false;
   let firstInteraction = false;
   try {
-    language = languageFor(isRecord(input) ? input.text : undefined);
-    if (!validQuestionInput(input)) return MESSAGES[language].invalid;
+    const inputText = isPlainRecord(input) ? readOwnDataProperty(input, "text") : MISSING;
+    language = languageFor(inputText === MISSING ? undefined : inputText);
+    const question = canonicalQuestionInput(input);
+    if (!question) return MESSAGES[language].invalid;
 
-    const question = { ...input };
-    const secretKind = findWalletSecret(question.text);
-    if (secretKind) return MESSAGES[language].secret;
+    if (questionContainsWalletSecret(question)) return MESSAGES[language].secret;
     if (!validDependencies(dependencies)) return MESSAGES[language].dependency;
 
     const persistenceResult = await dependencies.persist(question);
     firstInteraction = firstInteractionFrom(persistenceResult);
     persisted = true;
-    if (findWalletSecret(question.text)) return withNotice(MESSAGES[language].secret, firstInteraction);
+    if (questionContainsWalletSecret(question)) return withNotice(MESSAGES[language].secret, firstInteraction);
 
     if (isGreeting(question.text, language)) {
       return withNotice(MESSAGES[language].greeting, firstInteraction);
@@ -340,19 +565,20 @@ export async function answerQuestion(
       question: question.text,
       language,
     });
-    if (!Array.isArray(retrieved)) return withNotice(MESSAGES[language].dependency, firstInteraction);
-    if (retrieved.length === 0) {
+    const evidenceSnapshot = snapshotEvidence(retrieved);
+    if (!evidenceSnapshot) return withNotice(MESSAGES[language].dependency, firstInteraction);
+    if (evidenceSnapshot.records.length === 0) {
       return withNotice(MESSAGES[language].insufficient, firstInteraction);
     }
 
-    if (findWalletSecret(question.text)) return withNotice(MESSAGES[language].secret, firstInteraction);
-    if (evidenceContainsWalletSecret(retrieved)) {
+    if (questionContainsWalletSecret(question)) return withNotice(MESSAGES[language].secret, firstInteraction);
+    if (evidenceSnapshot.containsSecret) {
       return withNotice(MESSAGES[language].secret, firstInteraction);
     }
     const completed = await dependencies.complete({
       question: question.text,
       language,
-      evidence: retrieved,
+      evidence: evidenceSnapshot.records,
     });
     if (typeof completed !== "string" || !completed.trim()) {
       return withNotice(MESSAGES[language].dependency, firstInteraction);

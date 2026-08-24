@@ -1,14 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
-import { answerQuestion, RETENTION_NOTICE } from "@vennek/cardano-agent";
+import {
+  answerQuestion,
+  RETENTION_NOTICE,
+  type QuestionEvidence,
+} from "@vennek/cardano-agent";
 
 const input = (text: string) => ({ telegramUserId: "1", telegramChatId: "2", text });
+const evidenceRecord = (overrides: Partial<QuestionEvidence> = {}): QuestionEvidence => ({
+  id: "E1",
+  sourceId: "cardano-docs",
+  trustTier: "official",
+  title: "Ouroboros",
+  url: "https://docs.cardano.org/ouroboros",
+  excerpt: "Ouroboros is proof of stake.",
+  retrievedAt: "2026-08-24T00:00:00.000Z",
+  versionHash: "v1",
+  score: 1,
+  ...overrides,
+});
 
 describe("natural-language question service", () => {
   it("blocks wallet secrets before persistence, retrieval, or model access", async () => {
     const persist = vi.fn();
     const retrieve = vi.fn();
     const complete = vi.fn();
-    const phrase = Array.from({ length: 24 }, (_, index) => `word${index}`).join(" ");
+    const phrase = Array.from({ length: 12 }, (_, index) => `word${index}`).join(" ");
 
     const answer = await answerQuestion(input(phrase), { persist, retrieve, complete });
 
@@ -27,7 +43,7 @@ describe("natural-language question service", () => {
     });
     const retrieve = vi.fn(async () => {
       events.push("retrieve");
-      return [{ id: "E1", text: "Ouroboros is proof of stake." }];
+      return [evidenceRecord()];
     });
     const complete = vi.fn(async () => {
       events.push("complete");
@@ -43,7 +59,7 @@ describe("natural-language question service", () => {
   it("prepends the retention notice only when persistence marks first use", async () => {
     const answer = await answerQuestion(input("Xin chào!"), {
       persist: async () => ({ firstInteraction: true }),
-      retrieve: async () => [{ id: "unused" }],
+      retrieve: async () => [evidenceRecord()],
       complete: async () => "unused",
     });
 
@@ -111,14 +127,14 @@ describe("natural-language question service", () => {
   });
 
   it("completes an evidence-backed question through the injected dependency", async () => {
-    const complete = vi.fn(async ({ evidence }: { evidence: unknown[] }) => {
+    const complete = vi.fn(async ({ evidence }: { evidence: readonly QuestionEvidence[] }) => {
       expect(evidence).toHaveLength(1);
       return "Ouroboros uses proof of stake.";
     });
 
     const answer = await answerQuestion(input("How does Ouroboros work?"), {
       persist: vi.fn(async () => undefined),
-      retrieve: async () => [{ id: "E1", text: "Ouroboros is proof of stake." }],
+      retrieve: async () => [evidenceRecord()],
       complete,
     });
 
@@ -174,7 +190,7 @@ describe("natural-language question service", () => {
     await expect(
       answerQuestion(input("What is Cardano?"), {
         persist: async () => undefined,
-        retrieve: async () => [{ id: "E1" }],
+        retrieve: async () => [evidenceRecord()],
         complete: async () => {
           throw completeError;
         },
@@ -215,14 +231,14 @@ describe("natural-language question service", () => {
     expectNoticeOnce(
       await answerQuestion(input("What is Cardano?"), {
         persist: firstUse,
-        retrieve: async () => [{ id: "E1" }],
+        retrieve: async () => [evidenceRecord()],
         complete: async () => " ",
       }),
     );
     expectNoticeOnce(
       await answerQuestion(input("What is Cardano?"), {
         persist: firstUse,
-        retrieve: async () => [{ id: "E1" }],
+        retrieve: async () => [evidenceRecord()],
         complete: async () => {
           throw new Error("complete failed");
         },
@@ -232,7 +248,7 @@ describe("natural-language question service", () => {
     expectNoticeOnce(
       await answerQuestion(input("What is Cardano?"), {
         persist: firstUse,
-        retrieve: async () => [{ id: "E1" }],
+        retrieve: async () => [evidenceRecord()],
         complete: async () => phrase,
       }),
     );
@@ -257,25 +273,177 @@ describe("natural-language question service", () => {
     expect(secret).not.toContain(RETENTION_NOTICE);
   });
 
-  it("blocks a wallet secret nested in retrieved evidence before completion", async () => {
-    const phrase = Array.from({ length: 24 }, (_, index) => `word${index + 1}`).join(" ");
-    const signingKey = JSON.stringify({
-      type: "PaymentSigningKeyShelley_ed25519",
-      description: "nested evidence",
-      cborHex: "5820abcdef",
-    });
+  it("blocks signing-key hints and mnemonics split across canonical evidence fields", async () => {
+    const phrase = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
     const complete = vi.fn(async () => "should not be returned");
 
     const answer = await answerQuestion(input("What is Cardano?"), {
       persist: vi.fn(async () => ({ firstInteraction: true })),
-      retrieve: async () => [{ source: { snippets: ["safe context", { raw: phrase, key: signingKey }] } }],
+      retrieve: async () => [
+        evidenceRecord({
+          title: 'Envelope {"type":"PaymentSigningKeyShelley_ed25519"}',
+          excerpt: 'Material {"cborHex":"5820abcdef"}',
+        }),
+        evidenceRecord({ id: "E2", excerpt: "abandon abandon abandon abandon abandon abandon" }),
+        evidenceRecord({ id: "E3", excerpt: "abandon abandon abandon about" }),
+      ],
       complete,
     });
 
     expect(answer).toMatch(/wallet secret|không gửi/i);
     expect(answer).toContain(RETENTION_NOTICE);
     expect(answer).not.toContain(phrase);
-    expect(answer).not.toContain(signingKey);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects evidence accessors before they can change from safe to secret", async () => {
+    const phrase = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
+    let reads = 0;
+    const evidence = evidenceRecord();
+    Object.defineProperty(evidence, "excerpt", {
+      enumerable: true,
+      get: () => (reads++ === 0 ? "safe" : phrase),
+    });
+    const complete = vi.fn(async () => "should not be returned");
+
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [evidence],
+      complete,
+    });
+
+    expect(answer).toMatch(/can't process|wallet secret/i);
+    expect(reads).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed evidence values and aggregate budgets before completion", async () => {
+    const complete = vi.fn(async () => "should not be returned");
+    for (const value of [null, 42, {}]) {
+      const answer = await answerQuestion(input("What is Cardano?"), {
+        persist: vi.fn(async () => undefined),
+        retrieve: async () => [value],
+        complete,
+      });
+      expect(answer).toMatch(/can't process|wallet secret/i);
+    }
+
+    const largeEvidence = Array.from({ length: 10 }, (_, index) =>
+      evidenceRecord({ id: `E${index}`, excerpt: "x".repeat(15_000) }),
+    );
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => largeEvidence,
+      complete,
+    });
+    expect(answer).toMatch(/can't process|wallet secret/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed canonical fields, credentials, and optional accessors", async () => {
+    const complete = vi.fn(async () => "should not be returned");
+    const malformed = [
+      evidenceRecord({ url: "https://user:password@example.com/source" }),
+      evidenceRecord({ score: Number.NaN }),
+      evidenceRecord({ retrievedAt: "not-a-date" }),
+    ];
+    const optionalAccessor = evidenceRecord();
+    Object.defineProperty(optionalAccessor, "publishedAt", {
+      enumerable: true,
+      get: () => "2026-08-24T00:00:00.000Z",
+    });
+    malformed.push(optionalAccessor);
+
+    for (const evidence of malformed) {
+      const answer = await answerQuestion(input("What is Cardano?"), {
+        persist: vi.fn(async () => undefined),
+        retrieve: async () => [evidence],
+        complete,
+      });
+      expect(answer).toMatch(/can't process|wallet secret/i);
+    }
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects million-length or sparse evidence arrays before reading items", async () => {
+    let itemReads = 0;
+    const hostile = new Proxy([evidenceRecord()], {
+      get(target, property, receiver) {
+        if (property === "length") return 1_000_000;
+        if (property === "0") itemReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const complete = vi.fn(async () => "should not be returned");
+
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => hostile,
+      complete,
+    });
+
+    expect(answer).toMatch(/can't process|wallet secret/i);
+    expect(itemReads).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("passes a frozen canonical evidence snapshot and ignores later source mutation", async () => {
+    const original = evidenceRecord({ excerpt: "Original source excerpt." });
+    const complete = vi.fn(async ({ evidence }: { evidence: readonly QuestionEvidence[] }) => {
+      original.excerpt = "Mutated after snapshot";
+      return `${evidence[0]!.excerpt} frozen=${Object.isFrozen(evidence[0]) && Object.isFrozen(evidence)}`;
+    });
+
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [original],
+      complete,
+    });
+
+    expect(answer).toBe("Original source excerpt. frozen=true");
+    expect(original.excerpt).toBe("Mutated after snapshot");
+  });
+
+  it("persists only canonical input fields and scans all three own strings", async () => {
+    const phrase = Array.from({ length: 12 }, (_, index) => `word${index}`).join(" ");
+    const persist = vi.fn(async () => undefined);
+    const raw = { ...input("What is Cardano?"), mnemonic: phrase };
+    await answerQuestion(raw, {
+      persist,
+      retrieve: async () => [],
+      complete: async () => "unused",
+    });
+    expect(persist).toHaveBeenCalledWith(input("What is Cardano?"));
+
+    persist.mockClear();
+    const blocked = await answerQuestion({ ...input("What is Cardano?"), telegramChatId: phrase }, {
+      persist,
+      retrieve: async () => [],
+      complete: async () => "unused",
+    });
+    expect(blocked).toMatch(/wallet secret|không gửi/i);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Oi!", /olá|cardano/i],
+    ["Buenas tardes!", /hola|cardano/i],
+    ["Bonsoir!", /bonjour|cardano/i],
+    ["Guten Tag!", /hallo|cardano/i],
+    ["Hai!", /halo|cardano/i],
+    ["Selamat pagi!", /halo|cardano/i],
+    ["Selam!", /merhaba|cardano/i],
+    ["Xin Cha\u0300o!", /xin chào|cardano/i],
+  ])("recognizes normalized localized greeting: %s", async (text, expected) => {
+    const retrieve = vi.fn();
+    const complete = vi.fn();
+    const answer = await answerQuestion(input(text), {
+      persist: vi.fn(async () => undefined),
+      retrieve,
+      complete,
+    });
+    expect(answer).toMatch(expected);
+    expect(retrieve).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
   });
 
