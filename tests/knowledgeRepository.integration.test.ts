@@ -176,18 +176,20 @@ describe.skipIf(!databaseUrl)("knowledge repository", () => {
         retrievedAt: new Date("2026-08-24T01:00:00Z"),
       });
       expect(second.id).toBe(first.id);
+      const concurrentCanonicalUrl = `${canonicalUrl}/concurrent`;
       const concurrent = await Promise.all(Array.from({ length: 4 }, () => repository.storeVersion({
         sourceId,
-        canonicalUrl,
-        title: "About Cardano",
-        content: "Cardano source body",
-        contentHash: "a".repeat(64),
+        canonicalUrl: concurrentCanonicalUrl,
+        title: "Concurrent Cardano version",
+        content: "A fresh Cardano version created concurrently.",
+        contentHash: "f".repeat(64),
         retrievedAt: new Date("2026-08-24T02:00:00Z"),
       })));
-      expect(new Set(concurrent.map(({ id }) => id))).toEqual(new Set([first.id]));
+      expect(new Set(concurrent.map(({ id }) => id)).size).toBe(1);
       const versions = await db.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM source_versions WHERE source_id = $1",
-        [sourceId],
+        `SELECT count(*)::text AS count FROM source_versions
+         WHERE source_id = $1 AND canonical_url = $2 AND content_hash = $3`,
+        [sourceId, concurrentCanonicalUrl, "f".repeat(64)],
       );
       expect(versions.rows[0]?.count).toBe("1");
 
