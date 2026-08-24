@@ -255,7 +255,8 @@ function withNotice(answer: string, firstInteraction: boolean): string {
 const MISSING = Symbol("missing");
 const MAX_ID_LENGTH = 20;
 const MAX_TEXT_LENGTH = 16_384;
-const DECIMAL_INTEGER = /^-?\d+$/u;
+const USER_ID_PATTERN = /^[1-9][0-9]*$/u;
+const CHAT_ID_PATTERN = /^-?[1-9][0-9]*$/u;
 const SIGNED_INT64_MIN = BigInt("-9223372036854775808");
 const SIGNED_INT64_MAX = BigInt("9223372036854775807");
 const ZERO = BigInt(0);
@@ -293,7 +294,8 @@ function boundedText(value: unknown, limit: number, requireContent = true): stri
 
 function validTelegramIdentifier(value: unknown, userId: boolean): string | undefined {
   const text = boundedText(value, MAX_ID_LENGTH);
-  if (!text || !DECIMAL_INTEGER.test(text)) return undefined;
+  const pattern = userId ? USER_ID_PATTERN : CHAT_ID_PATTERN;
+  if (!text || !pattern.test(text)) return undefined;
   try {
     const number = BigInt(text);
     if (number < SIGNED_INT64_MIN || number > SIGNED_INT64_MAX) return undefined;
