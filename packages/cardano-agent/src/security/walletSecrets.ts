@@ -21,21 +21,10 @@ const MAX_JSON_NODES = 256;
 const MAX_JSON_FALLBACK_WORK = 16_384;
 // Global per-message checksum cap; exhaustion is classified as recovery-like.
 const MAX_MNEMONIC_VALIDATIONS = 64;
-const MAX_FRAGMENT_COUNT = 128;
-const MAX_FRAGMENT_BYTES = 16_384;
-const MAX_FRAGMENT_TOTAL_BYTES = 64 * 1024;
-const MAX_FRAGMENT_TOKENS = 32_768;
-const MAX_FRAGMENT_MNEMONIC_VALIDATIONS = 128;
-const MAX_FRAGMENT_MNEMONIC_STATES = 64;
 const signingKeyTypeField = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;
 const keyMaterialField = /["']?(?:cborhex|bytes)["']?\s*:\s*["']([^"']+)["']/i;
 const privateBech32Key =
   /\b[a-z][a-z0-9_-]*_(?:xsk|sk)1[023456789ac-hj-np-z]{20,}(?![0-9a-z])/i;
-const signingKeyTypeHint = /\b[a-z][a-z0-9_-]*signingkey[a-z0-9_-]*ed25519\b/i;
-const plainKeyMaterialHint = /\b5820[0-9a-f]{64}\b/i;
-const bech32Prefix = /\b[a-z][a-z0-9_-]*_(?:xsk|sk)1/i;
-const bech32Payload = /^[023456789ac-hj-np-z]+$/i;
-const MIN_BECH32_CONTINUATION_LENGTH = 20;
 const wordLike = /^[\p{L}\p{N}]+(?:['-][\p{L}\p{N}]+)*$/u;
 const wordToken = /[\p{L}\p{M}\p{N}]+/gu;
 const recoveryPhraseLengths = [12, 15, 18, 21, 24];
@@ -263,113 +252,6 @@ function hasValidRecoveryPhrase(input: string): boolean {
   return false;
 }
 
-type StrictMnemonicResult = "found" | "exhausted" | undefined;
-
-function strictMnemonicFromFragments(fragments: readonly string[]): StrictMnemonicResult {
-  const runsByWordlist: string[][][] = bip39Wordlists.map(() => []);
-  let tokenCount = 0;
-
-  for (const fragment of fragments) {
-    const tokens = fragment.normalize("NFKD").toLowerCase().match(wordToken) ?? [];
-    tokenCount += tokens.length;
-    if (tokenCount > MAX_FRAGMENT_TOKENS) return "exhausted";
-
-    for (let listIndex = 0; listIndex < bip39Wordlists.length; listIndex += 1) {
-      const wordSet = bip39WordSets[listIndex]!;
-      const run: string[] = [];
-      for (const token of tokens) {
-        if (wordSet.has(token)) run.push(token);
-        else if (run.length > 0) {
-          runsByWordlist[listIndex]!.push(run.splice(0, run.length));
-        }
-      }
-      if (run.length > 0) runsByWordlist[listIndex]!.push(run);
-    }
-  }
-
-  let validations = 0;
-  for (let listIndex = 0; listIndex < runsByWordlist.length; listIndex += 1) {
-    const wordlist = bip39Wordlists[listIndex]!;
-    const states: string[][][] = Array.from({ length: 25 }, () => []);
-    const inspected = new Set<string>();
-    const validate = (candidate: string[]): StrictMnemonicResult => {
-      const key = candidate.join("\u0000");
-      if (inspected.has(key)) return undefined;
-      inspected.add(key);
-      if (validations >= MAX_FRAGMENT_MNEMONIC_VALIDATIONS) return "exhausted";
-      validations += 1;
-      return validateMnemonic(candidate.join(" "), wordlist) ? "found" : undefined;
-    };
-
-    for (const run of runsByWordlist[listIndex]!) {
-      if (run.length > 24) {
-        for (let start = 0; start < run.length; start += 1) {
-          for (const length of recoveryPhraseLengths) {
-            if (start + length > run.length) continue;
-            const result = validate(run.slice(start, start + length));
-            if (result) return result;
-          }
-        }
-        continue;
-      }
-
-      const additions: string[][] = [run];
-      for (let length = 1; length <= 24 - run.length; length += 1) {
-        for (const state of states[length]!) {
-          additions.push([...state, ...run]);
-        }
-      }
-      for (const candidate of additions) {
-        const length = candidate.length;
-        if (recoveryPhraseLengths.includes(length)) {
-          const result = validate(candidate);
-          if (result) return result;
-        }
-        if (states[length]!.some((state) => state.join("\u0000") === candidate.join("\u0000"))) {
-          continue;
-        }
-        if (states[length]!.length >= MAX_FRAGMENT_MNEMONIC_STATES) return "exhausted";
-        states[length]!.push(candidate);
-      }
-    }
-  }
-  return undefined;
-}
-
-function hasStrictSigningKeyHints(fragments: readonly string[]): boolean {
-  let hasType = false;
-  let hasMaterial = false;
-  for (const fragment of fragments) {
-    if (hasParsedSigningKeyJson(fragment)) return true;
-    hasType ||= signingKeyTypeHint.test(fragment);
-    hasMaterial ||= keyMaterialField.test(fragment) || plainKeyMaterialHint.test(fragment);
-  }
-  return hasType && hasMaterial;
-}
-
-function hasSplitPrivateBech32Key(fragments: readonly string[]): boolean {
-  for (let index = 0; index < fragments.length; index += 1) {
-    const fragment = fragments[index]!;
-    if (privateBech32Key.test(fragment)) return true;
-    const prefix = bech32Prefix.exec(fragment);
-    if (!prefix || prefix.index === undefined) continue;
-
-    let candidate = prefix[0];
-    const initialTail = fragment.slice(prefix.index + prefix[0].length).match(/^[023456789ac-hj-np-z]+/i)?.[0] ?? "";
-    candidate += initialTail;
-    if (candidate.length - prefix[0].length >= 20) return true;
-
-    for (let next = index + 1; next < fragments.length; next += 1) {
-      const part = fragments[next]!.trim();
-      if (part.length < MIN_BECH32_CONTINUATION_LENGTH || !bech32Payload.test(part)) continue;
-      candidate += part;
-      if (candidate.length - prefix[0].length >= 20) return true;
-      if (candidate.length > 256) break;
-    }
-  }
-  return false;
-}
-
 export function findWalletSecret(input: string): WalletSecretKind | undefined {
   if (typeof input !== "string" || !input.trim()) return undefined;
   // Telegram text is normally <=4 KiB; oversized content is treated as secret-like to bound CPU.
@@ -391,45 +273,4 @@ export function findWalletSecret(input: string): WalletSecretKind | undefined {
   }
 
   return undefined;
-}
-
-/**
- * Scans bounded trusted snapshots where one secret may be split across fields.
- * Unlike raw user input, this deliberately omits the conservative word-count fallback.
- */
-export function findWalletSecretInFragments(
-  fragments: readonly string[],
-): WalletSecretKind | undefined {
-  try {
-    if (!Array.isArray(fragments) || fragments.length > MAX_FRAGMENT_COUNT) {
-      return "recovery-phrase";
-    }
-
-    const bounded: string[] = [];
-    let totalBytes = 0;
-    for (let index = 0; index < fragments.length; index += 1) {
-      const fragment = fragments[index];
-      if (typeof fragment !== "string") return "recovery-phrase";
-      const bytes = Buffer.byteLength(fragment, "utf8");
-      if (fragment.length > MAX_FRAGMENT_BYTES || bytes > MAX_FRAGMENT_BYTES) {
-        return "recovery-phrase";
-      }
-      totalBytes += bytes;
-      if (totalBytes + Math.max(0, bounded.length) > MAX_FRAGMENT_TOTAL_BYTES) {
-        return "recovery-phrase";
-      }
-      bounded.push(fragment);
-    }
-
-    if (bounded.length === 0) return undefined;
-    if (hasStrictSigningKeyHints(bounded) || hasSplitPrivateBech32Key(bounded)) {
-      return "signing-key";
-    }
-    const mnemonic = strictMnemonicFromFragments(bounded);
-    return mnemonic === "found" || mnemonic === "exhausted"
-      ? "recovery-phrase"
-      : undefined;
-  } catch {
-    return "recovery-phrase";
-  }
 }

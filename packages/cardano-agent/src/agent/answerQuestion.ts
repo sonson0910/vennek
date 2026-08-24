@@ -1,7 +1,4 @@
-import {
-  findWalletSecret,
-  findWalletSecretInFragments,
-} from "../security/walletSecrets.js";
+import { findWalletSecret } from "../security/walletSecrets.js";
 
 export const RETENTION_NOTICE =
   "Vennek lưu lịch sử hội thoại vô thời hạn để duy trì ngữ cảnh; dữ liệu không được dùng để huấn luyện nếu chưa có sự đồng ý riêng. Đừng gửi seed phrase hoặc private key.";
@@ -10,21 +7,6 @@ export type QuestionInput = {
   telegramUserId: string;
   telegramChatId: string;
   text: string;
-};
-
-export type QuestionEvidenceTrustTier = "official" | "community" | "unverified";
-
-export type QuestionEvidence = {
-  id: string;
-  sourceId: string;
-  trustTier: QuestionEvidenceTrustTier;
-  title: string;
-  url: string;
-  excerpt: string;
-  publishedAt?: string;
-  retrievedAt: string;
-  versionHash: string;
-  score: number;
 };
 
 export type QuestionLanguage =
@@ -48,12 +30,6 @@ export type QuestionPersistenceResult = {
   firstInteraction?: boolean;
 };
 
-export type QuestionCompletionInput = {
-  question: string;
-  language: QuestionLanguage;
-  evidence: readonly QuestionEvidence[];
-};
-
 export type QuestionRetrievalInput = {
   question: string;
   language: QuestionLanguage;
@@ -64,7 +40,6 @@ export type AnswerQuestionDependencies = {
     input: QuestionInput,
   ) => Promise<QuestionPersistenceResult | void>;
   retrieve: (input: QuestionRetrievalInput) => Promise<unknown>;
-  complete: (input: QuestionCompletionInput) => Promise<unknown>;
 };
 
 type LocalizedMessages = {
@@ -258,8 +233,7 @@ function validDependencies(value: unknown): value is AnswerQuestionDependencies 
   return (
     isRecord(value) &&
     typeof value.persist === "function" &&
-    typeof value.retrieve === "function" &&
-    typeof value.complete === "function"
+    typeof value.retrieve === "function"
   );
 }
 
@@ -281,21 +255,6 @@ function withNotice(answer: string, firstInteraction: boolean): string {
 const MISSING = Symbol("missing");
 const MAX_ID_LENGTH = 128;
 const MAX_TEXT_LENGTH = 16_384;
-const MAX_EVIDENCE_COUNT = 10;
-const MAX_EVIDENCE_RECORD_BYTES = 16_384;
-const MAX_EVIDENCE_TOTAL_BYTES = 64 * 1024;
-const MAX_EVIDENCE_WINDOW_BYTES = 16_384;
-const EVIDENCE_WINDOW_OVERLAP = 4_096;
-const FIELD_LIMITS = {
-  id: 256,
-  sourceId: 256,
-  title: 2_048,
-  url: 2_048,
-  excerpt: 16_384,
-  publishedAt: 64,
-  retrievedAt: 64,
-  versionHash: 256,
-} as const;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
@@ -317,14 +276,6 @@ function readOwnDataProperty(value: object, key: PropertyKey): unknown | typeof 
     return descriptor.value;
   } catch {
     return MISSING;
-  }
-}
-
-function hasOwnProperty(value: object, key: PropertyKey): boolean {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key) !== undefined;
-  } catch {
-    return true;
   }
 }
 
@@ -350,276 +301,7 @@ function canonicalQuestionInput(value: unknown): QuestionInput | undefined {
 
 function questionContainsWalletSecret(question: QuestionInput): boolean {
   const fields = [question.telegramUserId, question.telegramChatId, question.text];
-  if (fields.some((field) => findWalletSecret(field) !== undefined)) return true;
-  return scanBoundedText(fields.join(" "));
-}
-
-function validTimestamp(value: unknown, limit: number): value is string {
-  const text = boundedText(value, limit);
-  return text !== undefined && Number.isFinite(Date.parse(text));
-}
-
-type CanonicalUrl = {
-  value: string;
-  decodedParts: readonly string[];
-};
-
-const MAX_URL_DECODE_DEPTH = 3;
-const MAX_URL_PARTS = 64;
-
-function decodeUrlPart(value: string, plusAsSpace = false): string | undefined {
-  let current = plusAsSpace ? value.replace(/\+/g, " ") : value;
-  for (let depth = 0; depth < MAX_URL_DECODE_DEPTH; depth += 1) {
-    if (/%(?![0-9a-f]{2})/iu.test(current)) return undefined;
-    if (!/%[0-9a-f]{2}/iu.test(current)) return current;
-    try {
-      current = decodeURIComponent(current);
-    } catch {
-      return undefined;
-    }
-  }
-  return /%(?![0-9a-f]{2})/iu.test(current) || /%[0-9a-f]{2}/iu.test(current)
-    ? undefined
-    : current;
-}
-
-function canonicalUrl(value: unknown): CanonicalUrl | undefined {
-  const text = boundedText(value, FIELD_LIMITS.url);
-  if (!text) return undefined;
-  try {
-    const url = new URL(text);
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      url.username ||
-      url.password ||
-      !url.hostname
-    ) {
-      return undefined;
-    }
-    const decodedParts: string[] = [];
-    const addPart = (part: string, plusAsSpace = false): boolean => {
-      const decoded = decodeUrlPart(part, plusAsSpace);
-      if (decoded === undefined) return false;
-      if (decodedParts.length >= MAX_URL_PARTS) return false;
-      if (Buffer.byteLength(decoded, "utf8") > FIELD_LIMITS.url) return false;
-      decodedParts.push(decoded);
-      return true;
-    };
-
-    if (!addPart(url.pathname)) return undefined;
-    const rawQuery = url.search.slice(1);
-    if (rawQuery) {
-      const queryParts = rawQuery.split("&");
-      if (queryParts.length > MAX_URL_PARTS) return undefined;
-      for (const part of queryParts) {
-        const separator = part.indexOf("=");
-        const key = separator < 0 ? part : part.slice(0, separator);
-        const queryValue = separator < 0 ? "" : part.slice(separator + 1);
-        if (!addPart(key, true) || !addPart(queryValue, true)) return undefined;
-      }
-    }
-    if (!addPart(url.hash.slice(1))) return undefined;
-
-    const canonical = boundedText(url.toString(), FIELD_LIMITS.url);
-    return canonical ? { value: canonical, decodedParts } : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isTrustTier(value: unknown): value is QuestionEvidenceTrustTier {
-  return value === "official" || value === "community" || value === "unverified";
-}
-
-type CanonicalEvidence = {
-  record: QuestionEvidence;
-  sourceValues: readonly string[];
-  decodedUrlParts: readonly string[];
-};
-
-function canonicalEvidenceRecord(value: unknown): CanonicalEvidence | undefined {
-  if (!isPlainRecord(value)) return undefined;
-  const id = boundedText(readOwnDataProperty(value, "id"), FIELD_LIMITS.id);
-  const sourceId = boundedText(readOwnDataProperty(value, "sourceId"), FIELD_LIMITS.sourceId);
-  const trustTier = readOwnDataProperty(value, "trustTier");
-  const title = boundedText(readOwnDataProperty(value, "title"), FIELD_LIMITS.title);
-  const url = canonicalUrl(readOwnDataProperty(value, "url"));
-  const excerpt = boundedText(readOwnDataProperty(value, "excerpt"), FIELD_LIMITS.excerpt);
-  const publishedAt = readOwnDataProperty(value, "publishedAt");
-  const retrievedAt = readOwnDataProperty(value, "retrievedAt");
-  const versionHash = boundedText(readOwnDataProperty(value, "versionHash"), FIELD_LIMITS.versionHash);
-  const score = readOwnDataProperty(value, "score");
-
-  if (
-    !id ||
-    !sourceId ||
-    !isTrustTier(trustTier) ||
-    !title ||
-    !url ||
-    !excerpt ||
-    !validTimestamp(retrievedAt, FIELD_LIMITS.retrievedAt) ||
-    !versionHash ||
-    typeof score !== "number" ||
-    !Number.isFinite(score)
-  ) {
-    return undefined;
-  }
-  if (
-    hasOwnProperty(value, "publishedAt") &&
-    (publishedAt === MISSING ||
-      (publishedAt !== undefined && !validTimestamp(publishedAt, FIELD_LIMITS.publishedAt)))
-  ) {
-    return undefined;
-  }
-
-  const canonical: QuestionEvidence = {
-    id,
-    sourceId,
-    trustTier,
-    title,
-    url: url.value,
-    excerpt,
-    retrievedAt,
-    versionHash,
-    score,
-  };
-  if (publishedAt !== MISSING && publishedAt !== undefined) canonical.publishedAt = publishedAt as string;
-  const sourceValues = [
-    canonical.id,
-    canonical.sourceId,
-    canonical.title,
-    canonical.url,
-    canonical.excerpt,
-    canonical.versionHash,
-  ];
-  return {
-    record: Object.freeze(canonical),
-    sourceValues: Object.freeze(sourceValues),
-    decodedUrlParts: Object.freeze(url.decodedParts),
-  };
-}
-
-function evidenceRecordText(record: QuestionEvidence): string {
-  return [
-    "id", record.id,
-    "sourceId", record.sourceId,
-    "trustTier", record.trustTier,
-    "title", record.title,
-    "url", record.url,
-    "excerpt", record.excerpt,
-    ...(record.publishedAt ? ["publishedAt", record.publishedAt] : []),
-    "retrievedAt", record.retrievedAt,
-    "versionHash", record.versionHash,
-    "score", String(record.score),
-  ].join(" ");
-}
-
-function nextWindowEnd(text: string, start: number): number {
-  let end = start;
-  let bytes = 0;
-  while (end < text.length) {
-    const codePoint = text.codePointAt(end);
-    if (codePoint === undefined) break;
-    const character = String.fromCodePoint(codePoint);
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (bytes + characterBytes > MAX_EVIDENCE_WINDOW_BYTES) break;
-    bytes += characterBytes;
-    end += character.length;
-  }
-  return end;
-}
-
-function scanBoundedText(text: string): boolean {
-  let start = 0;
-  while (start < text.length) {
-    const end = nextWindowEnd(text, start);
-    if (end <= start || findWalletSecret(text.slice(start, end))) return true;
-    if (end === text.length) return false;
-    start = Math.max(start + 1, end - EVIDENCE_WINDOW_OVERLAP);
-  }
-  return false;
-}
-
-type EvidenceSnapshot = {
-  records: readonly QuestionEvidence[];
-  containsSecret: boolean;
-};
-
-function containsStructuredSecret(groups: readonly (readonly string[])[]): boolean {
-  for (const group of groups) {
-    if (findWalletSecretInFragments(group) !== undefined) return true;
-  }
-  return false;
-}
-
-function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
-  let isArray = false;
-  try {
-    isArray = Array.isArray(value);
-  } catch {
-    return undefined;
-  }
-  if (!isArray || typeof value !== "object" || value === null) return undefined;
-
-  const lengthValue = readOwnDataProperty(value, "length");
-  if (typeof lengthValue !== "number" || !Number.isSafeInteger(lengthValue) || lengthValue < 0 || lengthValue > MAX_EVIDENCE_COUNT) {
-    return undefined;
-  }
-  try {
-    if ((value as { length: unknown }).length !== lengthValue || Object.getPrototypeOf(value) !== Array.prototype) return undefined;
-  } catch {
-    return undefined;
-  }
-
-  const records: QuestionEvidence[] = [];
-  const canonicalRecords: CanonicalEvidence[] = [];
-  const fieldGroups: string[][] = Array.from({ length: 6 }, () => []);
-  const flattenedValues: string[] = [];
-  const decodedUrlValues: string[] = [];
-  let aggregateBytes = 0;
-  for (let index = 0; index < lengthValue; index += 1) {
-    const item = readOwnDataProperty(value, String(index));
-    if (item === MISSING) return undefined;
-    const canonical = canonicalEvidenceRecord(item);
-    if (!canonical) return undefined;
-    const recordText = evidenceRecordText(canonical.record);
-    const recordBytes = Buffer.byteLength(recordText, "utf8");
-    const decodedBytes = canonical.decodedUrlParts.reduce(
-      (total, part) => total + Buffer.byteLength(part, "utf8"),
-      0,
-    );
-    if (
-      recordBytes > MAX_EVIDENCE_RECORD_BYTES ||
-      recordBytes + decodedBytes > MAX_EVIDENCE_RECORD_BYTES ||
-      aggregateBytes + recordBytes + decodedBytes + 1 > MAX_EVIDENCE_TOTAL_BYTES
-    ) {
-      return undefined;
-    }
-    aggregateBytes += recordBytes + decodedBytes + 1;
-    records.push(canonical.record);
-    canonicalRecords.push(canonical);
-    flattenedValues.push(...canonical.sourceValues);
-    decodedUrlValues.push(...canonical.decodedUrlParts);
-    for (let fieldIndex = 0; fieldIndex < canonical.sourceValues.length; fieldIndex += 1) {
-      fieldGroups[fieldIndex]!.push(canonical.sourceValues[fieldIndex]!);
-    }
-  }
-
-  const frozenRecords = Object.freeze(records);
-  const recordGroups = canonicalRecords.map(({ sourceValues, decodedUrlParts }) => [
-    ...sourceValues,
-    ...decodedUrlParts,
-  ]);
-  if (
-    containsStructuredSecret(recordGroups) ||
-    containsStructuredSecret(fieldGroups) ||
-    containsStructuredSecret([flattenedValues]) ||
-    containsStructuredSecret([[...flattenedValues, ...decodedUrlValues]]) ||
-    containsStructuredSecret([decodedUrlValues])
-  ) {
-    return { records: frozenRecords, containsSecret: true };
-  }
-  return { records: frozenRecords, containsSecret: false };
+  return fields.some((field) => findWalletSecret(field) !== undefined);
 }
 
 export async function answerQuestion(
@@ -651,26 +333,10 @@ export async function answerQuestion(
       question: question.text,
       language,
     });
-    const evidenceSnapshot = snapshotEvidence(retrieved);
-    if (!evidenceSnapshot) return withNotice(MESSAGES[language].dependency, firstInteraction);
-    if (evidenceSnapshot.records.length === 0) {
-      return withNotice(MESSAGES[language].insufficient, firstInteraction);
-    }
-
-    if (questionContainsWalletSecret(question)) return withNotice(MESSAGES[language].secret, firstInteraction);
-    if (evidenceSnapshot.containsSecret) {
-      return withNotice(MESSAGES[language].secret, firstInteraction);
-    }
-    const completed = await dependencies.complete({
-      question: question.text,
-      language,
-      evidence: evidenceSnapshot.records,
-    });
-    if (typeof completed !== "string" || !completed.trim()) {
+    if (!Array.isArray(retrieved)) {
       return withNotice(MESSAGES[language].dependency, firstInteraction);
     }
-    if (findWalletSecret(completed)) return withNotice(MESSAGES[language].secret, firstInteraction);
-    return withNotice(completed.trim(), firstInteraction);
+    return withNotice(MESSAGES[language].insufficient, firstInteraction);
   } catch {
     const failure = MESSAGES[language].dependency;
     return persisted ? withNotice(failure, firstInteraction) : failure;
