@@ -1,9 +1,11 @@
-CREATE OR REPLACE FUNCTION public.ensure_conversation_partitions(
-  reference_at timestamptz DEFAULT pg_catalog.clock_timestamp()
+DROP FUNCTION IF EXISTS public.ensure_conversation_partitions(timestamptz);
+
+CREATE OR REPLACE FUNCTION public.ensure_conversation_partitions_at(
+  reference_at timestamptz
 )
 RETURNS void
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = pg_catalog, public
 AS $function$
 DECLARE
@@ -44,4 +46,16 @@ BEGIN
 END
 $function$;
 
-REVOKE ALL ON FUNCTION public.ensure_conversation_partitions(timestamptz) FROM PUBLIC;
+CREATE OR REPLACE FUNCTION public.ensure_conversation_partitions()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $function$
+BEGIN
+  PERFORM public.ensure_conversation_partitions_at(pg_catalog.clock_timestamp());
+END
+$function$;
+
+REVOKE ALL ON FUNCTION public.ensure_conversation_partitions() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ensure_conversation_partitions_at(timestamptz) FROM PUBLIC;
