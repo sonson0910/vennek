@@ -549,7 +549,7 @@ Expected: FAIL because `answerQuestion` does not exist.
 
 - [ ] **Step 3: Implement the fail-closed orchestration boundary**
 
-Define injected dependencies for persistence, retrieval, and completion so tests never need a network or database. Run `findWalletSecret` before every dependency. Persist the user message only after it passes the secret check. Allow deterministic greetings and the first-use retention notice. Foundation staging never calls the model for factual questions, even if a stub retrieval dependency returns items; return the localized insufficient-evidence message. Plan 2 introduces the validated evidence contract, grounding, and verification before it enables this completion path by extending the same function rather than replacing the boundary.
+Define injected dependencies for persistence and retrieval so tests never need a network or database. Run `findWalletSecret` before every dependency. Persist the user message only after it passes the secret check. Allow deterministic greetings and the first-use retention notice. Foundation staging has no completion dependency and never calls the model for factual questions, even if a stub retrieval dependency returns items; return the localized insufficient-evidence message. Plan 2 introduces the completion dependency together with the validated evidence contract, grounding, and verification by extending the same function rather than replacing the boundary.
 
 Return this Vietnamese notice on the first accepted interaction:
 
