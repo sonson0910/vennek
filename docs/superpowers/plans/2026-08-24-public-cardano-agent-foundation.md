@@ -417,7 +417,7 @@ export class ConversationRepository {
 }
 ```
 
-`append` must reject detected wallet secrets before querying PostgreSQL and write the user/message rows in one transaction. Bind each AES-GCM envelope to an unambiguous versioned AAD value containing the Telegram user, chat, and role so moving ciphertext between rows fails authentication.
+`append` must reject detected wallet secrets before querying PostgreSQL and write the user/message rows in one transaction. Bind each AES-GCM envelope to an unambiguous versioned AAD value containing the message's composite row identity plus Telegram user, chat, and role so moving ciphertext between rows fails authentication.
 
 - [ ] **Step 5: Run against PostgreSQL**
 
