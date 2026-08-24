@@ -48,15 +48,64 @@ async function main(): Promise<void> {
 
   try {
     await docker(compose("build", "migrate"), { label: "current image build" });
+    const graphProbe = `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const root = path.resolve('packages/cardano-agent/dist');
+      const staticImport = /\\b(?:import|export)\\s+(?:[^"']+\\s+from\\s+)?["']([^"']+)["']/g;
+      const resolveRelative = (from, specifier) => {
+        const candidate = path.resolve(path.dirname(from), specifier);
+        const options = path.extname(candidate) ? [candidate] : [candidate, candidate + '.js', path.join(candidate, 'index.js')];
+        const resolved = options.find((file) => fs.existsSync(file));
+        if (!resolved) throw new Error('missing compiled import ' + specifier + ' from ' + from);
+        return resolved;
+      };
+      const assertGraph = (entry) => {
+        const pending = [path.resolve(root, entry)];
+        const seen = new Set();
+        while (pending.length > 0) {
+          const file = pending.pop();
+          if (seen.has(file)) continue;
+          seen.add(file);
+          const source = fs.readFileSync(file, 'utf8');
+          staticImport.lastIndex = 0;
+          for (const match of source.matchAll(staticImport)) {
+            const specifier = match[1];
+            if (specifier.includes('pdfjs-dist') || specifier.includes('pdfExtractorWorker')) {
+              throw new Error(entry + ' reaches forbidden import ' + specifier + ' from ' + file);
+            }
+            if (!specifier.startsWith('.')) continue;
+            const resolved = resolveRelative(file, specifier);
+            if (path.basename(resolved) === 'pdfExtractorWorker.js') {
+              throw new Error(entry + ' reaches pdfExtractorWorker.js from ' + file);
+            }
+            pending.push(resolved);
+          }
+        }
+      };
+      assertGraph('index.js');
+      assertGraph('knowledge/pdfExtractorServer.js');
+      const workerSource = fs.readFileSync(path.join(root, 'knowledge/pdfExtractorWorker.js'), 'utf8');
+      if (!/\\bimport\\s+(?:[^"']+\\s+from\\s+)?["']pdfjs-dist\\//.test(workerSource)) {
+        throw new Error('compiled worker does not statically import pdfjs-dist');
+      }
+      console.log('compiled import graph ok');
+    `;
+    await docker(["run", "--rm", image, "node", "--input-type=commonjs", "-e", graphProbe], { label: "compiled import reachability" });
     await docker(compose("up", "-d", "--wait", "--no-build", "pdf-extractor"));
     const container = `${project}-pdf-extractor-1`;
-    const inspect = JSON.parse(await docker(["inspect", container]))[0] as { HostConfig: any; NetworkSettings: any };
+    const inspect = JSON.parse(await docker(["inspect", container]))[0] as { Config: any; HostConfig: any; NetworkSettings: any };
     assert(inspect.HostConfig.Memory === 268435456, "effective memory limit changed");
     assert(inspect.HostConfig.MemorySwap === 268435456, "effective memory swap limit changed");
     assert(inspect.HostConfig.NanoCpus === 500000000, "effective CPU limit changed");
     assert(inspect.HostConfig.ReadonlyRootfs === true, "effective read-only rootfs changed");
     assert(inspect.HostConfig.PidsLimit === 64, "effective PID limit changed");
     assert(inspect.HostConfig.CapDrop?.includes("ALL"), "effective capability drop changed");
+    assert(inspect.HostConfig.SecurityOpt?.some((value: unknown) => value === "no-new-privileges:true" || value === "no-new-privileges"), "effective no-new-privileges changed");
+    assert(inspect.Config?.User === "1000:1000", "effective user changed");
+    assert(inspect.HostConfig.Init === true, "effective init changed");
+    const tmpfs = inspect.HostConfig.Tmpfs?.["/tmp"];
+    assert(typeof tmpfs === "string" && ["size=16m", "uid=1000", "gid=1000", "noexec", "nosuid", "nodev"].every((value) => tmpfs.includes(value)) && (tmpfs.includes("mode=0700") || tmpfs.includes("mode=700")), "effective /tmp isolation changed");
     assert(Object.values(inspect.NetworkSettings.Ports ?? {}).every((value) => value === null), "extractor unexpectedly has published ports");
 
     const network = `${project}_pdf-sandbox`;
@@ -93,6 +142,22 @@ async function main(): Promise<void> {
         throw new Error(label + ' malformed timeout: last status ' + last.status + ' error ' + last.data);
       };
       const validPdf = Buffer.from('JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MjAgVGQgKENhcmRhbm8gd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNQolJUVPRgo=', 'base64');
+      const pollValidExtraction = async (label) => {
+        const deadline = Date.now() + 30000; let last = { status: 0, data: 'not attempted' };
+        while (Date.now() <= deadline) {
+          last = await request(validPdf, token, validPdf.length, 5000);
+          if (last.status === 200) {
+            try {
+              if (JSON.parse(last.data).text?.includes('Cardano works')) return;
+              last = { status: last.status, data: 'response text did not contain Cardano works' };
+            } catch (error) {
+              last = { status: last.status, data: 'invalid JSON: ' + String(error?.message || error) };
+            }
+          }
+          await sleep(250);
+        }
+        throw new Error(label + ' valid extraction timeout: last status ' + last.status + ' error ' + last.data);
+      };
       const makeStressPdf = () => {
         const zlib = require('node:zlib');
         const compressed = zlib.deflateSync(Buffer.from('BT (' + 'A'.repeat(20000000) + ') Tj ET'));
@@ -125,18 +190,20 @@ async function main(): Promise<void> {
         if (![0, 422, 503, 504].includes(stress.status)) { console.error('stress PDF status', stress.status); process.exit(6); }
         await pollHealth('post-stress');
         await pollMalformed('post-stress');
+        await pollValidExtraction('post-stress');
         await new Promise((resolve) => {
           const req = http.request({ host: 'pdf-extractor', port: 8081, path: '/v1/extract/pdf', method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/pdf', 'content-length': validPdf.length } });
           req.on('error', resolve); req.end(validPdf); req.destroy();
         });
         await pollHealth('post-abort');
         await pollMalformed('post-abort');
+        await pollValidExtraction('post-abort');
         const outbound = await fetch('https://example.com').then(() => true, () => false);
         if (outbound) { console.error('outbound HTTPS unexpectedly succeeded'); process.exit(7); }
       })().catch((error) => { console.error('service probe error', error?.message || error); process.exit(10); });
     `;
     await docker(["run", "--rm", "--network", network, "-e", `PDF_EXTRACTOR_TOKEN=${token}`, image, "node", "-e", nodeScript], { label: "service checks" });
-    const agentProbe = "import { PdfExtractorClient } from '@vennek/cardano-agent'; const client = new PdfExtractorClient({ url: process.env.PDF_EXTRACTOR_URL, token: process.env.PDF_EXTRACTOR_TOKEN }); const result = await client.extract(Buffer.from('JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MjAgVGQgKENhcmRhbm8gd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNQolJUVPRgo=', 'base64')); if (!result.text.includes('Cardano works')) process.exit(1); if (process.moduleLoadList.some((item) => item.includes('pdfjs'))) process.exit(2);";
+    const agentProbe = "import { PdfExtractorClient } from '@vennek/cardano-agent'; const client = new PdfExtractorClient({ url: process.env.PDF_EXTRACTOR_URL, token: process.env.PDF_EXTRACTOR_TOKEN }); const result = await client.extract(Buffer.from('JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMzcgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA3MjAgVGQgKENhcmRhbm8gd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDI0MSAwMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNQolJUVPRgo=', 'base64')); if (!result.text.includes('Cardano works')) process.exit(1);";
     await docker(compose("run", "--rm", "--no-deps", "agent-worker", "node", "-e", agentProbe), { label: "configured agent-to-service probe" });
     console.log(`PDF extractor Compose verification passed (${project})`);
   } finally {

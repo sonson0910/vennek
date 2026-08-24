@@ -225,6 +225,9 @@ export async function fetchCrawlResponse(input: {
   const url = normalizeCrawlUrl(input.url, entry);
   if (!url) throw new Error("Crawl URL is outside the validated source scope.");
   const budget = input.budget ?? new SharedByteBudget();
+  const allowedMimeTypes = input.allowPdf
+    ? [...ALLOWED_CRAWL_MIME_TYPES, "application/pdf"]
+    : ALLOWED_CRAWL_MIME_TYPES;
   budget.reserve();
   let released = false;
   try {
@@ -234,7 +237,7 @@ export async function fetchCrawlResponse(input: {
       allowedDomains: entry.allowedDomains,
       signal: requestSignal,
       method: "GET",
-      headers: { accept: ALLOWED_CRAWL_MIME_TYPES.join(",") },
+      headers: { accept: allowedMimeTypes.join(",") },
       lookup: input.lookup,
       request: input.request
     });
@@ -242,9 +245,6 @@ export async function fetchCrawlResponse(input: {
       response.cancel();
       throw new Error(`HTTP ${response.statusCode}`);
     }
-    const allowedMimeTypes = input.allowPdf
-      ? [...ALLOWED_CRAWL_MIME_TYPES, "application/pdf"]
-      : ALLOWED_CRAWL_MIME_TYPES;
     const result = await readResponseBytesLimited(response, MAX_RESPONSE_BYTES, allowedMimeTypes, requestSignal);
     budget.release(result.bytes.byteLength);
     released = true;

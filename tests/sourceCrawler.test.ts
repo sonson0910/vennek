@@ -131,6 +131,29 @@ describe("bounded source crawler", () => {
     expect(pdfCanceled.value).toBe(true);
   });
 
+  it("advertises the same allowed MIME list used for response validation", async () => {
+    const htmlRequest = fakeRequest({ "/start": html("<h1>HTML</h1><p>Cardano page.</p>") });
+    await expect(fetchCrawlResponse({
+      url: pageEntry.url,
+      entry: pageEntry,
+      signal: new AbortController().signal,
+      lookup: publicLookup,
+      request: htmlRequest.request
+    })).resolves.toEqual(expect.objectContaining({ mime: "text/html" }));
+    expect(htmlRequest.accepts[0]).not.toContain("application/pdf");
+
+    const pdfRequest = fakeRequest({ "/start": { body: "%PDF-1.7", contentType: "application/pdf" } });
+    await expect(fetchCrawlResponse({
+      url: pageEntry.url,
+      entry: pageEntry,
+      signal: new AbortController().signal,
+      lookup: publicLookup,
+      request: pdfRequest.request,
+      allowPdf: true
+    })).resolves.toEqual(expect.objectContaining({ mime: "application/pdf" }));
+    expect(pdfRequest.accepts[0]).toContain("application/pdf");
+  });
+
   it("admits PDF only with an explicit remote extractor", async () => {
     const { request } = fakeRequest({ "/start": { body: "%PDF-1.7", contentType: "application/pdf" } });
     const extractor = {
@@ -272,11 +295,17 @@ function json(value: unknown): ResponseSpec {
 function fakeRequest(
   responses: Record<string, ResponseSpec>,
   options: { statusCode?: number; canceled?: { value: boolean }; delayMs?: number | ((path: string) => number); concurrency?: { active: number; max: number } } = {}
-): { request: PublicHttpsRequest; calls: string[] } {
+): { request: PublicHttpsRequest; calls: string[]; accepts: string[] } {
   const calls: string[] = [];
+  const accepts: string[] = [];
   const request = ((requestOptions, callback) => {
     const path = `${requestOptions.path}`;
     calls.push(path);
+    const headers = requestOptions.headers;
+    const accept = typeof headers === "object" && headers !== null && !Array.isArray(headers)
+      ? (headers as Record<string, string | undefined>).accept
+      : undefined;
+    accepts.push(`${accept ?? ""}`);
     const spec = responses[path] ?? html("<h1>Not found</h1><p>Missing.</p>");
     const statusCode = options.statusCode ?? spec.statusCode ?? 200;
     const source = typeof spec.body === "string" ? Buffer.from(spec.body) : Buffer.from(spec.body);
@@ -305,7 +334,7 @@ function fakeRequest(
     callback(body as never);
     return Object.assign(new EventEmitter(), { end() {} }) as never;
   }) as PublicHttpsRequest;
-  return { request, calls };
+  return { request, calls, accepts };
 }
 
 function fakeRepository(): KnowledgeRepository {

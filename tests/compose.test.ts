@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const dockerCompose = spawnSync("docker", ["compose", "version"], {
@@ -30,6 +31,9 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
         pids_limit?: number;
         read_only?: boolean;
         cap_drop?: string[];
+        security_opt?: string[];
+        user?: string;
+        init?: boolean;
         tmpfs?: string[];
         command?: string[];
       }>;
@@ -97,11 +101,24 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(extractor?.pids_limit).toBe(64);
     expect(extractor?.read_only).toBe(true);
     expect(extractor?.cap_drop).toEqual(["ALL"]);
+    expect(extractor?.security_opt).toContain("no-new-privileges:true");
+    expect(extractor?.user).toBe("1000:1000");
+    expect(extractor?.init).toBe(true);
     expect(extractor?.tmpfs?.[0]).toContain("/tmp:size=16m");
     expect(config.networks["pdf-sandbox"]?.internal).toBe(true);
     for (const name of ["postgres", "migrate", "provision-app-role", "litellm", "telegram-webhook"]) {
       expect(config.services[name]?.networks?.["pdf-sandbox"]).toBeUndefined();
     }
     expect(config.services["agent-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
+  });
+});
+
+describe("PDF extractor verifier contract", () => {
+  it("checks compiled import reachability and valid recovery", () => {
+    const verifier = readFileSync("scripts/verify-pdf-extractor-compose.ts", "utf8");
+    expect(verifier).not.toContain("process.moduleLoadList");
+    expect(verifier).toContain("pdfExtractorWorker.js");
+    expect(verifier).toContain("pdfjs-dist");
+    expect(verifier).toContain("pollValidExtraction");
   });
 });
