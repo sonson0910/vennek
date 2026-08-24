@@ -80,6 +80,8 @@ describe("natural-language question service", () => {
   it.each([
     ["¿Qué es Cardano?", /fuentes fiables|suficientes fuentes/i],
     ["Cardanoとは何ですか？", /信頼できる情報源|十分/i],
+    ["What is the question about Cardano?", /reliable sources|enough/i],
+    ["Para que serve Cardano?", /fontes confiáveis|suficientes/i],
   ])("returns zero-evidence responses in the detected language: %s", async (text, expected) => {
     const answer = await answerQuestion(input(text), {
       persist: vi.fn(async () => undefined),

@@ -172,7 +172,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const LANGUAGE_DETECTORS: ReadonlyArray<readonly [QuestionLanguage, RegExp]> = [
-  ["vi", /[ăâđêôơưạảãấầẩẫậắằẳẵặẹẻẽếềểễệỉĩịọỏõốồổỗộớờởỡợụủũứừửữựỷỹỵ]/iu],
+  ["vi", /[ăâđôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉĩịọỏốồổỗộớờởỡợụủũứừửữựỷỹỵ]/iu],
+  ["vi", /\b(xin\s+ch(?:a|à)o|ch(?:a|à)o\s+b(?:a|ạ)n|kh(?:o|ô)ng|được|duoc|th(?:e|ế)\s+nao|c(?:a|ả)m\s+ơn)\b/iu],
   ["ja", /[ぁ-ゖァ-ヺ]/u],
   ["ko", /[가-힣]/u],
   ["ar", /[\u0600-\u06ff]/u],
@@ -180,12 +181,12 @@ const LANGUAGE_DETECTORS: ReadonlyArray<readonly [QuestionLanguage, RegExp]> = [
   ["th", /[\u0e00-\u0e7f]/u],
   ["ru", /[а-яё]/iu],
   ["zh", /[一-龯]/u],
-  ["es", /[¿¡]|\b(qué|cómo|hola|gracias|fuentes|fiables|para|pregunta)\b/iu],
-  ["fr", /\b(bonjour|salut|merci|sources|fiables|question|réponse)\b/iu],
-  ["de", /[äöüß]|\b(hallo|danke|quellen|frage|antwort)\b/iu],
-  ["pt", /\b(olá|você|não|obrigado|fontes|pergunta)\b/iu],
-  ["id", /\b(halo|apa|terima|kasih|sumber|pertanyaan)\b/iu],
-  ["tr", /[çğıöşü]|\b(merhaba|teşekkür|kaynak|soru)\b/iu],
+  ["es", /[¿¡]|\b(qué|cómo|dónde|por\s+qué|hola|gracias|español)\b/iu],
+  ["fr", /\b(bonjour|salut|merci|français|france|réponse|pourquoi|être)\b/iu],
+  ["pt", /\b(olá|você|não|obrigad[oa]|português|serve)\b/iu],
+  ["id", /\b(halo|apa|terima|kasih|sumber|pertanyaan|bahasa)\b/iu],
+  ["tr", /[ğıış]|\b(merhaba|teşekkür|kaynak|soru|türkçe|nasıl)\b/iu],
+  ["de", /[äöüß]|\b(hallo|danke|bitte|deutsch|antwort|warum)\b/iu],
 ];
 
 function languageFor(text: unknown): QuestionLanguage {
@@ -193,11 +194,6 @@ function languageFor(text: unknown): QuestionLanguage {
   if (text.length > 16_384) return "en";
   for (const [language, detector] of LANGUAGE_DETECTORS) {
     if (detector.test(text)) return language;
-  }
-  if (/\b(xin\s+chao|chao|toi|ban|la|gi|khong|duoc|the\s+nao|cam\s+on)\b/iu.test(
-    text.normalize("NFD").replace(/\p{Diacritic}/gu, ""),
-  )) {
-    return "vi";
   }
   return "en";
 }
