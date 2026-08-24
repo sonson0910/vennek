@@ -75,7 +75,7 @@ export class PgBossAgentQueue implements AgentQueue {
       if (id === null) {
         await client.query("ROLLBACK");
         inTransaction = false;
-        return false;
+        throw new Error("Queue insertion failed.");
       }
       await client.query("COMMIT");
       inTransaction = false;

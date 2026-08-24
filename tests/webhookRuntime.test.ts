@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PgBoss } from "pg-boss";
 import {
   createWebhookOptions,
   handleTelegramWebhook,
@@ -6,8 +7,10 @@ import {
   WALLET_SECRET_JOB_MARKER,
   type TelegramAnswerJob,
 } from "@vennek/telegram-bot";
+import { createDatabase } from "@vennek/cardano-agent";
 
 const secret = "webhook-secret-with-at-least-32-chars";
+const databaseUrl = process.env.TEST_DATABASE_URL;
 const update = {
   update_id: 77,
   message: {
@@ -93,6 +96,18 @@ describe("Telegram webhook", () => {
 
   it("rejects a weak configured secret at the configuration boundary", () => {
     expect(() => createWebhookOptions("too-short", vi.fn())).toThrow(/32/);
+    expect(() => createWebhookOptions("x".repeat(257), vi.fn())).toThrow(/256/);
+  });
+
+  it("accepts an exact direct-handler token even when startup validation was bypassed", async () => {
+    const enqueue = vi.fn().mockResolvedValue(true);
+    const response = await handleTelegramWebhook(
+      request(JSON.stringify(update), { "x-telegram-bot-api-secret-token": "right" }),
+      { secret: "right", enqueue },
+    );
+
+    expect(response.status).toBe(202);
+    expect(enqueue).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -199,6 +214,8 @@ describe("Telegram webhook", () => {
     { update_id: 78, message: { from: { id: 11 }, chat: { id: 22 }, photo: [{ file_id: "photo" }] } },
     { update_id: 79, message: { from: { id: 11 }, chat: { id: 22 }, sticker: { file_id: "sticker" } } },
     { update_id: 80, callback_query: { id: "callback" } },
+    { update_id: 82, chosen_inline_result: { result_id: "inline" } },
+    { update_id: 83, guest_message: { chat: { id: 22 } } },
   ])("accepts valid unsupported Telegram updates without enqueueing", async (body) => {
     const enqueue = vi.fn();
     const response = await handleTelegramWebhook(request(JSON.stringify(body)), { secret, enqueue });
@@ -380,12 +397,12 @@ describe("PgBossAgentQueue", () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
-  it("maps a null pg-boss job id to an already-seen result", async () => {
+  it("rolls back and throws when pg-boss returns null after claiming", async () => {
     const { database, queries } = fakeDatabase();
     const send = vi.fn().mockResolvedValue(null);
     const queue = new PgBossAgentQueue({ send }, database);
 
-    await expect(queue.enqueue({ ...update, updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).resolves.toBe(false);
+    await expect(queue.enqueue({ ...update, updateId: 77, telegramUserId: "11", telegramChatId: "22", text: "x" })).rejects.toThrow(/queue insertion failed/i);
     expect(queries.map(({ text }) => text)).toEqual(["BEGIN", expect.stringContaining("INSERT INTO telegram_updates"), "ROLLBACK"]);
   });
 
@@ -441,4 +458,37 @@ describe("PgBossAgentQueue", () => {
       expect(call[1].walletSecretDetected).toBe(true);
     }
   });
+});
+
+describe.skipIf(!databaseUrl)("Telegram webhook PostgreSQL/pg-boss integration", () => {
+  it("claims one concurrent update, completes its job, and rejects replay", async () => {
+    const db = createDatabase(databaseUrl!);
+    const boss = new PgBoss(databaseUrl!);
+    const updateId = 8_000_000_000_000_000 + (process.pid % 100_000) * 10 + (Date.now() % 10);
+    const job = { updateId, telegramUserId: `integration-${process.pid}`, telegramChatId: "22", text: "integration" };
+    const queue = new PgBossAgentQueue(boss, db);
+    let jobId: string | undefined;
+
+    try {
+      await boss.start();
+      await boss.createQueue("telegram-answer");
+      const results = await Promise.all([queue.enqueue(job), queue.enqueue(job)]);
+      expect(results.sort()).toEqual([false, true]);
+
+      const jobs = await boss.fetch<{ updateId: number }>("telegram-answer", { batchSize: 1 });
+      const matching = jobs.find((candidate) => candidate.data.updateId === updateId);
+      expect(matching).toBeDefined();
+      jobId = matching?.id;
+      if (!jobId) throw new Error("Expected an integration job");
+      await boss.complete("telegram-answer", jobId);
+      await expect(queue.enqueue(job)).resolves.toBe(false);
+    } finally {
+      if (jobId) {
+        await boss.deleteJob("telegram-answer", jobId).catch(() => undefined);
+      }
+      await boss.stop().catch(() => undefined);
+      await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await db.end();
+    }
+  }, 30_000);
 });

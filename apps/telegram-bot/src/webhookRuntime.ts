@@ -5,30 +5,8 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_EMPTY_READS = 8;
 export const TELEGRAM_TEXT_MAX_BYTES = 16_384;
 const MIN_WEBHOOK_SECRET_LENGTH = 32;
+const MAX_WEBHOOK_SECRET_LENGTH = 256;
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
-const UNSUPPORTED_UPDATE_FIELDS = new Set([
-  "edited_message",
-  "channel_post",
-  "edited_channel_post",
-  "business_message",
-  "edited_business_message",
-  "callback_query",
-  "inline_query",
-  "shipping_query",
-  "pre_checkout_query",
-  "poll",
-  "poll_answer",
-  "my_chat_member",
-  "chat_member",
-  "chat_join_request",
-  "message_reaction",
-  "message_reaction_count",
-  "chat_boost",
-  "removed_chat_boost",
-  "business_connection",
-  "deleted_business_messages",
-  "purchased_paid_media",
-]);
 
 export type WebhookOptions = {
   secret: string;
@@ -45,13 +23,12 @@ export function createWebhookOptions(secret: string, enqueue: AgentQueue["enqueu
 }
 
 export function assertWebhookSecret(secret: unknown): asserts secret is string {
-  if (typeof secret !== "string" || secret.length < MIN_WEBHOOK_SECRET_LENGTH || !/^[A-Za-z0-9_-]+$/u.test(secret)) {
-    throw new Error("Telegram webhook secret must be at least 32 ASCII token characters.");
+  if (typeof secret !== "string" || secret.length < MIN_WEBHOOK_SECRET_LENGTH || secret.length > MAX_WEBHOOK_SECRET_LENGTH || !/^[A-Za-z0-9_-]+$/u.test(secret)) {
+    throw new Error("Telegram webhook secret must contain 32 to 256 ASCII token characters.");
   }
 }
 
 export async function handleTelegramWebhook(request: Request, options: WebhookOptions): Promise<Response> {
-  assertWebhookSecret(options.secret);
   if (!safeSecretEqual(request.headers.get(SECRET_HEADER), options.secret)) {
     await cancelBody(request);
     return genericResponse(401, "Unauthorized");
@@ -192,8 +169,7 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
   }
   const message = value.message;
   if (message === undefined) {
-    if (Object.keys(value).some((key) => key !== "update_id" && UNSUPPORTED_UPDATE_FIELDS.has(key))) return undefined;
-    throw new InvalidPayloadError("Missing message");
+    return undefined;
   }
   if (!isPlainObject(message)) throw new InvalidPayloadError("Invalid message");
   const from = message.from;
