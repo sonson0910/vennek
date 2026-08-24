@@ -218,6 +218,7 @@ export type PublicHttpsRequest = (
   options: https.RequestOptions,
   callback: (response: IncomingMessage) => void
 ) => ClientRequest;
+type PinnedHttpsRequestOptions = https.RequestOptions & { autoSelectFamily: false };
 
 /** Resolves once, rejects mixed DNS answers, and connects to the selected safe address. */
 export async function requestPublicHttps(input: {
@@ -236,7 +237,7 @@ export async function requestPublicHttps(input: {
     Object.entries(input.headers ?? {}).filter(([name]) => name.toLowerCase() !== "accept-encoding")
   );
   headers["accept-encoding"] = "identity";
-  const requestOptions: https.RequestOptions = {
+  const requestOptions: PinnedHttpsRequestOptions = {
     protocol: "https:",
     hostname: resolved.hostname,
     servername: resolved.hostname,
@@ -245,9 +246,17 @@ export async function requestPublicHttps(input: {
     method: input.method ?? "GET",
     headers,
     agent: false,
+    family: resolved.family,
+    autoSelectFamily: false,
     signal: input.signal,
-    lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family)
-  };
+    lookup: (_hostname, options, callback) => {
+      if (options.all) {
+        callback(null, [{ address: resolved.address, family: resolved.family }]);
+      } else {
+        callback(null, resolved.address, resolved.family);
+      }
+    }
+  } as PinnedHttpsRequestOptions;
 
   return new Promise<PublicHttpsResponse>((resolve, reject) => {
     let settled = false;

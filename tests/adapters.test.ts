@@ -99,7 +99,28 @@ describe("adapters URL classification and fetch guards", () => {
     expect(requestOptions?.hostname).toBe("example.com");
     expect(requestOptions?.servername).toBe("example.com");
     expect(requestOptions?.agent).toBe(false);
+    expect(requestOptions?.family).toBe(4);
+    expect(requestOptions?.autoSelectFamily).toBe(false);
     expect((requestOptions?.headers as Record<string, string>)["accept-encoding"]).toBe("identity");
+    const capturedLookup = requestOptions?.lookup as unknown as (
+      hostname: string,
+      options: { all?: boolean },
+      callback: (error: Error | null, address: string | Array<{ address: string; family: number }>, family?: number) => void
+    ) => void;
+    const lookupAll = await new Promise<unknown>((resolve, reject) => {
+      capturedLookup("example.com", { all: true }, (error, address) => error ? reject(error) : resolve(address));
+    });
+    const lookupOne = await new Promise<{ address: string; family?: number }>((resolve, reject) => {
+      capturedLookup("example.com", { all: false }, (error, address, family) => {
+        if (error || typeof address !== "string") {
+          reject(error ?? new Error("Expected scalar lookup result"));
+        } else {
+          resolve({ address, family });
+        }
+      });
+    });
+    expect(lookupAll).toEqual([{ address: "93.184.216.34", family: 4 }]);
+    expect(lookupOne).toEqual({ address: "93.184.216.34", family: 4 });
     response.cancel();
     expect(destroyed).toBe(true);
   });
