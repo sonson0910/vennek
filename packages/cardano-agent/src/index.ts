@@ -21,3 +21,14 @@ export type {
 } from "./llm/liteLlmClient.js";
 export { selectModelProfile } from "./llm/modelRouter.js";
 export type { ModelProfile } from "./llm/modelRouter.js";
+
+export { answerQuestion, RETENTION_NOTICE } from "./agent/answerQuestion.js";
+export type {
+  AnswerQuestionDependencies,
+  QuestionCompletionInput,
+  QuestionEvidence,
+  QuestionInput,
+  QuestionLanguage,
+  QuestionPersistenceResult,
+  QuestionRetrievalInput,
+} from "./agent/answerQuestion.js";
