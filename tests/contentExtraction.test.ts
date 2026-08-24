@@ -44,6 +44,41 @@ describe("bounded source content extraction", () => {
     });
   });
 
+  it("removes Markdown comments and raw HTML elements with their contents", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode(`# Visible heading\n\nVisible Cardano text.\n<!-- HIDDEN_INSTRUCTION_COMMENT -->\n<div hidden>HIDDEN_INSTRUCTION_ELEMENT</div>\n\n**Visible Markdown**`)
+    });
+
+    expect(result.text).toContain("# Visible heading");
+    expect(result.text).toContain("Visible Cardano text.");
+    expect(result.text).toContain("**Visible Markdown**");
+    expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
+  });
+
+  it("removes explicitly concealed HTML styles and semantic hidden classes", async () => {
+    const hidden = [
+      ["display: NONE !important", "HIDDEN_INSTRUCTION_DISPLAY"],
+      [" VISIBILITY : hidden ;", "HIDDEN_INSTRUCTION_VISIBILITY"],
+      ["opacity: 0", "HIDDEN_INSTRUCTION_OPACITY"],
+      ["content-visibility: hidden", "HIDDEN_INSTRUCTION_CONTENT_VISIBILITY"],
+      ["font-size: 0 !important", "HIDDEN_INSTRUCTION_FONT_SIZE"],
+      ["color: transparent", "HIDDEN_INSTRUCTION_COLOR"]
+    ];
+    const styleNodes = hidden.map(([style, text]) => `<div style="${style}">${text}</div>`).join("");
+    const classNodes = ["hidden", "invisible", "visually-hidden", "sr-only", "screen-reader-only", "d-none"]
+      .map((className) => `<div class="prefix ${className.toUpperCase()} suffix">HIDDEN_INSTRUCTION_${className.toUpperCase()}</div>`)
+      .join("");
+    const result = await extractContent({
+      mime: "text/html",
+      bytes: encoder.encode(`<main><h1>Visible title</h1><p>VISIBLE_CARDANO_CONTENT</p>${styleNodes}${classNodes}</main>`)
+    });
+
+    expect(result.text).toContain("# Visible title");
+    expect(result.text).toContain("VISIBLE_CARDANO_CONTENT");
+    expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
+  });
+
   it("rejects PDF input before parsing and rejects oversized input", async () => {
     await expect(extractContent({
       mime: "application/pdf",

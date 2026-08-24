@@ -38,6 +38,9 @@ export async function extractContent(input: ExtractContentInput): Promise<Extrac
     const text = JSON.stringify(JSON.parse(decoded), null, 2);
     return finalizeContent(inferTitle(text), text);
   }
+  if (mime === "text/markdown") {
+    return extractMarkdown(decoded);
+  }
   return finalizeContent(inferTitle(decoded), decoded);
 }
 
@@ -45,17 +48,68 @@ function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
+function extractMarkdown(source: string): ExtractedContent {
+  const $ = cheerio.load(source, {}, false);
+  const root = $.root();
+  root.children().remove();
+  const text = root
+    .contents()
+    .toArray()
+    .filter((node) => node.type === "text")
+    .map((node) => $(node).text())
+    .join("");
+  return finalizeContent(inferTitle(text), text);
+}
+
+const HIDDEN_CLASS_TOKENS = new Set([
+  "hidden",
+  "invisible",
+  "visually-hidden",
+  "sr-only",
+  "screen-reader-only",
+  "d-none"
+]);
+
+function hasHiddenClass(value: string | undefined): boolean {
+  return (value ?? "")
+    .trim()
+    .split(/\s+/)
+    .some((token) => HIDDEN_CLASS_TOKENS.has(token.toLowerCase()));
+}
+
+function hasConcealedStyle(style: string): boolean {
+  return style.split(";").some((declaration) => {
+    const separator = declaration.indexOf(":");
+    if (separator < 0) return false;
+    const property = declaration.slice(0, separator).trim().toLowerCase();
+    const value = declaration
+      .slice(separator + 1)
+      .trim()
+      .replace(/\s*!\s*important\s*$/i, "")
+      .trim()
+      .toLowerCase();
+    if (property === "display") return value === "none";
+    if (property === "visibility" || property === "content-visibility") return value === "hidden";
+    if (property === "opacity") return /^0(?:\.0+)?$/.test(value);
+    if (property === "font-size") return /^0(?:\.0+)?(?:[a-z%]+)?$/.test(value);
+    if (property === "color") return value === "transparent";
+    return false;
+  });
+}
+
 function extractHtml(source: string): ExtractedContent {
   const $ = cheerio.load(source);
+  // Static extraction is hygiene only; downstream must treat all source text as untrusted.
   $("script, style, nav, footer").remove();
-  $("[hidden], [aria-hidden], [style]").each((_, element) => {
+  $("[hidden], [aria-hidden], [style], [class]").each((_, element) => {
     const node = $(element);
     const ariaHidden = node.attr("aria-hidden")?.trim().toLowerCase();
     const style = node.attr("style") ?? "";
     if (
       node.attr("hidden") !== undefined ||
       ariaHidden === "true" ||
-      /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)/i.test(style)
+      hasConcealedStyle(style) ||
+      hasHiddenClass(node.attr("class"))
     ) {
       node.remove();
     }
