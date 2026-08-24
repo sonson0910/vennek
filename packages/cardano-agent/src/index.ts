@@ -96,3 +96,10 @@ export type {
   RepositoryOperationOptions,
   StoreVersionInput,
 } from "./knowledge/knowledgeRepository.js";
+
+export { retrieveEvidence } from "./knowledge/retrieveEvidence.js";
+export type {
+  Evidence,
+  RetrieveEvidenceDependencies,
+  RetrieveEvidenceInput,
+} from "./knowledge/retrieveEvidence.js";

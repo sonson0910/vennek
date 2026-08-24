@@ -5,6 +5,7 @@ import type { PdfExtractionResult } from "./pdfExtractorProtocol.js";
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_CHARS = 2_000_000;
+const MAX_TITLE_CHARS = 300;
 const MARKDOWN_RAW_ATTRIBUTE = "data-cardano-markdown-raw";
 const MARKDOWN_RAW_SELECTOR = `[${MARKDOWN_RAW_ATTRIBUTE}]`;
 const ALLOWED_MIME_TYPES = new Set([
@@ -282,13 +283,18 @@ function finalizeContent(title: string, text: string, publishedAt?: Date): Extra
     throw new Error("Extracted content exceeds 2,000,000 characters.");
   }
   const result: ExtractedContent = {
-    title: normalizeInline(title) || inferTitle(normalized),
+    title: boundedTitle(normalizeInline(title) || inferTitle(normalized)),
     text: normalized
   };
   if (publishedAt) {
     result.publishedAt = publishedAt;
   }
   return result;
+}
+
+function boundedTitle(value: string): string {
+  const title = Array.from(value).slice(0, MAX_TITLE_CHARS).join("");
+  return title || "Untitled source";
 }
 
 function normalizeDocumentText(value: string): string {

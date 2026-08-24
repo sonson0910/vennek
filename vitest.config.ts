@@ -2,7 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts"]
+    include: ["tests/**/*.test.ts"],
+    fileParallelism: process.env.TEST_DATABASE_URL === undefined && process.env.TEST_DATABASE_OWNER_URL === undefined
   },
   resolve: {
     alias: {

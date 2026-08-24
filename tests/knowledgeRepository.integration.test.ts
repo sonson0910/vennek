@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { KnowledgeRepository, createDatabase, type SourceRegistryEntry } from "@vennek/cardano-agent";
@@ -52,6 +53,22 @@ describe("knowledge repository validation", () => {
       contentHash: "a".repeat(64),
       retrievedAt: new Date("2026-08-24T00:00:00Z"),
     })).rejects.toThrow(/content/i);
+    await expect(repository.storeVersion({
+      sourceId: "cardano-docs",
+      canonicalUrl: "https://docs.cardano.org/about",
+      title: "😀".repeat(301),
+      content: "Cardano source body",
+      contentHash: "a".repeat(64),
+      retrievedAt: new Date("2026-08-24T00:00:00Z"),
+    })).rejects.toThrow(/title/i);
+    await expect(repository.storeVersion({
+      sourceId: "cardano-docs",
+      canonicalUrl: "https://docs.cardano.org/" + "a".repeat(2_040),
+      title: "About Cardano",
+      content: "Cardano source body",
+      contentHash: "a".repeat(64),
+      retrievedAt: new Date("2026-08-24T00:00:00Z"),
+    })).rejects.toThrow(/url/i);
     expect(connectCalls).toBe(0);
   });
 
@@ -204,6 +221,77 @@ describe("knowledge repository validation", () => {
 });
 
 describe.skipIf(!databaseUrl)("knowledge repository", () => {
+  it("keeps migration 004 upgrade-safe while enforcing new oversized writes", async () => {
+    const migration = readFileSync(new URL("../packages/cardano-agent/migrations/004_knowledge_revision.sql", import.meta.url), "utf8");
+    expect(migration).toMatch(/source_versions_title_length[\s\S]*NOT VALID/);
+    expect(migration).toMatch(/source_versions_canonical_url_length[\s\S]*NOT VALID/);
+    const db = createDatabase(databaseUrl!);
+    try {
+      await db.query("CREATE TEMP TABLE migration004_legacy (title text NOT NULL, canonical_url text NOT NULL)");
+      await db.query("INSERT INTO migration004_legacy (title, canonical_url) VALUES ($1, $2)", ["legacy".repeat(301), "https://legacy.example/" + "x".repeat(2_048)]);
+      await db.query("ALTER TABLE migration004_legacy ADD CONSTRAINT migration004_title_length CHECK (char_length(title) <= 300) NOT VALID");
+      await db.query("ALTER TABLE migration004_legacy ADD CONSTRAINT migration004_url_length CHECK (char_length(canonical_url) <= 2048) NOT VALID");
+      const legacy = await db.query("SELECT count(*)::text AS count FROM migration004_legacy");
+      expect(legacy.rows[0]?.count).toBe("1");
+      await expect(db.query("INSERT INTO migration004_legacy (title, canonical_url) VALUES ($1, $2)", ["new".repeat(301), "https://new.example/ok"]))
+        .rejects.toThrow(/migration004_title_length|check constraint/i);
+    } finally {
+      await db.end();
+    }
+  });
+
+  it("uses one global revision for indexed changes and metadata updates only", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `revision-${process.pid}-${Date.now()}`;
+    const entry: SourceRegistryEntry = {
+      id: sourceId,
+      owner: "Cardano",
+      trustTier: "official",
+      kind: "page",
+      url: `https://${sourceId}.example.com/docs`,
+      allowedDomains: [`${sourceId}.example.com`],
+      topics: ["developer"],
+      networks: ["mainnet"],
+      refresh: "daily",
+    };
+    const revision = async (): Promise<bigint> => BigInt((await db.query<{ revision: string }>("SELECT revision::text AS revision FROM knowledge_revision WHERE id = true")).rows[0]!.revision);
+    try {
+      const initial = await revision();
+      await repository.ensureSource(entry);
+      const afterInsert = await revision();
+      expect(afterInsert).toBe(initial + 1n);
+      await repository.ensureSource(entry);
+      const afterNoop = await revision();
+      expect(afterNoop).toBe(afterInsert);
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl: entry.url,
+        title: "Revision",
+        content: "Revision body",
+        contentHash: "a".repeat(64),
+        retrievedAt: new Date("2026-08-25T00:00:00.000Z"),
+      });
+      expect(await revision()).toBe(afterNoop);
+      await repository.replaceChunks(version.id, [{
+        ordinal: 0,
+        heading: "Revision",
+        content: "Revision body",
+        contentHash: "b".repeat(64),
+        embeddingModel: "test-model",
+        embedding: embedding(),
+      }]);
+      const afterIndex = await revision();
+      expect(afterIndex).toBe(afterNoop + 1n);
+      await repository.ensureSource({ ...entry, trustTier: "community", owner: "Community", topics: ["governance"] });
+      expect(await revision()).toBe(afterIndex + 1n);
+    } finally {
+      await db.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
   it("preserves source lifecycle fields and rejects a stale endpoint CAS", async () => {
     const db = createDatabase(databaseUrl!);
     const repository = new KnowledgeRepository(db);

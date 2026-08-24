@@ -6,6 +6,8 @@ const VECTOR_SIZE = 1_536;
 const PG_BIGINT_MAX = "9223372036854775807";
 const PG_INTEGER_MAX = 2_147_483_647;
 const MAX_ENDPOINT_STATE_BYTES = 4_096;
+const MAX_TITLE_CHARS = 300;
+const MAX_CANONICAL_URL_CHARS = 2_048;
 
 export const GITHUB_ENDPOINTS = ["organization", "repository", "readme", "releases", "tags"] as const;
 export type GithubEndpoint = typeof GITHUB_ENDPOINTS[number];
@@ -85,6 +87,9 @@ function assertCanonicalHttpsUrl(value: string): void {
   if (url.username || url.password) {
     throw new Error("Canonical URL must not contain credentials.");
   }
+  if (Array.from(value).length > MAX_CANONICAL_URL_CHARS) {
+    throw new Error("Canonical URL is too long.");
+  }
 }
 
 function normalizeVersionId(value: string | number): string {
@@ -107,6 +112,7 @@ function validateVersion(input: StoreVersionInput): void {
   assertNonEmpty(input.sourceId, "Source ID");
   assertCanonicalHttpsUrl(input.canonicalUrl);
   assertNonEmpty(input.title, "Title");
+  if (Array.from(input.title).length > MAX_TITLE_CHARS) throw new Error("Title is too long.");
   assertNonEmpty(input.content, "Content");
   assertContentHash(input.contentHash, "Content hash");
   assertValidDate(input.retrievedAt, "Retrieved at");
@@ -296,15 +302,53 @@ export class KnowledgeRepository {
 
   async ensureSource(entry: SourceRegistryEntry): Promise<void> {
     const [validated] = validateSourceRegistry([entry]);
-    await this.db.query(
-      `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
-       VALUES ($1, $2, $3, $4::jsonb)
-       ON CONFLICT (id) DO UPDATE SET
-         owner = EXCLUDED.owner,
-         trust_tier = EXCLUDED.trust_tier,
-         registry = EXCLUDED.registry`,
-      [validated.id, validated.owner, validated.trustTier, JSON.stringify(validated)],
-    );
+    const parameters = [validated.id, validated.owner, validated.trustTier, JSON.stringify(validated)];
+    if (typeof this.db.connect !== "function") {
+      await this.db.query(
+        `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
+         VALUES ($1, $2, $3, $4::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           owner = EXCLUDED.owner,
+           trust_tier = EXCLUDED.trust_tier,
+           registry = EXCLUDED.registry`,
+        parameters,
+      );
+      return;
+    }
+    const client = await this.db.connect();
+    let inTransaction = false;
+    try {
+      await client.query("BEGIN");
+      inTransaction = true;
+      await client.query(
+        `WITH changed AS (
+           INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
+           VALUES ($1, $2, $3, $4::jsonb)
+           ON CONFLICT (id) DO UPDATE SET
+             owner = EXCLUDED.owner,
+             trust_tier = EXCLUDED.trust_tier,
+             registry = EXCLUDED.registry
+           WHERE knowledge_sources.owner IS DISTINCT FROM EXCLUDED.owner
+              OR knowledge_sources.trust_tier IS DISTINCT FROM EXCLUDED.trust_tier
+              OR knowledge_sources.registry IS DISTINCT FROM EXCLUDED.registry
+           RETURNING 1
+         ), bumped AS (
+           INSERT INTO knowledge_revision (id, revision)
+           SELECT true, 1 FROM changed
+           ON CONFLICT (id) DO UPDATE SET revision = knowledge_revision.revision + 1
+           RETURNING 1
+         )
+         SELECT count(*) FROM bumped`,
+        parameters,
+      );
+      await client.query("COMMIT");
+      inTransaction = false;
+    } catch (error) {
+      if (inTransaction) await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getGithubEndpointState(
@@ -578,6 +622,10 @@ export class KnowledgeRepository {
           ],
         );
       }
+      await client.query(
+        `INSERT INTO knowledge_revision (id, revision) VALUES (true, 1)
+         ON CONFLICT (id) DO UPDATE SET revision = knowledge_revision.revision + 1`,
+      );
       ensureOperationActive(options);
       await client.query("COMMIT");
       inTransaction = false;

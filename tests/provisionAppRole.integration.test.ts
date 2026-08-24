@@ -1,7 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PgBoss } from "pg-boss";
-import { createDatabase, ensureConversationPartitions } from "@vennek/cardano-agent";
+import { sha256Hex } from "@vennek/shared";
+import {
+  createDatabase,
+  ensureConversationPartitions,
+  KnowledgeRepository,
+  retrieveEvidence,
+  type EmbeddingProvider,
+  type SourceRegistryEntry,
+} from "@vennek/cardano-agent";
 import {
   provisionAppRole,
   quoteIdentifier,
@@ -23,6 +31,90 @@ async function cleanupRole(owner: ReturnType<typeof createDatabase>, roleName: s
 }
 
 describe.skipIf(!ownerUrl)("restricted application role", () => {
+  it("can retrieve and cache knowledge without knowledge write privileges", async () => {
+    const suffix = `${process.pid}_${Date.now()}`;
+    const roleName = `vennek_retrieve_app_${suffix}`;
+    const password = randomBytes(24).toString("base64");
+    const sourceId = `role-retrieval-${process.pid}-${Date.now()}`;
+    const canonicalUrl = `https://${sourceId}.example.com/docs`;
+    const query = `role retrieval ${suffix}`;
+    const model = "test-retrieval-model";
+    const owner = createDatabase(ownerUrl!);
+    const appUrl = new URL(ownerUrl!);
+    appUrl.username = roleName;
+    appUrl.password = password;
+    const app = createDatabase(appUrl.toString());
+    const repository = new KnowledgeRepository(owner);
+    const entry: SourceRegistryEntry = {
+      id: sourceId,
+      owner: "Cardano",
+      trustTier: "official",
+      kind: "page",
+      url: canonicalUrl,
+      allowedDomains: [`${sourceId}.example.com`],
+      topics: ["developer"],
+      networks: ["mainnet"],
+      refresh: "daily",
+    };
+    const embedding = Array.from({ length: 1_536 }, (_, index) => index === 0 ? 1 : 0);
+    const embedder: EmbeddingProvider = {
+      embed: async (inputs) => inputs.map((_, index) => ({ index, embedding })),
+    };
+
+    try {
+      await repository.ensureSource(entry);
+      const version = await repository.storeVersion({
+        sourceId,
+        canonicalUrl,
+        title: "Role retrieval",
+        content: query,
+        contentHash: sha256Hex(query),
+        retrievedAt: new Date("2026-08-25T00:00:00.000Z"),
+      });
+      await repository.replaceChunks(version.id, [{
+        ordinal: 0,
+        heading: "Role retrieval",
+        content: query,
+        contentHash: sha256Hex(`Role retrieval\n${query}`),
+        embeddingModel: model,
+        embedding,
+      }]);
+
+      await provisionAppRole(ownerUrl!, roleName, password);
+      const request = {
+        query,
+        language: "en",
+        embeddingModel: model,
+        cachePolicy: "stable",
+        now: new Date("2026-08-25T00:00:00.000Z"),
+      } as const;
+      let evidence = await retrieveEvidence(request, { db: app, embedder });
+      let cached = await app.query("SELECT count(*)::text AS count FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(query)]);
+      for (let attempt = 0; attempt < 7 && cached.rows[0]?.count !== "1"; attempt += 1) {
+        evidence = await retrieveEvidence(request, { db: app, embedder });
+        cached = await app.query("SELECT count(*)::text AS count FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(query)]);
+      }
+      expect(evidence[0]?.sourceId).toBe(sourceId);
+      expect(cached.rows[0]?.count).toBe("1");
+      await expect(app.query(
+        "INSERT INTO knowledge_sources (id, owner, trust_tier, registry) VALUES ($1, 'x', 'community', '{}'::jsonb)",
+        [`forbidden-${sourceId}`],
+      )).rejects.toThrow(/permission denied/i);
+      await expect(app.query("UPDATE source_versions SET title = 'forbidden' WHERE id = $1", [version.id])).rejects.toThrow(/permission denied/i);
+      await expect(app.query(
+        "INSERT INTO knowledge_chunks (version_id, ordinal, heading, content, content_hash, embedding_model, embedding) VALUES ($1, 99, 'x', 'x', $2, $3, $4::vector)",
+        [version.id, sha256Hex("x"), model, `[${embedding.join(",")}]`],
+      )).rejects.toThrow(/permission denied/i);
+    } finally {
+      await app.end().catch(() => undefined);
+      await owner.query("DELETE FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(query)]).catch(() => undefined);
+      await owner.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
+      await owner.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await cleanupRole(owner, roleName).catch(() => undefined);
+      await owner.end();
+    }
+  }, 30_000);
+
   it("rejects the owner role and existing roles with owned objects or memberships", async () => {
     const owner = createDatabase(ownerUrl!);
     const ownerRole = validateRoleName(decodeURIComponent(new URL(ownerUrl!).username));
@@ -166,11 +258,19 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       const privileges = await owner.query<{
         database_create: boolean;
         unrelated_select: boolean;
+        knowledge_select: boolean;
+        source_insert: boolean;
+        revision_select: boolean;
+        retrieval_insert: boolean;
         schema_create_count: string;
       }>(
         `SELECT
            has_database_privilege($1, current_database(), 'CREATE') AS database_create,
            has_table_privilege($1, 'public.schema_migrations', 'SELECT') AS unrelated_select,
+           has_table_privilege($1, 'public.knowledge_sources', 'SELECT') AS knowledge_select,
+           has_table_privilege($1, 'public.knowledge_sources', 'INSERT') AS source_insert,
+           has_table_privilege($1, 'public.knowledge_revision', 'SELECT') AS revision_select,
+           has_table_privilege($1, 'public.retrieval_cache', 'INSERT') AS retrieval_insert,
            (SELECT count(*) FROM pg_catalog.pg_namespace
             WHERE has_schema_privilege($1, oid, 'CREATE'))::text AS schema_create_count`,
         [roleName],
@@ -178,6 +278,10 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       expect(privileges.rows[0]).toEqual({
         database_create: false,
         unrelated_select: false,
+        knowledge_select: true,
+        source_insert: false,
+        revision_select: true,
+        retrieval_insert: true,
         schema_create_count: "0",
       });
 
@@ -189,6 +293,15 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       }
 
       await provisionAppRole(ownerUrl!, roleName, rotatedPassword);
+
+      const reprovisioned = await owner.query<{ knowledge_select: boolean; source_insert: boolean; retrieval_insert: boolean }>(
+        `SELECT
+           has_table_privilege($1, 'public.knowledge_sources', 'SELECT') AS knowledge_select,
+           has_table_privilege($1, 'public.knowledge_sources', 'INSERT') AS source_insert,
+           has_table_privilege($1, 'public.retrieval_cache', 'INSERT') AS retrieval_insert`,
+        [roleName],
+      );
+      expect(reprovisioned.rows[0]).toEqual({ knowledge_select: true, source_insert: false, retrieval_insert: true });
 
       const rotatedApp = createDatabase(rotatedAppUrl.toString());
       try {

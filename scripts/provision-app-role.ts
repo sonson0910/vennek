@@ -99,6 +99,18 @@ export async function provisionAppRole(
     await client.query(`REVOKE CREATE ON SCHEMA public, pgboss FROM ${roleIdentifier}`);
     await client.query(`GRANT USAGE ON SCHEMA public, pgboss TO ${roleIdentifier}`);
     await client.query(`
+      GRANT SELECT ON TABLE
+        public.knowledge_sources,
+        public.source_versions,
+        public.knowledge_chunks,
+        public.knowledge_revision
+      TO ${roleIdentifier}
+    `);
+    await client.query(`
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.retrieval_cache
+      TO ${roleIdentifier}
+    `);
+    await client.query(`
       GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
         public.telegram_users,
         public.conversation_messages,

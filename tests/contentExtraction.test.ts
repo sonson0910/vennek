@@ -213,6 +213,17 @@ Visible after tilde fence.`);
     })).rejects.toThrow(/2,000,000/);
   });
 
+  it("bounds an oversized Unicode h1 without truncating the body", async () => {
+    const heading = "😀".repeat(400);
+    const result = await extractContent({
+      mime: "text/html",
+      bytes: encoder.encode(`<h1>${heading}</h1><p>body evidence remains</p>`),
+    });
+    expect(Array.from(result.title)).toHaveLength(300);
+    expect(result.title).toBe("😀".repeat(300));
+    expect(result.text).toContain("body evidence remains");
+  });
+
   it("delegates configured PDF extraction without loading a local parser", async () => {
     const bytes = encoder.encode("%PDF-1.7");
     const extractor = { extract: async (received: Uint8Array) => ({ title: "Remote PDF", text: `bytes:${received.byteLength}` }) };
