@@ -1,9 +1,11 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
-import { createHash } from "node:crypto";
+import { marked, Renderer, type Tokens } from "marked";
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_CHARS = 2_000_000;
+const MARKDOWN_RAW_ATTRIBUTE = "data-cardano-markdown-raw";
+const MARKDOWN_RAW_SELECTOR = `[${MARKDOWN_RAW_ATTRIBUTE}]`;
 const ALLOWED_MIME_TYPES = new Set([
   "text/html",
   "text/markdown",
@@ -50,189 +52,63 @@ function decodeUtf8(bytes: Uint8Array): string {
 }
 
 function extractMarkdown(source: string): ExtractedContent {
-  const protectedMarkdown = protectMarkdownLiterals(source);
-  const $ = cheerio.load(protectedMarkdown.source, {}, false);
-  const root = $.root();
-  root.children().remove();
-  const sanitized = root
-    .contents()
-    .toArray()
-    .filter((node) => node.type === "text")
-    .map((node) => $(node).text())
-    .join("");
-  const text = restoreMarkdownLiterals(sanitized, protectedMarkdown.prefix, protectedMarkdown.literals);
-  return finalizeContent(inferTitle(text), text);
-}
-
-type MarkdownLiteralSet = {
-  source: string;
-  prefix: string;
-  literals: string[];
-};
-
-function protectMarkdownLiterals(source: string): MarkdownLiteralSet {
-  const prefix = selectMarkdownLiteralPrefix(source);
-  const literals: string[] = [];
-  const protectedParts: string[] = [];
-  let index = 0;
-  let plainStart = 0;
-  while (index < source.length) {
-    const fenced = readMarkdownFence(source, index);
-    if (fenced) {
-      protectedParts.push(source.slice(plainStart, index));
-      protectedParts.push(addMarkdownLiteral(source.slice(index, fenced), prefix, literals));
-      index = fenced;
-      plainStart = index;
-      continue;
+  let inlineRawDepth = 0;
+  const renderer = new Renderer();
+  renderer.html = (token: Tokens.HTML | Tokens.Tag): string => {
+    const raw = token.text.trim();
+    if (isDroppedMarkdownHtml(raw)) return "";
+    if (token.block) return "";
+    if (isRawHtmlPair(raw)) {
+      return "";
     }
-
-    const inlineCode = readMarkdownCodeSpan(source, index);
-    if (inlineCode) {
-      protectedParts.push(source.slice(plainStart, index));
-      protectedParts.push(addMarkdownLiteral(source.slice(index, inlineCode), prefix, literals));
-      index = inlineCode;
-      plainStart = index;
-      continue;
-    }
-
-    const autolink = readMarkdownAutolink(source, index);
-    if (autolink) {
-      protectedParts.push(source.slice(plainStart, index));
-      protectedParts.push(addMarkdownLiteral(source.slice(index, autolink), prefix, literals));
-      index = autolink;
-      plainStart = index;
-      continue;
-    }
-
-    index += 1;
-  }
-  protectedParts.push(source.slice(plainStart));
-  return { source: protectedParts.join(""), prefix, literals };
-}
-
-function selectMarkdownLiteralPrefix(source: string): string {
-  const digest = createHash("sha256").update(source).digest("hex");
-  const base = `__CARDANO_MARKDOWN_LITERAL_${digest}_`;
-  let prefix = base;
-  let attempt = 0;
-  while (source.includes(prefix)) {
-    attempt += 1;
-    prefix = `${base}${attempt}_`;
-  }
-  return prefix;
-}
-
-function addMarkdownLiteral(value: string, prefix: string, literals: string[]): string {
-  const index = literals.length;
-  literals.push(value);
-  return `${prefix}${index}__`;
-}
-
-function restoreMarkdownLiterals(value: string, prefix: string, literals: string[]): string {
-  if (literals.length === 0) return value;
-  const restored: string[] = [];
-  let cursor = 0;
-  while (cursor < value.length) {
-    const tokenStart = value.indexOf(prefix, cursor);
-    if (tokenStart < 0) {
-      restored.push(value.slice(cursor));
-      break;
-    }
-    restored.push(value.slice(cursor, tokenStart));
-    let tokenEnd = tokenStart + prefix.length;
-    while (tokenEnd < value.length && value[tokenEnd] >= "0" && value[tokenEnd] <= "9") {
-      tokenEnd += 1;
-    }
-    if (tokenEnd === tokenStart + prefix.length || !value.startsWith("__", tokenEnd)) {
-      restored.push(value.slice(tokenStart, tokenEnd));
-      cursor = tokenEnd;
-      continue;
-    }
-    const literalIndex = Number(value.slice(tokenStart + prefix.length, tokenEnd));
-    if (!Number.isSafeInteger(literalIndex) || literalIndex < 0 || literalIndex >= literals.length) {
-      restored.push(value.slice(tokenStart, tokenEnd + 2));
-      cursor = tokenEnd + 2;
-      continue;
-    }
-    restored.push(literals[literalIndex]);
-    cursor = tokenEnd + 2;
-  }
-  return restored.join("");
-}
-
-function readMarkdownFence(source: string, start: number): number | undefined {
-  if (start !== 0 && source[start - 1] !== "\n") return undefined;
-  let cursor = start;
-  let indentation = 0;
-  while (source[cursor] === " " && indentation < 4) {
-    cursor += 1;
-    indentation += 1;
-  }
-  if (indentation > 3 || (source[cursor] !== "`" && source[cursor] !== "~")) return undefined;
-
-  const fenceCharacter = source[cursor];
-  const openingStart = cursor;
-  while (source[cursor] === fenceCharacter) cursor += 1;
-  const fenceLength = cursor - openingStart;
-  if (fenceLength < 3) return undefined;
-
-  const openingLineEnd = findMarkdownLineEnd(source, cursor);
-  if (fenceCharacter === "`" && source.slice(cursor, openingLineEnd).includes("`")) return undefined;
-  if (openingLineEnd >= source.length) return source.length;
-
-  let lineStart = openingLineEnd + 1;
-  while (lineStart < source.length) {
-    const lineEnd = findMarkdownLineEnd(source, lineStart);
-    let closingCursor = lineStart;
-    let closingIndentation = 0;
-    while (source[closingCursor] === " " && closingIndentation < 4) {
-      closingCursor += 1;
-      closingIndentation += 1;
-    }
-    if (closingIndentation <= 3 && source[closingCursor] === fenceCharacter) {
-      const closingStart = closingCursor;
-      while (source[closingCursor] === fenceCharacter) closingCursor += 1;
-      const closingLength = closingCursor - closingStart;
-      if (closingLength >= fenceLength && source.slice(closingCursor, lineEnd).trim() === "") {
-        return lineEnd < source.length ? lineEnd + 1 : lineEnd;
+    if (isRawHtmlClosingTag(raw)) {
+      if (inlineRawDepth > 0) {
+        inlineRawDepth -= 1;
+        return `</div>`;
       }
+      return "";
     }
-    if (lineEnd >= source.length) break;
-    lineStart = lineEnd + 1;
-  }
-  return source.length;
-}
-
-function findMarkdownLineEnd(source: string, start: number): number {
-  const lineEnd = source.indexOf("\n", start);
-  return lineEnd < 0 ? source.length : lineEnd;
-}
-
-function readMarkdownCodeSpan(source: string, start: number): number | undefined {
-  if (source[start] !== "`") return undefined;
-  let openingCursor = start;
-  while (source[openingCursor] === "`") openingCursor += 1;
-  const runLength = openingCursor - start;
-  let cursor = openingCursor;
-  while (cursor < source.length) {
-    if (source[cursor] !== "`") {
-      cursor += 1;
-      continue;
+    if (isRawHtmlOpeningTag(raw)) {
+      if (isVoidOrSelfClosingRawTag(raw)) return "";
+      inlineRawDepth += 1;
+      return `<div ${MARKDOWN_RAW_ATTRIBUTE}>`;
     }
-    const closingStart = cursor;
-    while (source[cursor] === "`") cursor += 1;
-    if (cursor - closingStart === runLength) return cursor;
-  }
-  return undefined;
+    return "";
+  };
+  const rendered = marked.parse(source, { renderer, async: false });
+  return extractHtml(rendered);
 }
 
-function readMarkdownAutolink(source: string, start: number): number | undefined {
-  if (source[start] !== "<") return undefined;
-  const close = source.indexOf(">", start + 1);
-  if (close < 0) return undefined;
-  const value = source.slice(start + 1, close);
-  return /^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^ <>]+$/.test(value) ? close + 1 : undefined;
+function isDroppedMarkdownHtml(value: string): boolean {
+  return value.startsWith("<!--") || value.startsWith("<!") || value.startsWith("<?");
 }
+
+function rawHtmlTagName(value: string): string | undefined {
+  return value.match(/^<\s*\/?\s*([A-Za-z][A-Za-z0-9:-]*)\b/)?.[1]?.toLowerCase();
+}
+
+function isRawHtmlOpeningTag(value: string): boolean {
+  return value.startsWith("<") && !value.startsWith("</") && value.endsWith(">");
+}
+
+function isRawHtmlClosingTag(value: string): boolean {
+  return /^<\s*\/\s*[A-Za-z][A-Za-z0-9:-]*[\s\S]*>$/.test(value);
+}
+
+function isRawHtmlPair(value: string): boolean {
+  const tag = rawHtmlTagName(value);
+  return Boolean(tag && new RegExp(`^<\\s*${tag}\\b[\\s\\S]*<\\/\\s*${tag}\\s*>$`, "i").test(value));
+}
+
+function isVoidOrSelfClosingRawTag(value: string): boolean {
+  if (/\/\s*>$/.test(value)) return true;
+  const tag = rawHtmlTagName(value);
+  return Boolean(tag && VOID_RAW_HTML_TAGS.has(tag));
+}
+
+const VOID_RAW_HTML_TAGS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"
+]);
 
 const HIDDEN_CLASS_TOKENS = new Set([
   "hidden",
@@ -273,6 +149,7 @@ function hasConcealedStyle(style: string): boolean {
 function extractHtml(source: string): ExtractedContent {
   const $ = cheerio.load(source);
   // Static extraction is hygiene only; downstream must treat all source text as untrusted.
+  $(MARKDOWN_RAW_SELECTOR).remove();
   $("script, style, nav, footer").remove();
   $("[hidden], [aria-hidden], [style], [class]").each((_, element) => {
     const node = $(element);

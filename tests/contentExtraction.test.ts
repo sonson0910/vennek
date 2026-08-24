@@ -52,7 +52,7 @@ describe("bounded source content extraction", () => {
 
     expect(result.text).toContain("# Visible heading");
     expect(result.text).toContain("Visible Cardano text.");
-    expect(result.text).toContain("**Visible Markdown**");
+    expect(result.text).toContain("Visible Markdown");
     expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
   });
 
@@ -84,31 +84,65 @@ Visible after tilde fence.
 
     expect(result.text).toBe(`# Cardano links and literals
 
-See <https://docs.cardano.org> followed by text.
+See https://docs.cardano.org followed by text.
 
-Use \`Array<string>\` inline.
+Use Array<string> inline.
 
-\`\`\`\`html
 <div>literal tag</div>
 <!-- literal comment -->
-\`\`\`\`\`
 
 Visible after backtick fence.
 
-~~~html
 <span>tilde literal</span>
-~~~
 
 Visible after tilde fence.`);
     expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
   });
 
-  it("preserves many literals without placeholder collisions or quadratic restoration", async () => {
-    const literals = Array.from({ length: 40_000 }, (_, index) => `\`Array<Tag${index}>\``).join(" ");
-    const source = `# Many literals\n\n__CARDANO_MARKDOWN_LITERAL_0__ ${literals}\n\n<div>HIDDEN_INSTRUCTION_BULK_RAW</div>`;
+  it("renders URI and email autolinks, inline code, and keeps visible text", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("Links: <https://docs.cardano.org> and <team@example.com> followed by visible text.\n\nUse `Array<string>` safely.")
+    });
+
+    expect(result.text).toBe("Links: https://docs.cardano.org and team@example.com followed by visible text.\n\nUse Array<string> safely.");
+  });
+
+  it("keeps fenced and indented Markdown code plus paragraphs after each fence", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("````html\n<div>backtick literal</div>\n`````\n\nAfter backtick fence.\n\n~~~~html\n<span>tilde literal</span>\n~~~~~\n\nAfter tilde fence.\n\n    <section>indented literal</section>\n\nAfter indented code.\n\n> ~~~html\n> <aside>quoted tilde literal</aside>\n> ~~~\n\nAfter quoted tilde fence.")
+    });
+
+    expect(result.text).toBe("<div>backtick literal</div>\n\nAfter backtick fence.\n\n<span>tilde literal</span>\n\nAfter tilde fence.\n\n<section>indented literal</section>\n\nAfter indented code.\n\n<aside>quoted tilde literal</aside>\n\nAfter quoted tilde fence.");
+  });
+
+  it("sanitizes raw HTML and comments without losing escaped Markdown or visible text", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("Escaped \\` marker remains.\n\n<!-- HIDDEN_INSTRUCTION_COMMENT -->\n<div hidden>HIDDEN_INSTRUCTION_DIV</div>\n\n<span>HIDDEN_INSTRUCTION_SPAN</span>\n\nVisible paragraph.")
+    });
+
+    expect(result.text).toBe("Escaped ` marker remains.\n\nVisible paragraph.");
+    expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
+  });
+
+  it("drops raw HTML blocks with stray closing tags before later Markdown", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("<div>stray </div></div><span>HIDDEN_INSTRUCTION_BLOCK</span></div>\n\nVisible after block.")
+    });
+
+    expect(result.text).toBe("Visible after block.");
+    expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
+  });
+
+  it("handles 400,000 short code spans within the bounded extraction deadline", async () => {
+    const source = Array.from({ length: 400_000 }, () => "`x`").join(" ");
+    const expected = `${"x ".repeat(399_999)}x`;
     const result = await extractContent({ mime: "text/markdown", bytes: encoder.encode(source) });
 
-    expect(result.text).toBe(`# Many literals\n\n__CARDANO_MARKDOWN_LITERAL_0__ ${literals}`);
+    expect(result.text).toBe(expected);
   }, 10_000);
 
   it("removes explicitly concealed HTML styles and semantic hidden classes", async () => {
