@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 
 const PARTITION_LOCK_NAME = "vennek:conversation-message-partitions";
 const PARTITION_NAME = /^conversation_messages_\d{4}_(?:0[1-9]|1[0-2])$/;
-const DATE_BOUND = /^\d{4}-\d{2}-\d{2}$/;
+const TIMESTAMPTZ_BOUND = /^\d{4}-\d{2}-\d{2} 00:00:00\+00$/;
 
 function monthStart(now: Date, offset: number): Date {
   if (Number.isNaN(now.getTime()) || !Number.isSafeInteger(offset) || Math.abs(offset) > 120) {
@@ -11,9 +11,9 @@ function monthStart(now: Date, offset: number): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
 }
 
-function dateBound(date: Date): string {
-  const value = date.toISOString().slice(0, 10);
-  if (!DATE_BOUND.test(value)) throw new Error("Partition date is invalid");
+function timestampBound(date: Date): string {
+  const value = `${date.toISOString().slice(0, 10)} 00:00:00+00`;
+  if (!TIMESTAMPTZ_BOUND.test(value)) throw new Error("Partition date is invalid");
   return value;
 }
 
@@ -29,11 +29,11 @@ async function createPartition(
 ): Promise<void> {
   const end = monthStart(start, 1);
   const name = partitionName(start);
-  const startBound = dateBound(start);
-  const endBound = dateBound(end);
+  const startBound = timestampBound(start);
+  const endBound = timestampBound(end);
   const result = await client.query<{ statement: string }>(
     `SELECT format(
-       'CREATE TABLE IF NOT EXISTS %I PARTITION OF conversation_messages FOR VALUES FROM (DATE %L) TO (DATE %L)',
+       'CREATE TABLE IF NOT EXISTS %I PARTITION OF conversation_messages FOR VALUES FROM (TIMESTAMPTZ %L) TO (TIMESTAMPTZ %L)',
        $1::text, $2::text, $3::text
      ) AS statement`,
     [name, startBound, endBound],
@@ -52,6 +52,7 @@ export async function ensureConversationPartitions(db: Pool, now = new Date()): 
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PARTITION_LOCK_NAME]);
 
     // Keep the current month plus two future months available for inserts.
+    await createPartition(client, monthStart(now, 0));
     await createPartition(client, monthStart(now, 1));
     await createPartition(client, monthStart(now, 2));
 

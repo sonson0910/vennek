@@ -192,4 +192,15 @@ describe("conversation text encryption", () => {
       plaintext,
     );
   });
+
+  it("authenticates optional associated data", () => {
+    const encrypted = encryptText("bound conversation", encryptionKey, "vennek:v1:user:chat:role");
+
+    expect(
+      decryptText(encrypted, encryptionKey, "vennek:v1:user:chat:role"),
+    ).toBe("bound conversation");
+    expect(() =>
+      decryptText(encrypted, encryptionKey, "vennek:v1:other-user:chat:role"),
+    ).toThrow(/authentication/);
+  });
 });

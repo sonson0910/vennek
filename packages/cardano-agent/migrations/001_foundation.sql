@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 
 DO $$
 DECLARE
-  month_start date := date_trunc('month', current_date)::date;
+  month_start date := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
   partition_start date;
   partition_name text;
   month_offset integer;
@@ -63,10 +63,10 @@ BEGIN
       to_char(partition_start, 'YYYY_MM')
     );
     EXECUTE format(
-      'CREATE TABLE IF NOT EXISTS %I PARTITION OF conversation_messages FOR VALUES FROM (DATE %L) TO (DATE %L)',
+      'CREATE TABLE IF NOT EXISTS %I PARTITION OF conversation_messages FOR VALUES FROM (TIMESTAMPTZ %L) TO (TIMESTAMPTZ %L)',
       partition_name,
-      partition_start,
-      (partition_start + interval '1 month')::date
+      partition_start::text || ' 00:00:00+00',
+      (partition_start + interval '1 month')::date::text || ' 00:00:00+00'
     );
   END LOOP;
 END $$;
