@@ -1,5 +1,5 @@
 {
-  "name": "@vennek/telegram-bot",
+  "name": "@vennek/cardano-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,9 @@
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "dependencies": {
-    "@vennek/cardano-agent": "0.1.0",
-    "@vennek/cardano-governance-skills": "0.1.0"
+    "@vennek/cardano-governance-skills": "0.1.0",
+    "@vennek/shared": "0.1.0",
+    "pg": "^8.16.0",
+    "pg-boss": "^12.0.0"
   }
 }

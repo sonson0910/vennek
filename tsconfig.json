@@ -14,6 +14,7 @@
     "paths": {
       "@vennek/shared": ["packages/shared/src/index.ts"],
       "@vennek/cardano-governance-skills": ["packages/cardano-governance-skills/src/index.ts"],
+      "@vennek/cardano-agent": ["packages/cardano-agent/src/index.ts"],
       "@vennek/telegram-bot": ["apps/telegram-bot/src/index.ts"]
     }
   },
