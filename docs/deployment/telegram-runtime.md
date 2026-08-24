@@ -11,7 +11,7 @@ umask 077
 openssl rand -base64 32 > /secure/path/vennek-encryption-key
 ```
 
-Load the key into `VENNEK_ENCRYPTION_KEY` through the deployment secret manager or a protected file loader. Never commit it, echo it, or put it in shell history. Set all values in `.env.example`; placeholders are not production credentials.
+Load the key into `VENNEK_ENCRYPTION_KEY` through the deployment secret manager or a protected file loader. Never commit it, echo it, or put it in shell history. Set all values in `.env.example`; placeholders are not production credentials. Set `VENNEK_IMAGE` to the repository image and `VENNEK_IMAGE_TAG` to the immutable release tag. The migration service is the only Compose service that builds the repository image; provisioning, webhook, and worker all run that exact image reference.
 
 ## Compose staging
 
@@ -28,7 +28,7 @@ Start the ordered stack with the protected environment file:
 
 ```bash
 chmod 0600 /secure/path/vennek.env
-docker compose --env-file /secure/path/vennek.env config
+docker compose --env-file /secure/path/vennek.env config --quiet
 docker compose --env-file /secure/path/vennek.env up -d --build
 docker compose --env-file /secure/path/vennek.env ps
 ```
@@ -85,3 +85,9 @@ Monitor webhook acknowledgement p95, queue depth/age, provider errors and latenc
 Roll out internal staging first, then a small public canary, 1,000 DAU, and 10,000 DAU. Keep the last verified application image tag and Compose environment. To roll back application code, stop the current runtime and start the previous image tag; keep database migrations forward-compatible and do not run destructive down-migrations during an incident. Restore PostgreSQL only into an explicitly isolated database after verifying a backup.
 
 Foundation staging intentionally refuses factual Cardano answers until the knowledge/RAG plan has ingested and evaluated the approved official sources. Do not open a public factual-answer canary before that gate and the independent security review pass.
+
+To roll back to a previously verified immutable image, replace the example tag with the recorded release tag and recreate the four application services:
+
+```bash
+VENNEK_IMAGE_TAG=2026-08-24-abc1234 docker compose --env-file /secure/path/vennek.env up -d --no-build --force-recreate migrate provision-app-role telegram-webhook agent-worker
+```

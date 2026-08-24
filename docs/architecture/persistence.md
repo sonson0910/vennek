@@ -1,6 +1,6 @@
 # Persistence architecture
 
-Production conversation history lives in PostgreSQL and is encrypted with the 32-byte `VENNEK_ENCRYPTION_KEY`. The migration owner applies sorted SQL migrations and installs pg-boss; webhook and worker containers use only the restricted application database URL. Monthly conversation partitions are maintained through the owner-defined `public.ensure_conversation_partitions(timestamptz)` function.
+Production conversation history lives in PostgreSQL and is encrypted with the 32-byte `VENNEK_ENCRYPTION_KEY`. The migration owner applies sorted SQL migrations and installs pg-boss; webhook and worker containers use only the restricted application database URL. Monthly conversation partitions are maintained through the no-argument `SECURITY DEFINER public.ensure_conversation_partitions()` entrypoint, while deterministic date injection uses the owner-only `public.ensure_conversation_partitions_at(timestamptz)` function.
 
 The first interaction shows the retention notice. History is retained indefinitely until an administrator deletes it. Wallet secrets are rejected before any database or provider call. No provider receives encrypted history or database credentials.
 

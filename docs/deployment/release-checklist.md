@@ -24,7 +24,7 @@ git diff --check
 - [ ] Docker Compose renders with a sanitized environment file:
 
   ```bash
-  docker compose --env-file .env.example config
+  docker compose --env-file .env.example config --quiet
   ```
 
 - [ ] Docker image builds with the pinned Node runtime.
@@ -56,6 +56,7 @@ git diff --check
 ## Rollback and key/role operations
 
 - [ ] Previous verified application image and Compose environment are available.
+- [ ] `VENNEK_IMAGE_TAG` points to an immutable release tag shared by migration, provisioning, webhook, and worker.
 - [ ] Application rollback is rehearsed without destructive database down-migrations.
 - [ ] Backup restore is rehearsed into an explicitly named isolated database.
 - [ ] Application-role password rotation is rehearsed; owner credentials remain separate.
@@ -70,3 +71,4 @@ git diff --check
 - Credential-gated checks not run:
 - Known limitations:
 - Rollback owner and command:
+  `VENNEK_IMAGE_TAG=2026-08-24-abc1234 docker compose --env-file /secure/path/vennek.env up -d --no-build --force-recreate migrate provision-app-role telegram-webhook agent-worker`

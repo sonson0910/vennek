@@ -7,7 +7,7 @@ const PASSWORD = /^[\x21-\x7e]{24,256}$/u;
 const RESERVED_ROLE_NAMES = new Set(["postgres", "public", "pg_catalog", "pg_signal_backend"]);
 
 export function validateRoleName(value: string): string {
-  if (!ROLE_NAME.test(value) || RESERVED_ROLE_NAMES.has(value)) {
+  if (!ROLE_NAME.test(value) || RESERVED_ROLE_NAMES.has(value) || value.startsWith("pg_")) {
     throw new Error("VENNEK_APP_DB_USER must be a safe application role name.");
   }
   return value;
@@ -41,11 +41,42 @@ export async function provisionAppRole(
     await client.query("BEGIN");
     inTransaction = true;
 
+    const currentUser = await client.query<{ current_user: string }>(
+      "SELECT current_user",
+    );
+    if (currentUser.rows[0]?.current_user === safeRoleName) {
+      throw new Error("VENNEK_APP_DB_USER must not be the current database role.");
+    }
+
     const existing = await client.query(
-      "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1",
+      "SELECT oid::text AS oid FROM pg_catalog.pg_roles WHERE rolname = $1",
       [safeRoleName],
     );
     if (existing.rowCount) {
+      const roleOid = existing.rows[0].oid;
+      const ownership = await client.query<{ kind: string }>(
+        `SELECT kind FROM (
+           SELECT 'database' AS kind FROM pg_catalog.pg_database WHERE datdba = $1::oid
+           UNION ALL
+           SELECT 'schema' FROM pg_catalog.pg_namespace WHERE nspowner = $1::oid
+           UNION ALL
+           SELECT 'relation' FROM pg_catalog.pg_class WHERE relowner = $1::oid
+           UNION ALL
+           SELECT 'function' FROM pg_catalog.pg_proc WHERE proowner = $1::oid
+           UNION ALL
+           SELECT 'type' FROM pg_catalog.pg_type WHERE typowner = $1::oid
+           UNION ALL
+           SELECT 'membership' FROM pg_catalog.pg_auth_members
+             WHERE roleid = $1::oid OR member = $1::oid
+         ) owned
+         LIMIT 1`,
+        [roleOid],
+      );
+      if (ownership.rowCount) {
+        throw new Error(
+          `Application role ${safeRoleName} must not own database objects or have role memberships (${ownership.rows[0].kind}).`,
+        );
+      }
       await client.query(
         `ALTER ROLE ${roleIdentifier} LOGIN PASSWORD ${passwordLiteral}
          NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
@@ -78,8 +109,17 @@ export async function provisionAppRole(
         public.usage_ledger_id_seq
       TO ${roleIdentifier}
     `);
+    const legacyPartitionFunction = await client.query<{ present: boolean }>(
+      "SELECT pg_catalog.to_regprocedure($1) IS NOT NULL AS present",
+      ["public.ensure_conversation_partitions(timestamptz)"],
+    );
+    if (legacyPartitionFunction.rows[0]?.present) {
+      await client.query(
+        `REVOKE ALL ON FUNCTION public.ensure_conversation_partitions(timestamptz) FROM ${roleIdentifier}`,
+      );
+    }
     await client.query(
-      `GRANT EXECUTE ON FUNCTION public.ensure_conversation_partitions(timestamptz) TO ${roleIdentifier}`,
+      `GRANT EXECUTE ON FUNCTION public.ensure_conversation_partitions() TO ${roleIdentifier}`,
     );
     await client.query(`
       GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss
@@ -89,6 +129,20 @@ export async function provisionAppRole(
       GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA pgboss
       TO ${roleIdentifier}
     `);
+
+    const createPrivileges = await client.query<{
+      public_create: boolean;
+      pgboss_create: boolean;
+    }>(
+      `SELECT
+         has_schema_privilege($1, 'public', 'CREATE') AS public_create,
+         has_schema_privilege($1, 'pgboss', 'CREATE') AS pgboss_create`,
+      [safeRoleName],
+    );
+    const privileges = createPrivileges.rows[0];
+    if (privileges?.public_create || privileges?.pgboss_create) {
+      throw new Error(`Application role ${safeRoleName} must not have CREATE on public or pgboss.`);
+    }
 
     await client.query("COMMIT");
     inTransaction = false;

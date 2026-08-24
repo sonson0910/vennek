@@ -15,6 +15,7 @@ describe("application role provisioning helpers", () => {
     expect(() => validateRoleName("postgres")).toThrow(/role name/i);
     expect(() => validateRoleName("vennek-app")).toThrow(/role name/i);
     expect(() => validateRoleName("pg_catalog")).toThrow(/role name/i);
+    expect(() => validateRoleName("pg_worker")).toThrow(/role name/i);
   });
 
   it("quotes a password without exposing SQL syntax", () => {
