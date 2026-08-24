@@ -42,8 +42,12 @@ describe("fixed GitHub source retrieval", () => {
     const result = await fetchGithubSource(input({ entry: organizationEntry, repository, request }));
 
     expect(calls).toEqual(["/orgs/test-org"]);
-    expect(result.documents[0]).toMatchObject({ endpoint: "organization", canonicalUrl: "https://github.com/test-org", mime: "application/json" });
-    expect(JSON.parse(new TextDecoder().decode(result.documents[0]!.bytes))).toEqual({ login: "test-org" });
+    expect(result.documents[0]).toMatchObject({
+      endpoint: "organization",
+      canonicalUrl: "https://github.com/test-org",
+      title: "test-org GitHub organization",
+      text: '{\n  "login": "test-org"\n}'
+    });
   });
 
   it("fetches repository, README, releases, and tags in fixed order", async () => {
@@ -67,7 +71,7 @@ describe("fixed GitHub source retrieval", () => {
       "https://github.com/test-org/test-repo/releases",
       "https://github.com/test-org/test-repo/tags"
     ]);
-    expect(new TextDecoder().decode(result.documents[1]!.bytes)).toBe("# Test Readme");
+    expect(result.documents[1]!.text).toBe("# Test Readme");
   });
 
   it("uses a safe ETag, treats 304 as unchanged, and discards stale CAS updates", async () => {
@@ -107,7 +111,7 @@ describe("fixed GitHub source retrieval", () => {
 
     fake.forceCasConflict = true;
     await fetchGithubSource(input({ entry: organizationEntry, repository: fake.repository, request: responseRequest([], () => ({ payload: {} })) }));
-    expect(fake.repository.compareAndSetGithubEndpointState).toHaveBeenCalled();
+    expect(fake.repository.compareAndSetGithubEndpointStates).toHaveBeenCalled();
   });
 
   it("stops on rate limiting and defers without requesting later endpoints", async () => {
@@ -127,6 +131,79 @@ describe("fixed GitHub source retrieval", () => {
     const deferred = await fetchGithubSource(input({ repository: fake.repository, request: noRequest }));
     expect(deferred.deferredUntil).toEqual(result.deferredUntil);
     expect(noRequest).not.toHaveBeenCalled();
+  });
+
+  it("treats a reset header alone as an ordinary HTTP 403", async () => {
+    const canceled: boolean[] = [];
+    const calls: string[] = [];
+    const request = responseRequest(calls, () => ({
+      statusCode: 403,
+      payload: { message: "forbidden" },
+      canceled,
+      headers: {
+        "x-ratelimit-remaining": "10",
+        "x-ratelimit-reset": String(Math.floor(now.getTime() / 1_000) + 120)
+      }
+    }));
+    const fake = fakeRepository();
+
+    await expect(fetchGithubSource(input({ repository: fake.repository, request }))).rejects.toThrow(/HTTP 403/);
+    expect(calls).toHaveLength(1);
+    expect(canceled[0]).toBe(true);
+  });
+
+  it("does not expose staged documents or state when rate limiting interrupts a batch", async () => {
+    const calls: string[] = [];
+    const fake = fakeRepository();
+    const request = responseRequest(calls, (path): { statusCode?: number; payload: unknown; headers?: Record<string, string> } => {
+      if (path.endsWith("/readme")) return {
+        statusCode: 429,
+        payload: { message: "rate limited" },
+        headers: { "retry-after": "60" }
+      };
+      return { payload: { name: "test-repo" }, headers: { etag: '"repo-v1"' } };
+    });
+
+    const result = await fetchGithubSource(input({ repository: fake.repository, request }));
+
+    expect(calls).toEqual(["/repos/test-org/test-repo", "/repos/test-org/test-repo/readme"]);
+    expect(result.documents).toHaveLength(0);
+    expect(result.unchanged).toBe(0);
+    expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:01:00.000Z"));
+    expect(fake.states.get("repository")).toBeUndefined();
+    expect(fake.states.get("readme")).toMatchObject({ retryAt: result.deferredUntil?.toISOString() });
+    expect(fake.repository.compareAndSetGithubEndpointStates).not.toHaveBeenCalled();
+  });
+
+  it("reloads a future retry state when a limiting endpoint CAS loses", async () => {
+    const fake = fakeRepository();
+    fake.repository.compareAndSetGithubEndpointState = vi.fn(async () => {
+      fake.states.set("repository", { retryAt: "2026-08-24T00:05:00.000Z" });
+      return false;
+    });
+    const request = responseRequest([], () => ({ statusCode: 429, payload: {} }));
+
+    const result = await fetchGithubSource(input({ repository: fake.repository, request }));
+
+    expect(result).toEqual({ documents: [], unchanged: 0, deferredUntil: new Date("2026-08-24T00:05:00.000Z") });
+  });
+
+  it("does not persist an earlier ETag when a later README extraction fails", async () => {
+    const fake = fakeRepository();
+    const first = responseRequest([], (path) => path.endsWith("/readme")
+      ? { payload: { encoding: "base64", content: "%%%" }, headers: { etag: '"readme-v1"' } }
+      : { payload: { name: "test-repo" }, headers: { etag: '"repo-v1"' } });
+
+    await expect(fetchGithubSource(input({ repository: fake.repository, request: first }))).rejects.toThrow(/base64/i);
+    expect(fake.states.size).toBe(0);
+
+    const captures: Array<Record<string, unknown>> = [];
+    const second = responseRequest([], (path) => ({
+      payload: path.endsWith("/readme") ? { encoding: "base64", content: "IyBPSw==" } : { name: "test-repo" },
+      capture: captures
+    }));
+    await fetchGithubSource(input({ repository: fake.repository, request: second }));
+    expect(captures[0]?.headers).not.toHaveProperty("if-none-match");
   });
 
   it("clamps malicious retry headers and stored deferrals to 24 hours", async () => {
@@ -251,6 +328,15 @@ function fakeRepository(): {
       const current = states.get(endpoint) ?? null;
       if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
       states.set(endpoint, next);
+      return true;
+    }),
+    compareAndSetGithubEndpointStates: vi.fn(async (updates: Array<{ endpoint: GithubEndpoint; expectedState: GithubEndpointState | null; nextState: GithubEndpointState | null }>) => {
+      if (fake.forceCasConflict) return false;
+      for (const update of updates) {
+        const current = states.get(update.endpoint) ?? null;
+        if (JSON.stringify(current) !== JSON.stringify(update.expectedState)) return false;
+      }
+      for (const update of updates) states.set(update.endpoint, update.nextState);
       return true;
     })
   } as unknown as KnowledgeRepository;

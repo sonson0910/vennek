@@ -1,16 +1,13 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_CHARS = 2_000_000;
-const MAX_PDF_PAGES = 300;
 const ALLOWED_MIME_TYPES = new Set([
   "text/html",
   "text/markdown",
   "text/plain",
-  "application/json",
-  "application/pdf"
+  "application/json"
 ]);
 
 export type ExtractContentInput = {
@@ -25,17 +22,12 @@ export type ExtractedContent = {
 };
 
 export async function extractContent(input: ExtractContentInput): Promise<ExtractedContent> {
-  if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_INPUT_BYTES) {
-    throw new Error("Content input must not exceed 8 MiB.");
-  }
-
   const mime = input.mime.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   if (!ALLOWED_MIME_TYPES.has(mime)) {
     throw new Error(`Unsupported content-type: ${mime || "missing"}`);
   }
-
-  if (mime === "application/pdf") {
-    return extractPdf(input.bytes);
+  if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_INPUT_BYTES) {
+    throw new Error("Content input must not exceed 8 MiB.");
   }
 
   const decoded = decodeUtf8(input.bytes);
@@ -63,7 +55,7 @@ function extractHtml(source: string): ExtractedContent {
     if (
       node.attr("hidden") !== undefined ||
       ariaHidden === "true" ||
-      /(?:^|;)\s*(?:display|visibility)\s*:\s*none(?:\s*!important)?(?:\s*;|$)/i.test(style)
+      /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)/i.test(style)
     ) {
       node.remove();
     }
@@ -134,46 +126,6 @@ function findPublishedAt($: cheerio.CheerioAPI): Date | undefined {
     }
   }
   return undefined;
-}
-
-async function extractPdf(bytes: Uint8Array): Promise<ExtractedContent> {
-  type PdfLoadingTask = ReturnType<typeof getDocument>;
-  let loadingTask: PdfLoadingTask | undefined;
-  let document: Awaited<PdfLoadingTask["promise"]> | undefined;
-  try {
-    loadingTask = getDocument({ data: bytes });
-    document = await loadingTask.promise;
-    if (document.numPages > MAX_PDF_PAGES) {
-      throw new Error(`PDF contains more than ${MAX_PDF_PAGES} pages.`);
-    }
-
-    const pages: string[] = [];
-    let extractedChars = 0;
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      const page = await document.getPage(pageNumber);
-      try {
-        const content = await page.getTextContent();
-        const pageText = content.items
-          .map((item) => "str" in item ? item.str : "")
-          .filter(Boolean)
-          .join(" ");
-        extractedChars += pageText.length;
-        if (extractedChars > MAX_OUTPUT_CHARS) {
-          throw new Error("Extracted content exceeds 2,000,000 characters.");
-        }
-        pages.push(pageText);
-      } finally {
-        page.cleanup();
-      }
-    }
-    return finalizeContent(inferTitle(pages.join("\n\n")), pages.join("\n\n"));
-  } finally {
-    try {
-      document?.cleanup();
-    } finally {
-      await loadingTask?.destroy().catch(() => undefined);
-    }
-  }
 }
 
 function finalizeContent(title: string, text: string, publishedAt?: Date): ExtractedContent {

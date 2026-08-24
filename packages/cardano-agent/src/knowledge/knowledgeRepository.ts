@@ -18,6 +18,13 @@ export type GithubEndpointState = {
   rateLimitRemaining?: number;
 };
 
+export type GithubEndpointStateUpdate = {
+  sourceId: string;
+  endpoint: GithubEndpoint;
+  expectedState: GithubEndpointState | null;
+  nextState: GithubEndpointState | null;
+};
+
 export type StoreVersionInput = {
   sourceId: string;
   canonicalUrl: string;
@@ -246,6 +253,74 @@ export class KnowledgeRepository {
     return (result.rowCount ?? 0) === 1;
   }
 
+  async compareAndSetGithubEndpointStates(updates: GithubEndpointStateUpdate[]): Promise<boolean> {
+    if (!Array.isArray(updates)) throw new Error("GitHub endpoint updates must be an array.");
+    if (updates.length > GITHUB_ENDPOINTS.length) {
+      throw new Error(`GitHub endpoint updates must contain at most ${GITHUB_ENDPOINTS.length} entries.`);
+    }
+    const keys = new Set<string>();
+    for (const update of updates) {
+      if (!update || typeof update !== "object") throw new Error("GitHub endpoint update must be an object.");
+      if (typeof update.sourceId !== "string") throw new Error("Source ID must be a string.");
+      assertSourceId(update.sourceId);
+      assertGithubEndpoint(update.endpoint);
+      const key = `${update.sourceId}\u0000${update.endpoint}`;
+      if (keys.has(key)) throw new Error("GitHub endpoint updates must be unique.");
+      keys.add(key);
+      if (update.expectedState !== null) validateGithubEndpointState(update.expectedState, "Expected endpoint state");
+      if (update.nextState !== null) validateGithubEndpointState(update.nextState, "Next endpoint state");
+    }
+    if (updates.length === 0) return true;
+
+    const client: PoolClient = await this.db.connect();
+    let inTransaction = false;
+    let releaseError: Error | undefined;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        client.release(releaseError);
+      }
+    };
+    const rollback = async () => {
+      if (!inTransaction) return;
+      try {
+        await client.query("ROLLBACK");
+      } catch (error) {
+        releaseError = toError(error);
+      } finally {
+        inTransaction = false;
+      }
+    };
+    try {
+      await client.query("BEGIN");
+      inTransaction = true;
+      for (const update of updates) {
+        const result = await client.query(
+          `UPDATE knowledge_sources
+           SET fetch_state = jsonb_set(COALESCE(fetch_state, '{}'::jsonb), ARRAY[$2]::text[], $3::jsonb, true)
+           WHERE id = $1
+             AND COALESCE(fetch_state -> $2, 'null'::jsonb) = $4::jsonb`,
+          [update.sourceId, update.endpoint, serializeEndpointState(update.nextState), serializeEndpointState(update.expectedState)],
+        );
+        if ((result.rowCount ?? 0) !== 1) {
+          await rollback();
+          release();
+          return false;
+        }
+      }
+      await client.query("COMMIT");
+      inTransaction = false;
+      return true;
+    } catch (error) {
+      if (inTransaction) await rollback();
+      else releaseError = toError(error);
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
   async storeVersion(input: StoreVersionInput): Promise<KnowledgeVersion> {
     validateVersion(input);
     const inserted = await this.db.query<{ id: string }>(
@@ -315,4 +390,8 @@ export class KnowledgeRepository {
       client.release(releaseError);
     }
   }
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error("Knowledge repository transaction failed.");
 }

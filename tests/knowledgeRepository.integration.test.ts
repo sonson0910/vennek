@@ -230,6 +230,44 @@ describe.skipIf(!databaseUrl)("knowledge repository", () => {
     }
   });
 
+  it("rolls back every endpoint when one batch CAS is stale", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-github-batch-${process.pid}-${Date.now()}`;
+    try {
+      await db.query(
+        `INSERT INTO knowledge_sources (id, owner, trust_tier, registry, fetch_state)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`,
+        [sourceId, "Cardano", "official", JSON.stringify({ ...githubEntry, id: sourceId }), JSON.stringify({
+          repository: { etag: '"repo-old"' },
+          readme: { etag: '"readme-old"' }
+        })],
+      );
+      const repositoryState = await repository.getGithubEndpointState(sourceId, "repository");
+      const readmeState = await repository.getGithubEndpointState(sourceId, "readme");
+
+      await expect(repository.compareAndSetGithubEndpointStates([
+        {
+          sourceId,
+          endpoint: "repository",
+          expectedState: repositoryState,
+          nextState: { etag: '"repo-new"' }
+        },
+        {
+          sourceId,
+          endpoint: "readme",
+          expectedState: { etag: '"stale"' },
+          nextState: { etag: '"readme-new"' }
+        }
+      ])).resolves.toBe(false);
+      await expect(repository.getGithubEndpointState(sourceId, "repository")).resolves.toEqual(repositoryState);
+      await expect(repository.getGithubEndpointState(sourceId, "readme")).resolves.toEqual(readmeState);
+    } finally {
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
   it("deduplicates versions and replaces chunks atomically", async () => {
     const db = createDatabase(databaseUrl!);
     const repository = new KnowledgeRepository(db);

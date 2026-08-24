@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { hostMatches } from "@vennek/cardano-governance-skills";
 
 export type TrustTier = "official" | "community" | "unverified";
-export type SourceKind = "sitemap" | "github" | "feed" | "page";
+export type SourceKind = "sitemap" | "github" | "page";
 export type RefreshRate = "hourly" | "daily";
 export type CardanoNetwork = "mainnet" | "preprod" | "preview";
 export type GithubScope = {
@@ -60,7 +60,7 @@ const ENTRY_FIELDS = new Set([
   "github"
 ]);
 const TRUST_TIERS = new Set<TrustTier>(["official", "community", "unverified"]);
-const SOURCE_KINDS = new Set<SourceKind>(["sitemap", "github", "feed", "page"]);
+const SOURCE_KINDS = new Set<SourceKind>(["sitemap", "github", "page"]);
 const REFRESH_RATES = new Set<RefreshRate>(["hourly", "daily"]);
 const NETWORKS = new Set<CardanoNetwork>(["mainnet", "preprod", "preview"]);
 

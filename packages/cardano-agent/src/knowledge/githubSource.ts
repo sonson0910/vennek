@@ -7,8 +7,10 @@ import {
 import {
   KnowledgeRepository,
   type GithubEndpoint,
-  type GithubEndpointState
+  type GithubEndpointState,
+  type GithubEndpointStateUpdate
 } from "./knowledgeRepository.js";
+import { extractContent } from "./extractContent.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry } from "./sourceRegistry.js";
 
 const MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -35,8 +37,9 @@ export type GithubSourceInput = {
 export type GithubSourceDocument = {
   endpoint: GithubEndpoint;
   canonicalUrl: string;
-  mime: "application/json" | "text/markdown";
-  bytes: Uint8Array;
+  title: string;
+  text: string;
+  publishedAt?: Date;
 };
 
 export type GithubSourceResult = {
@@ -81,6 +84,7 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
   }
 
   const documents: GithubSourceDocument[] = [];
+  const stateUpdates: GithubEndpointStateUpdate[] = [];
   let unchanged = 0;
   for (const plan of plans) {
     const state = states.get(plan.endpoint) ?? null;
@@ -104,19 +108,25 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
       request: input.request
     });
     const rate = rateLimitInfo(response.headers, now);
-    if (isRateLimited(response.statusCode, rate.remaining, rate.resetAt, response.headers, now)) {
+    const retryAfter = parseRetryAfter(responseHeader(response.headers, "retry-after"), now);
+    if (isRateLimited(response.statusCode, rate.remaining, retryAfter)) {
       response.cancel();
       const deferred = await deferEndpoint(input.repository, validated.id, plan.endpoint, state, response.headers, now);
       return {
-        documents,
-        unchanged,
+        documents: [],
+        unchanged: 0,
         deferredUntil: deferred
       };
     }
     if (response.statusCode === 304) {
       response.cancel();
       unchanged += 1;
-      await persistState(input.repository, validated.id, plan.endpoint, state, successState(state, response.headers, now));
+      stateUpdates.push({
+        sourceId: validated.id,
+        endpoint: plan.endpoint,
+        expectedState: state,
+        nextState: successState(state, response.headers, now)
+      });
       continue;
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -130,11 +140,26 @@ export async function fetchGithubSource(input: GithubSourceInput): Promise<Githu
       ["application/json"],
       endpointSignal,
     );
-    const document = plan.endpoint === "readme"
-      ? { endpoint: plan.endpoint, canonicalUrl: plan.canonicalUrl, mime: "text/markdown" as const, bytes: decodeReadme(bytes) }
-      : { endpoint: plan.endpoint, canonicalUrl: plan.canonicalUrl, mime: "application/json" as const, bytes };
-    documents.push(document);
-    await persistState(input.repository, validated.id, plan.endpoint, state, successState(state, response.headers, now));
+    const extracted = plan.endpoint === "readme"
+      ? await extractContent({ mime: "text/markdown", bytes: decodeReadme(bytes) })
+      : await extractContent({ mime: "application/json", bytes });
+    documents.push({
+      endpoint: plan.endpoint,
+      canonicalUrl: plan.canonicalUrl,
+      title: plan.endpoint === "readme" ? extracted.title : `${validated.github.owner} GitHub ${plan.endpoint}`,
+      text: extracted.text,
+      ...(extracted.publishedAt ? { publishedAt: extracted.publishedAt } : {})
+    });
+    stateUpdates.push({
+      sourceId: validated.id,
+      endpoint: plan.endpoint,
+      expectedState: state,
+      nextState: successState(state, response.headers, now)
+    });
+  }
+  // ponytail: R3 commits after extraction; Task 4 moves this after durable indexing.
+  if (stateUpdates.length > 0) {
+    await input.repository.compareAndSetGithubEndpointStates(stateUpdates);
   }
   return { documents, unchanged };
 }
@@ -181,10 +206,10 @@ function rateLimitInfo(headers: GithubResponseHeaders, now: Date): { remaining?:
   };
 }
 
-function isRateLimited(statusCode: number, remaining: number | undefined, resetAt: Date | undefined, headers: GithubResponseHeaders, now: Date): boolean {
+function isRateLimited(statusCode: number, remaining: number | undefined, retryAfter: Date | undefined): boolean {
   return statusCode === 429 || (
     statusCode === 403 &&
-    (remaining === 0 || resetAt !== undefined || parseRetryAfter(responseHeader(headers, "retry-after"), now) !== undefined)
+    (remaining === 0 || retryAfter !== undefined)
   );
 }
 
@@ -227,8 +252,20 @@ async function deferEndpoint(
   if (resetAt) next.rateLimitResetAt = resetAt.toISOString();
   else delete next.rateLimitResetAt;
   if (rate.remaining !== undefined) next.rateLimitRemaining = rate.remaining;
-  await repository.compareAndSetGithubEndpointState(sourceId, endpoint, expected, next);
+  const persisted = await repository.compareAndSetGithubEndpointState(sourceId, endpoint, expected, next);
+  if (!persisted) {
+    const current = await repository.getGithubEndpointState(sourceId, endpoint);
+    const currentRetryAt = futureRetryAt(current, now);
+    if (currentRetryAt) return currentRetryAt;
+    throw new Error("GitHub rate-limit state concurrency conflict.");
+  }
   return deferred;
+}
+
+function futureRetryAt(state: GithubEndpointState | null, now: Date): Date | undefined {
+  if (!state?.retryAt) return undefined;
+  const retryAt = clampDate(new Date(state.retryAt), now);
+  return retryAt.getTime() > now.getTime() ? retryAt : undefined;
 }
 
 function successState(state: GithubEndpointState | null, headers: GithubResponseHeaders, now: Date): GithubEndpointState {
@@ -245,16 +282,6 @@ function successState(state: GithubEndpointState | null, headers: GithubResponse
   if (rate.remaining !== undefined) next.rateLimitRemaining = rate.remaining;
   if (rate.resetAt !== undefined) next.rateLimitResetAt = clampDate(rate.resetAt, now).toISOString();
   return next;
-}
-
-async function persistState(
-  repository: KnowledgeRepository,
-  sourceId: string,
-  endpoint: GithubEndpoint,
-  expected: GithubEndpointState | null,
-  next: GithubEndpointState,
-): Promise<void> {
-  await repository.compareAndSetGithubEndpointState(sourceId, endpoint, expected, next);
 }
 
 function decodeReadme(bytes: Uint8Array): Uint8Array {

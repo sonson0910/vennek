@@ -259,6 +259,27 @@ describe("adapters URL classification and fetch guards", () => {
     expect(cancelCalled).toBe(true);
   });
 
+  it("waits for delayed web-stream cancellation before rejecting", async () => {
+    const controller = new AbortController();
+    let cancelFinished = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        return new Promise<void>((resolve) => setTimeout(() => {
+          cancelFinished = true;
+          resolve();
+        }, 30));
+      }
+    }), { headers: { "content-type": "text/plain" } });
+    const pending = readResponseTextLimited(response, 10, controller.signal);
+    setTimeout(() => controller.abort(), 0);
+
+    await expect(pending).rejects.toThrow();
+    expect(cancelFinished).toBe(true);
+  });
+
   it("cancels a stream as soon as it crosses the byte limit", async () => {
     let cancelCalled = false;
     let pulls = 0;

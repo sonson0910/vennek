@@ -67,6 +67,7 @@ export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
 export type {
   GithubEndpoint,
   GithubEndpointState,
+  GithubEndpointStateUpdate,
   KnowledgeChunkInput,
   KnowledgeVersion,
   StoreVersionInput,

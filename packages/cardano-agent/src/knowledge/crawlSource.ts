@@ -22,7 +22,6 @@ const ALLOWED_CRAWL_MIME_TYPES = [
   "text/markdown",
   "text/plain",
   "application/json",
-  "application/pdf",
   "application/xml",
   "text/xml"
 ] as const;
@@ -89,9 +88,6 @@ export function createCrawlByteBudget(): CrawlByteBudget {
 export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceResult> {
   input.signal.throwIfAborted();
   const [entry] = validateSourceRegistry([input.entry]);
-  if (entry.kind === "feed") {
-    throw new Error("Feed sources are not supported by the static source crawler.");
-  }
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime())) throw new Error("Retrieval time must be a valid date.");
   const retrievedAt = new Date(now.getTime());
@@ -107,20 +103,17 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
       request: input.request,
       token: input.githubToken
     });
-    const documents = await Promise.all(github.documents.map(async (document) => {
-      const extracted = await extractContent({ mime: document.mime, bytes: document.bytes });
+    const documents = github.documents.map((document) => {
       return {
         sourceId: entry.id,
         canonicalUrl: document.canonicalUrl,
         trustTier: entry.trustTier,
-        title: document.mime === "application/json"
-          ? `${entry.github.owner} GitHub ${document.endpoint}`
-          : extracted.title,
-        text: extracted.text,
-        ...(extracted.publishedAt ? { publishedAt: extracted.publishedAt } : {}),
+        title: document.title,
+        text: document.text,
+        ...(document.publishedAt ? { publishedAt: document.publishedAt } : {}),
         retrievedAt
       } satisfies CrawledDocument;
-    }));
+    });
     return { documents, unchanged: github.unchanged, ...(github.deferredUntil ? { deferredUntil: github.deferredUntil } : {}) };
   }
 
@@ -206,6 +199,7 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
     firstFailure = crawlSignal.reason ?? new DOMException("The operation was aborted", "AbortError");
   }
   if (firstFailure !== undefined) throw firstFailure;
+  documents.sort(compareDocuments);
   return { documents, unchanged: 0 };
 }
 
@@ -291,4 +285,12 @@ function discoverSitemapUrls(bytes: Uint8Array, entry: SourceRegistryEntry): str
 
 function isXmlMime(mime: string): boolean {
   return mime === "application/xml" || mime === "text/xml";
+}
+
+function compareDocuments(left: CrawledDocument, right: CrawledDocument): number {
+  if (left.canonicalUrl < right.canonicalUrl) return -1;
+  if (left.canonicalUrl > right.canonicalUrl) return 1;
+  if (left.title < right.title) return -1;
+  if (left.title > right.title) return 1;
+  return 0;
 }

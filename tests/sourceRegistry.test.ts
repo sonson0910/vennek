@@ -101,6 +101,7 @@ describe("Cardano source registry", () => {
     expect(() => validateSourceRegistry([{ ...official, networks: [] }])).toThrow(/non-empty/i);
     expect(() => validateSourceRegistry([{ ...official, trustTier: "trusted" }])).toThrow(/trustTier/i);
     expect(() => validateSourceRegistry([{ ...official, kind: "blog" }])).toThrow(/kind/i);
+    expect(() => validateSourceRegistry([{ ...official, kind: "feed" }])).toThrow(/kind/i);
     expect(() => validateSourceRegistry([{ ...official, refresh: "weekly" }])).toThrow(/refresh/i);
   });
 

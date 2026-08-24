@@ -171,12 +171,12 @@ async function readWebResponseBytes(response: Response, maxBytes: number, signal
   const reader = response.body!.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  let canceled = false;
-  const cancel = async () => {
-    if (!canceled) {
-      canceled = true;
-      await cancelReader(reader);
+  let cancellation: Promise<void> | undefined;
+  const cancel = (): Promise<void> => {
+    if (cancellation === undefined) {
+      cancellation = cancelReader(reader);
     }
+    return cancellation;
   };
   const abort = () => {
     void cancel();
@@ -204,6 +204,7 @@ async function readWebResponseBytes(response: Response, maxBytes: number, signal
     throw error;
   } finally {
     signal?.removeEventListener("abort", abort);
+    if (cancellation !== undefined) await cancellation;
     reader.releaseLock();
   }
 }

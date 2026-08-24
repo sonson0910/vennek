@@ -46,6 +46,7 @@ describe("bounded source crawler", () => {
     });
 
     expect(result.documents).toEqual([
+      expect.objectContaining({ canonicalUrl: "https://docs.example.com/next", title: "Next page" }),
       expect.objectContaining<CrawledDocument>({
         sourceId: "docs-source",
         canonicalUrl: "https://docs.example.com/start",
@@ -53,10 +54,6 @@ describe("bounded source crawler", () => {
         title: "Start page",
         text: "# Start page\n\nCardano source.",
         retrievedAt: now
-      }),
-      expect.objectContaining({
-        canonicalUrl: "https://docs.example.com/next",
-        title: "Next page"
       })
     ]);
     expect(calls).toEqual(["/start", "/next"]);
@@ -127,6 +124,11 @@ describe("bounded source crawler", () => {
     const oversized = fakeRequest({ "/start": { body: "small", contentType: "text/html", contentLength: String(8 * 1024 * 1024 + 1) } }, { canceled: oversizedCanceled });
     await expect(crawlSource({ entry: pageEntry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: oversized.request })).rejects.toThrow(/too large/);
     expect(oversizedCanceled.value).toBe(true);
+
+    const pdfCanceled: { value: boolean } = { value: false };
+    const pdf = fakeRequest({ "/start": { body: "%PDF-1.7", contentType: "application/pdf" } }, { canceled: pdfCanceled });
+    await expect(crawlSource({ entry: pageEntry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: pdf.request })).rejects.toThrow(/Unsupported content-type/);
+    expect(pdfCanceled.value).toBe(true);
   });
 
   it("caps concurrency at four and stops at 500 requests", async () => {
@@ -148,6 +150,21 @@ describe("bounded source crawler", () => {
     expect(result.documents).toHaveLength(500);
     expect(concurrency.max).toBeLessThanOrEqual(4);
   }, 15_000);
+
+  it("sorts documents deterministically when concurrent responses finish out of order", async () => {
+    const request = fakeRequest({
+      "/start": html('<h1>Start</h1><p>Cardano source.</p><a href="/b">B</a><a href="/a">A</a>'),
+      "/a": html("<h1>A</h1><p>Cardano A.</p>"),
+      "/b": html("<h1>B</h1><p>Cardano B.</p>")
+    }, { delayMs: (path) => path === "/a" ? 30 : path === "/b" ? 1 : 0 }).request;
+    const result = await crawlSource({ entry: pageEntry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
+
+    expect(result.documents.map((document) => document.canonicalUrl)).toEqual([
+      "https://docs.example.com/a",
+      "https://docs.example.com/b",
+      "https://docs.example.com/start"
+    ]);
+  });
 
   it("combines the caller abort signal with the pinned request and cancels the body", async () => {
     const controller = new AbortController();
@@ -236,7 +253,7 @@ function json(value: unknown): ResponseSpec {
 
 function fakeRequest(
   responses: Record<string, ResponseSpec>,
-  options: { statusCode?: number; canceled?: { value: boolean }; delayMs?: number; concurrency?: { active: number; max: number } } = {}
+  options: { statusCode?: number; canceled?: { value: boolean }; delayMs?: number | ((path: string) => number); concurrency?: { active: number; max: number } } = {}
 ): { request: PublicHttpsRequest; calls: string[] } {
   const calls: string[] = [];
   const request = ((requestOptions, callback) => {
@@ -248,7 +265,8 @@ function fakeRequest(
     const body = Readable.from((async function* () {
       options.concurrency && (options.concurrency.active += 1, options.concurrency.max = Math.max(options.concurrency.max, options.concurrency.active));
       try {
-        if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+        const delayMs = typeof options.delayMs === "function" ? options.delayMs(path) : options.delayMs;
+        if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
         yield source;
       } finally {
         options.concurrency && (options.concurrency.active -= 1);
@@ -276,7 +294,8 @@ function fakeRepository(): KnowledgeRepository {
   return {
     ensureSource: vi.fn(async () => undefined),
     getGithubEndpointState: vi.fn(async () => null),
-    compareAndSetGithubEndpointState: vi.fn(async () => true)
+    compareAndSetGithubEndpointState: vi.fn(async () => true),
+    compareAndSetGithubEndpointStates: vi.fn(async () => true)
   } as unknown as KnowledgeRepository;
 }
 
