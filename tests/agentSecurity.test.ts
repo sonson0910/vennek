@@ -45,6 +45,18 @@ describe("wallet secret detection", () => {
     expect(findWalletSecretInFragments(fragments)).toBe("recovery-phrase");
   });
 
+  it("correlates mnemonic runs while ignoring non-mnemonic filler fragments", () => {
+    expect(
+      findWalletSecretInFragments([
+        "abandon abandon abandon abandon",
+        "unrelated metadata source text",
+        "abandon abandon abandon abandon",
+        "safe evidence filler",
+        "abandon abandon abandon about",
+      ]),
+    ).toBe("recovery-phrase");
+  });
+
   it("correlates signing-key type and material from separate fragments", () => {
     expect(
       findWalletSecretInFragments([
@@ -54,6 +66,36 @@ describe("wallet secret detection", () => {
     ).toBe("signing-key");
   });
 
+  it("correlates a plain full CBOR key material fragment with a signing type", () => {
+    expect(
+      findWalletSecretInFragments([
+        "PaymentSigningKeyShelley_ed25519",
+        `5820${"ab".repeat(32)}`,
+      ]),
+    ).toBe("signing-key");
+  });
+
+  it("correlates a split private Bech32 key without joining arbitrary filler", () => {
+    expect(
+      findWalletSecretInFragments([
+        "addr_xsk1",
+        "unrelated metadata",
+        "q2qqqqqqqqqqqqqqqqqqqq",
+      ]),
+    ).toBe("signing-key");
+  });
+
+  it("does not swallow short allowed-character filler as Bech32 payload", () => {
+    expect(
+      findWalletSecretInFragments([
+        "addr_xsk1",
+        "aaaaaaaa",
+        "q2qqqqqqqqqqqqqqqqqqqq",
+      ]),
+    ).toBe("signing-key");
+    expect(findWalletSecretInFragments(["addr_xsk1", "aaaaaaaa", "safe"])).toBeUndefined();
+  });
+
   it("does not use raw-input word-count fallback for ordinary fragments", () => {
     expect(
       findWalletSecretInFragments([
@@ -61,6 +103,10 @@ describe("wallet secret detection", () => {
         "theta iota kappa lambda mu nu xi omicron",
       ]),
     ).toBeUndefined();
+  });
+
+  it("does not classify an over-24 candidate run without a valid checksum", () => {
+    expect(findWalletSecretInFragments([Array.from({ length: 25 }, () => "abandon").join(" ")])).toBeUndefined();
   });
 
   it("fails closed when strict fragment limits are exhausted", () => {

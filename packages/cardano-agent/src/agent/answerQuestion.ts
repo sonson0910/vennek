@@ -433,7 +433,7 @@ function isTrustTier(value: unknown): value is QuestionEvidenceTrustTier {
 
 type CanonicalEvidence = {
   record: QuestionEvidence;
-  fieldValues: readonly string[];
+  sourceValues: readonly string[];
   decodedUrlParts: readonly string[];
 };
 
@@ -484,21 +484,17 @@ function canonicalEvidenceRecord(value: unknown): CanonicalEvidence | undefined 
     score,
   };
   if (publishedAt !== MISSING && publishedAt !== undefined) canonical.publishedAt = publishedAt as string;
-  const fieldValues = [
+  const sourceValues = [
     canonical.id,
     canonical.sourceId,
-    canonical.trustTier,
     canonical.title,
     canonical.url,
     canonical.excerpt,
-    canonical.publishedAt ?? "",
-    canonical.retrievedAt,
     canonical.versionHash,
-    String(canonical.score),
   ];
   return {
     record: Object.freeze(canonical),
-    fieldValues: Object.freeze(fieldValues),
+    sourceValues: Object.freeze(sourceValues),
     decodedUrlParts: Object.freeze(url.decodedParts),
   };
 }
@@ -577,7 +573,7 @@ function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
 
   const records: QuestionEvidence[] = [];
   const canonicalRecords: CanonicalEvidence[] = [];
-  const fieldGroups: string[][] = Array.from({ length: 10 }, () => []);
+  const fieldGroups: string[][] = Array.from({ length: 6 }, () => []);
   const flattenedValues: string[] = [];
   const decodedUrlValues: string[] = [];
   let aggregateBytes = 0;
@@ -602,22 +598,23 @@ function snapshotEvidence(value: unknown): EvidenceSnapshot | undefined {
     aggregateBytes += recordBytes + decodedBytes + 1;
     records.push(canonical.record);
     canonicalRecords.push(canonical);
-    flattenedValues.push(...canonical.fieldValues);
+    flattenedValues.push(...canonical.sourceValues);
     decodedUrlValues.push(...canonical.decodedUrlParts);
-    for (let fieldIndex = 0; fieldIndex < canonical.fieldValues.length; fieldIndex += 1) {
-      fieldGroups[fieldIndex]!.push(canonical.fieldValues[fieldIndex]!);
+    for (let fieldIndex = 0; fieldIndex < canonical.sourceValues.length; fieldIndex += 1) {
+      fieldGroups[fieldIndex]!.push(canonical.sourceValues[fieldIndex]!);
     }
   }
 
   const frozenRecords = Object.freeze(records);
-  const recordGroups = canonicalRecords.map(({ fieldValues, decodedUrlParts }) => [
-    ...fieldValues,
+  const recordGroups = canonicalRecords.map(({ sourceValues, decodedUrlParts }) => [
+    ...sourceValues,
     ...decodedUrlParts,
   ]);
   if (
     containsStructuredSecret(recordGroups) ||
     containsStructuredSecret(fieldGroups) ||
     containsStructuredSecret([flattenedValues]) ||
+    containsStructuredSecret([[...flattenedValues, ...decodedUrlValues]]) ||
     containsStructuredSecret([decodedUrlValues])
   ) {
     return { records: frozenRecords, containsSecret: true };

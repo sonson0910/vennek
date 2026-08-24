@@ -319,6 +319,119 @@ describe("natural-language question service", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
+  it("keeps long safe evidence available to completion", async () => {
+    const complete = vi.fn(async () => "ok");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => Array.from({ length: 10 }, (_, index) =>
+        evidenceRecord({ id: `E${index}`, excerpt: "x".repeat(4_500) }),
+      ),
+      complete,
+    });
+
+    expect(answer).toBe("ok");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("blocks mnemonic fragments spread across source-controlled id, sourceId, and title", async () => {
+    const words = Array.from({ length: 11 }, () => "abandon").concat("about");
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({ id: words.slice(0, 4).join(" ") }),
+        evidenceRecord({ id: "E2", sourceId: words.slice(4, 8).join(" ") }),
+        evidenceRecord({ id: "E3", title: words.slice(8).join(" ") }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("blocks six mnemonic words in title plus six in excerpt", async () => {
+    const words = Array.from({ length: 11 }, () => "abandon").concat("about");
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({
+          title: words.slice(0, 6).join(" "),
+          excerpt: words.slice(6).join(" "),
+        }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("blocks six-and-six mnemonic words in one field across records with filler", async () => {
+    const words = Array.from({ length: 11 }, () => "abandon").concat("about");
+    const filler = "safe-source-text ".repeat(100);
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({ title: words.slice(0, 6).join(" ") }),
+        evidenceRecord({ id: "E2", title: filler }),
+        evidenceRecord({ id: "E3", title: words.slice(6).join(" ") }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("blocks mnemonic words across fields and a decoded URL parameter", async () => {
+    const words = Array.from({ length: 11 }, () => "abandon").concat("about");
+    const complete = vi.fn(async () => "should not be returned");
+    const encoded = encodeURIComponent(words.slice(6).join(" "));
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({ title: words.slice(0, 6).join(" ") }),
+        evidenceRecord({ id: "E2", url: `https://docs.cardano.org/search?q=${encoded}` }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("blocks a private Bech32 key split between title and excerpt", async () => {
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({ title: "addr_xsk1", excerpt: "q2qqqqqqqqqqqqqqqqqqqq" }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("blocks a plain full CBOR key split from its signing type across records", async () => {
+    const complete = vi.fn(async () => "should not be returned");
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: vi.fn(async () => undefined),
+      retrieve: async () => [
+        evidenceRecord({ title: "PaymentSigningKeyShelley_ed25519" }),
+        evidenceRecord({ id: "E2", excerpt: `safe filler 5820${"ab".repeat(32)}` }),
+      ],
+      complete,
+    });
+
+    expect(answer).toMatch(/wallet secret|không gửi/i);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("rejects evidence accessors before they can change from safe to secret", async () => {
     const phrase = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
     let reads = 0;
