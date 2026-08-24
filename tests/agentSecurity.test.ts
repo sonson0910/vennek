@@ -83,9 +83,45 @@ describe("wallet secret detection", () => {
     expect(elapsedMs).toBeLessThan(250);
   });
 
+  it("uses a global checksum budget across overlapping wordlists and runs", () => {
+    const segment = `${Array.from({ length: 24 }, () => "的").join(" ")} zzzzzzzzzz `;
+    const segmentedInput = segment.repeat(240);
+    const startedAt = performance.now();
+    const result = findWalletSecret(segmentedInput);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(segmentedInput.length).toBeLessThan(16_384);
+    expect(result).toBe("recovery-phrase");
+    expect(elapsedMs).toBeLessThan(250);
+  });
+
   it("detects escaped signing-key JSON in a code fence", () => {
     const escapedJson = String.raw`{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","cbor\u0048ex":"5820abcdef"}`;
     expect(findWalletSecret(`\`\`\`json\n${escapedJson}\n\`\`\``)).toBe("signing-key");
+  });
+
+  it("fails closed when escaped signing-key JSON exceeds the depth limit", () => {
+    let nested = String.raw`{"cbor\u0048ex":"5820abcdef"}`;
+    for (let depth = 0; depth < 10; depth += 1) {
+      nested = `{"nested":${nested}}`;
+    }
+    const escapedJson = String.raw`{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","nested":${nested}}`;
+
+    expect(findWalletSecret(escapedJson)).toBe("signing-key");
+  });
+
+  it("fails closed when an escaped signing-key envelope follows the candidate limit", () => {
+    const harmlessObjects = Array.from({ length: 32 }, () => '{"_":0}').join(" ");
+    const escapedJson = String.raw`{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","cbor\u0048ex":"5820abcdef"}`;
+
+    expect(findWalletSecret(`${harmlessObjects} ${escapedJson}`)).toBe("signing-key");
+  });
+
+  it("fails closed when a JSON candidate exceeds the node limit", () => {
+    const harmlessNodes = Array.from({ length: 260 }, (_, index) => `{"safe":${index}}`).join(",");
+    const escapedJson = String.raw`{"items":[${harmlessNodes}],"nested":{"ty\u0070e":"PaymentSigningKeyShelley_\u0065d25519","cbor\u0048ex":"5820abcdef"}}`;
+
+    expect(findWalletSecret(escapedJson)).toBe("signing-key");
   });
 
   it("does not flag blank or ordinary short text", () => {

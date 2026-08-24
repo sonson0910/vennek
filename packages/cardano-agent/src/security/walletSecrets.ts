@@ -13,10 +13,13 @@ import { wordlist as traditionalChinese } from "@scure/bip39/wordlists/tradition
 export type WalletSecretKind = "signing-key" | "recovery-phrase";
 
 const MAX_WALLET_SCAN_CHARS = 16_384;
+// JSON parser limits fail closed because skipped structure may contain a secret.
 const MAX_JSON_CANDIDATE_CHARS = 16_384;
 const MAX_JSON_CANDIDATES = 32;
 const MAX_JSON_DEPTH = 8;
 const MAX_JSON_NODES = 256;
+// Global per-message checksum cap; exhaustion is classified as recovery-like.
+const MAX_MNEMONIC_VALIDATIONS = 64;
 const signingKeyTypeField = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;
 const keyMaterialField = /["']?(?:cborhex|bytes)["']?\s*:\s*["']([^"']+)["']/i;
 const privateBech32Key =
@@ -44,17 +47,27 @@ interface JsonInspection {
   hasSigningKeyType: boolean;
   hasKeyMaterial: boolean;
   nodes: number;
+  exhausted: boolean;
 }
 
+type JsonCandidateResult = "found" | "clean" | "exhausted";
+
 function inspectJson(value: unknown, depth: number, inspection: JsonInspection): void {
-  if (inspection.nodes >= MAX_JSON_NODES || depth > MAX_JSON_DEPTH) return;
+  if (inspection.exhausted) return;
+  if (inspection.nodes >= MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
+    inspection.exhausted = true;
+    return;
+  }
   inspection.nodes += 1;
 
   if (typeof value === "string") return;
   if (!value || typeof value !== "object") return;
 
   if (Array.isArray(value)) {
-    for (const child of value) inspectJson(child, depth + 1, inspection);
+    for (const child of value) {
+      inspectJson(child, depth + 1, inspection);
+      if (inspection.exhausted) break;
+    }
     return;
   }
 
@@ -73,26 +86,29 @@ function inspectJson(value: unknown, depth: number, inspection: JsonInspection):
       inspection.hasKeyMaterial = true;
     }
     inspectJson(child, depth + 1, inspection);
+    if (inspection.exhausted) break;
   }
 }
 
-function inspectJsonCandidate(candidate: string): boolean {
-  if (candidate.length > MAX_JSON_CANDIDATE_CHARS) return false;
+function inspectJsonCandidate(candidate: string): JsonCandidateResult {
+  if (candidate.length > MAX_JSON_CANDIDATE_CHARS) return "exhausted";
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(candidate);
   } catch {
-    return false;
+    return "clean";
   }
 
   const inspection: JsonInspection = {
     hasSigningKeyType: false,
     hasKeyMaterial: false,
     nodes: 0,
+    exhausted: false,
   };
   inspectJson(parsed, 0, inspection);
-  return inspection.hasSigningKeyType && inspection.hasKeyMaterial;
+  if (inspection.exhausted) return "exhausted";
+  return inspection.hasSigningKeyType && inspection.hasKeyMaterial ? "found" : "clean";
 }
 
 function objectCandidateAt(input: string, start: number): string | undefined {
@@ -120,25 +136,24 @@ function objectCandidateAt(input: string, start: number): string | undefined {
 
 function hasParsedSigningKeyJson(input: string): boolean {
   const trimmed = input.trim();
-  if (
-    trimmed.length <= MAX_JSON_CANDIDATE_CHARS &&
-    (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
-    inspectJsonCandidate(trimmed)
-  ) {
-    return true;
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const result = inspectJsonCandidate(trimmed);
+    if (result !== "clean") return true;
   }
 
   const codeFence = /```(?:json)?\s*([\s\S]*?)```/gi;
   for (const match of input.matchAll(codeFence)) {
-    if (inspectJsonCandidate(match[1]!.trim())) return true;
+    if (inspectJsonCandidate(match[1]!.trim()) !== "clean") return true;
   }
 
   let candidates = 0;
-  for (let index = 0; index < input.length && candidates < MAX_JSON_CANDIDATES; index += 1) {
+  for (let index = 0; index < input.length && candidates <= MAX_JSON_CANDIDATES; index += 1) {
     if (input[index] !== "{") continue;
     candidates += 1;
+    if (candidates > MAX_JSON_CANDIDATES) return true;
     const candidate = objectCandidateAt(input, index);
-    if (candidate && inspectJsonCandidate(candidate)) return true;
+    if (!candidate) return true;
+    if (inspectJsonCandidate(candidate) !== "clean") return true;
   }
   return false;
 }
@@ -157,6 +172,13 @@ function hasSigningKeyJson(input: string): boolean {
 
 function hasValidRecoveryPhrase(input: string): boolean {
   const tokens = input.normalize("NFKD").toLowerCase().match(wordToken) ?? [];
+  let mnemonicValidations = 0;
+
+  const validateWindow = (candidate: string[], wordlist: string[]): boolean => {
+    if (mnemonicValidations >= MAX_MNEMONIC_VALIDATIONS) return true;
+    mnemonicValidations += 1;
+    return validateMnemonic(candidate.join(" "), wordlist);
+  };
 
   for (let listIndex = 0; listIndex < bip39Wordlists.length; listIndex += 1) {
     const wordlist = bip39Wordlists[listIndex]!;
@@ -169,9 +191,7 @@ function hasValidRecoveryPhrase(input: string): boolean {
 
       for (const length of recoveryPhraseLengths) {
         for (let start = 0; start + length <= run.length; start += 1) {
-          if (validateMnemonic(run.slice(start, start + length).join(" "), wordlist)) {
-            return true;
-          }
+          if (validateWindow(run.slice(start, start + length), wordlist)) return true;
         }
       }
       return false;
