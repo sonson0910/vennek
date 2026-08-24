@@ -137,6 +137,30 @@ Visible after tilde fence.`);
     expect(result.text).not.toMatch(/HIDDEN_INSTRUCTION/);
   });
 
+  it("does not close an inline raw sentinel on a mismatched closing tag", async () => {
+    const result = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("Before <span>DROP</div> SHOULD_DROP_TOO\n\nVisible after boundary.")
+    });
+
+    expect(result.text).toBe("Before\n\nVisible after boundary.");
+    expect(result.text).not.toMatch(/DROP|SHOULD_DROP_TOO/);
+  });
+
+  it("preserves image alternative text and hard-break separation", async () => {
+    const markdown = await extractContent({
+      mime: "text/markdown",
+      bytes: encoder.encode("![Generated alt](https://example.com/cardano.png)")
+    });
+    const html = await extractContent({
+      mime: "text/html",
+      bytes: encoder.encode("<p>Direct <img src=\"cardano.png\" alt=\"Direct alt\">.</p><p>first<br>second</p>")
+    });
+
+    expect(markdown.text).toBe("Generated alt");
+    expect(html.text).toBe("Direct Direct alt.\n\nfirst second");
+  });
+
   it("handles 400,000 short code spans within the bounded extraction deadline", async () => {
     const source = Array.from({ length: 400_000 }, () => "`x`").join(" ");
     const expected = `${"x ".repeat(399_999)}x`;

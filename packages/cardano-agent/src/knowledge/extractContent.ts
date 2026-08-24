@@ -52,7 +52,7 @@ function decodeUtf8(bytes: Uint8Array): string {
 }
 
 function extractMarkdown(source: string): ExtractedContent {
-  let inlineRawDepth = 0;
+  const inlineRawTagStack: string[] = [];
   const renderer = new Renderer();
   renderer.html = (token: Tokens.HTML | Tokens.Tag): string => {
     const raw = token.text.trim();
@@ -62,16 +62,19 @@ function extractMarkdown(source: string): ExtractedContent {
       return "";
     }
     if (isRawHtmlClosingTag(raw)) {
-      if (inlineRawDepth > 0) {
-        inlineRawDepth -= 1;
-        return `</div>`;
+      const closingTag = rawHtmlTagName(raw);
+      if (closingTag && inlineRawTagStack[inlineRawTagStack.length - 1] === closingTag) {
+        inlineRawTagStack.pop();
+        return "</span>";
       }
       return "";
     }
     if (isRawHtmlOpeningTag(raw)) {
       if (isVoidOrSelfClosingRawTag(raw)) return "";
-      inlineRawDepth += 1;
-      return `<div ${MARKDOWN_RAW_ATTRIBUTE}>`;
+      const openingTag = rawHtmlTagName(raw);
+      if (!openingTag) return "";
+      inlineRawTagStack.push(openingTag);
+      return `<span ${MARKDOWN_RAW_ATTRIBUTE}>`;
     }
     return "";
   };
@@ -184,20 +187,29 @@ function renderHtmlNode($: cheerio.CheerioAPI, node: AnyNode): string[] {
 
   const element = $(node);
   const tag = node.name.toLowerCase();
+  if (tag === "img") {
+    const alt = normalizeInline(element.attr("alt") ?? "");
+    return alt ? [alt] : [];
+  }
+  if (tag === "br") {
+    return ["\n"];
+  }
   if (/^h[1-6]$/.test(tag)) {
-    const text = normalizeInline(element.text());
+    const text = normalizeInline(renderInlineHtmlChildren($, node));
     return text ? [`${"#".repeat(Number(tag.slice(1)))} ${text}`] : [];
   }
   if (tag === "pre") {
-    const text = element.text().replace(/\r\n?/g, "\n").trim();
+    const text = renderInlineHtmlChildren($, node).replace(/\r\n?/g, "\n").trim();
     return text ? [text] : [];
   }
   if (tag === "p" || tag === "blockquote") {
-    const text = normalizeInline(element.text());
+    const text = normalizeInline(renderInlineHtmlChildren($, node));
     return text ? [text] : [];
   }
   if (tag === "li") {
-    const ownText = element.clone().children("ul, ol").remove().end().text();
+    const clone = element.clone();
+    clone.children("ul, ol").remove();
+    const ownText = clone.contents().toArray().map((child) => renderInlineHtmlNode($, child)).join("");
     const own = normalizeInline(ownText);
     const nested = element.children("ul, ol").contents().toArray().flatMap((child) => renderHtmlNode($, child));
     return [own ? `- ${own}` : "", ...nested].filter(Boolean);
@@ -212,6 +224,21 @@ function renderHtmlNode($: cheerio.CheerioAPI, node: AnyNode): string[] {
   }
   const fallback = normalizeInline(element.text());
   return fallback ? [fallback] : [];
+}
+
+function renderInlineHtmlChildren($: cheerio.CheerioAPI, node: AnyNode): string {
+  if (node.type !== "tag") return "";
+  return node.children.map((child: AnyNode) => renderInlineHtmlNode($, child)).join("");
+}
+
+function renderInlineHtmlNode($: cheerio.CheerioAPI, node: AnyNode): string {
+  if (node.type === "text") return $(node).text();
+  if (node.type !== "tag") return "";
+  const element = $(node);
+  const tag = node.name.toLowerCase();
+  if (tag === "img") return element.attr("alt") ?? "";
+  if (tag === "br") return "\n";
+  return renderInlineHtmlChildren($, node);
 }
 
 function findPublishedAt($: cheerio.CheerioAPI): Date | undefined {
