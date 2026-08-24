@@ -7,6 +7,7 @@ import {
   type PublicHttpsRequest
 } from "@vennek/cardano-governance-skills";
 import { extractContent } from "./extractContent.js";
+import type { PdfExtractor } from "./extractContent.js";
 import { fetchGithubSource } from "./githubSource.js";
 import { KnowledgeRepository } from "./knowledgeRepository.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry, type TrustTier } from "./sourceRegistry.js";
@@ -34,6 +35,7 @@ export type CrawlSourceInput = {
   lookup?: PublicHttpsLookup;
   request?: PublicHttpsRequest;
   githubToken?: string;
+  pdfExtractor?: PdfExtractor;
 };
 
 export type CrawledDocument = {
@@ -156,13 +158,19 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
           signal: crawlSignal,
           lookup: input.lookup,
           request: input.request,
-          budget
+          budget,
+          allowPdf: input.pdfExtractor !== undefined
         });
         if (isXmlMime(response.mime)) {
           await addUrls(discoverSitemapUrls(response.bytes, entry));
           return;
         }
-        const extracted = await extractContent({ mime: response.mime, bytes: response.bytes });
+        const extracted = await extractContent({
+          mime: response.mime,
+          bytes: response.bytes,
+          signal: crawlSignal,
+          pdfExtractor: input.pdfExtractor
+        });
         documents.push({
           sourceId: entry.id,
           canonicalUrl: requestedUrl,
@@ -210,6 +218,7 @@ export async function fetchCrawlResponse(input: {
   lookup?: PublicHttpsLookup;
   request?: PublicHttpsRequest;
   budget?: CrawlByteBudget;
+  allowPdf?: boolean;
 }): Promise<CrawlResponse> {
   input.signal.throwIfAborted();
   const [entry] = validateSourceRegistry([input.entry]);
@@ -233,7 +242,10 @@ export async function fetchCrawlResponse(input: {
       response.cancel();
       throw new Error(`HTTP ${response.statusCode}`);
     }
-    const result = await readResponseBytesLimited(response, MAX_RESPONSE_BYTES, ALLOWED_CRAWL_MIME_TYPES, requestSignal);
+    const allowedMimeTypes = input.allowPdf
+      ? [...ALLOWED_CRAWL_MIME_TYPES, "application/pdf"]
+      : ALLOWED_CRAWL_MIME_TYPES;
+    const result = await readResponseBytesLimited(response, MAX_RESPONSE_BYTES, allowedMimeTypes, requestSignal);
     budget.release(result.bytes.byteLength);
     released = true;
     return { url, mime: result.mime, bytes: result.bytes };

@@ -23,7 +23,17 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
         environment?: Record<string, string | null>;
         ports?: Array<{ host_ip?: string; target?: number; published?: string }>;
         healthcheck?: { test?: string[] };
+        networks?: Record<string, unknown>;
+        mem_limit?: string;
+        memswap_limit?: string;
+        cpus?: number;
+        pids_limit?: number;
+        read_only?: boolean;
+        cap_drop?: string[];
+        tmpfs?: string[];
+        command?: string[];
       }>;
+      networks: Record<string, { internal?: boolean }>;
     };
     const appServices = ["migrate", "provision-app-role", "telegram-webhook", "agent-worker"];
     const images = appServices.map((name) => config.services[name]?.image);
@@ -63,6 +73,8 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       expect(webhookEnvironment?.[name]).toBeUndefined();
     }
     expect(workerEnvironment?.TELEGRAM_WEBHOOK_SECRET).toBeUndefined();
+    expect(workerEnvironment?.PDF_EXTRACTOR_URL).toBe("http://pdf-extractor:8081");
+    expect(workerEnvironment?.PDF_EXTRACTOR_TOKEN).toBe("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     expect(config.services["telegram-webhook"]?.environment?.PORT).toBe("8080");
     expect(config.services["telegram-webhook"]?.ports).toHaveLength(1);
     expect(config.services["telegram-webhook"]?.ports).toContainEqual(expect.objectContaining({
@@ -74,5 +86,22 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     for (const name of ["telegram-webhook", "agent-worker"]) {
       expect(config.services[name]?.environment?.DATABASE_OWNER_URL).toBeUndefined();
     }
+    const extractor = config.services["pdf-extractor"];
+    expect(extractor?.image).toBe(images[0]);
+    expect(extractor?.command).toEqual(["node", "packages/cardano-agent/dist/knowledge/pdfExtractorServer.js"]);
+    expect(extractor?.ports).toBeUndefined();
+    expect(extractor?.networks).toEqual({ "pdf-sandbox": null });
+    expect(extractor?.mem_limit).toBe("268435456");
+    expect(extractor?.memswap_limit).toBe("268435456");
+    expect(extractor?.cpus).toBe(0.5);
+    expect(extractor?.pids_limit).toBe(64);
+    expect(extractor?.read_only).toBe(true);
+    expect(extractor?.cap_drop).toEqual(["ALL"]);
+    expect(extractor?.tmpfs?.[0]).toContain("/tmp:size=16m");
+    expect(config.networks["pdf-sandbox"]?.internal).toBe(true);
+    for (const name of ["postgres", "migrate", "provision-app-role", "litellm", "telegram-webhook"]) {
+      expect(config.services[name]?.networks?.["pdf-sandbox"]).toBeUndefined();
+    }
+    expect(config.services["agent-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
   });
 });

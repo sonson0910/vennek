@@ -11,7 +11,7 @@ umask 077
 openssl rand -base64 32 > /secure/path/vennek-encryption-key
 ```
 
-Load the key into `VENNEK_ENCRYPTION_KEY` through the deployment secret manager or a protected file loader. Never commit it, echo it, or put it in shell history. Set all values in `.env.example`; placeholders are not production credentials. Set `VENNEK_IMAGE` to the repository image and `VENNEK_IMAGE_TAG` to the immutable release tag. The migration service is the only Compose service that builds the repository image; provisioning, webhook, and worker all run that exact image reference.
+Load the key into `VENNEK_ENCRYPTION_KEY` through the deployment secret manager or a protected file loader. Never commit it, echo it, or put it in shell history. Set all values in `.env.example`; placeholders are not production credentials. Set `VENNEK_IMAGE` to the repository image and `VENNEK_IMAGE_TAG` to the immutable release tag. The migration service is the only Compose service that builds the repository image; provisioning, webhook, worker, and the internal PDF extractor all run that exact image reference. Generate `PDF_EXTRACTOR_TOKEN` as a base64url encoding of exactly 32 random bytes. Compose pins the worker URL to `http://pdf-extractor:8081`.
 
 ## Compose staging
 
@@ -34,6 +34,8 @@ docker compose --env-file /secure/path/vennek.env ps
 ```
 
 The order is PostgreSQL health, owner migration plus pg-boss installation/queue creation, restricted application-role provisioning, then webhook/worker. The role-provisioning step grants application DML on the required public tables, pg-boss DML, and execution of the fixed partition-maintenance function; it grants no schema `CREATE` privilege.
+
+The PDF extractor has no published host port. It is attached only to the internal `pdf-sandbox` network, while `agent-worker` joins both that network and the default runtime network. The extractor runs with a read-only filesystem, a 16 MiB `/tmp`, dropped capabilities, no-new-privileges, a 256 MiB memory/swap limit, 0.50 CPU, and a 64-process limit. The agent and crawler do not load `pdfjs` locally; if the extractor URL or token is absent, PDF sources are rejected.
 
 ## Migration and role rotation
 
@@ -89,8 +91,8 @@ Roll out internal staging first, then a small public canary, 1,000 DAU, and 10,0
 
 Foundation staging intentionally refuses factual Cardano answers until the knowledge/RAG plan has ingested and evaluated the approved official sources. Do not open a public factual-answer canary before that gate and the independent security review pass.
 
-To roll back to a previously verified immutable image, replace the example tag with the recorded release tag and recreate the four application services:
+To roll back to a previously verified immutable image, replace the example tag with the recorded release tag and recreate the application services:
 
 ```bash
-VENNEK_IMAGE_TAG=2026-08-24-abc1234 docker compose --env-file /secure/path/vennek.env up -d --no-build --force-recreate migrate provision-app-role telegram-webhook agent-worker
+VENNEK_IMAGE_TAG=2026-08-24-abc1234 docker compose --env-file /secure/path/vennek.env up -d --no-build --force-recreate migrate provision-app-role telegram-webhook agent-worker pdf-extractor
 ```

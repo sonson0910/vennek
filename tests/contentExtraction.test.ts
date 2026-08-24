@@ -213,4 +213,13 @@ Visible after tilde fence.`);
     })).rejects.toThrow(/2,000,000/);
   });
 
+  it("delegates configured PDF extraction without loading a local parser", async () => {
+    const bytes = encoder.encode("%PDF-1.7");
+    const extractor = { extract: async (received: Uint8Array) => ({ title: "Remote PDF", text: `bytes:${received.byteLength}` }) };
+    await expect(extractContent({ mime: "application/pdf", bytes, pdfExtractor: extractor })).resolves.toEqual({
+      title: "Remote PDF",
+      text: "bytes:8"
+    });
+  });
+
 });

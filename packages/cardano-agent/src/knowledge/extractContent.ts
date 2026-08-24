@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
 import { marked, Renderer, type Tokens } from "marked";
+import type { PdfExtractionResult } from "./pdfExtractorProtocol.js";
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_CHARS = 2_000_000;
@@ -16,6 +17,12 @@ const ALLOWED_MIME_TYPES = new Set([
 export type ExtractContentInput = {
   mime: string;
   bytes: Uint8Array;
+  signal?: AbortSignal;
+  pdfExtractor?: PdfExtractor;
+};
+
+export type PdfExtractor = {
+  extract(bytes: Uint8Array, signal?: AbortSignal): Promise<PdfExtractionResult>;
 };
 
 export type ExtractedContent = {
@@ -26,6 +33,13 @@ export type ExtractedContent = {
 
 export async function extractContent(input: ExtractContentInput): Promise<ExtractedContent> {
   const mime = input.mime.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (mime === "application/pdf") {
+    if (!input.pdfExtractor) throw new Error("Unsupported content-type: application/pdf");
+    if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength < 1 || input.bytes.byteLength > MAX_INPUT_BYTES) {
+      throw new Error("PDF input must be between 1 byte and 8 MiB.");
+    }
+    return input.pdfExtractor.extract(input.bytes, input.signal);
+  }
   if (!ALLOWED_MIME_TYPES.has(mime)) {
     throw new Error(`Unsupported content-type: ${mime || "missing"}`);
   }

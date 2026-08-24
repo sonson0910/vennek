@@ -131,6 +131,24 @@ describe("bounded source crawler", () => {
     expect(pdfCanceled.value).toBe(true);
   });
 
+  it("admits PDF only with an explicit remote extractor", async () => {
+    const { request } = fakeRequest({ "/start": { body: "%PDF-1.7", contentType: "application/pdf" } });
+    const extractor = {
+      extract: vi.fn(async (bytes: Uint8Array) => ({ title: "Remote PDF", text: `bytes:${bytes.byteLength}` }))
+    };
+    const result = await crawlSource({
+      entry: pageEntry,
+      repository: fakeRepository(),
+      signal: new AbortController().signal,
+      now,
+      lookup: publicLookup,
+      request,
+      pdfExtractor: extractor
+    });
+    expect(result.documents).toEqual([expect.objectContaining({ title: "Remote PDF", text: "bytes:8" })]);
+    expect(extractor.extract).toHaveBeenCalledOnce();
+  });
+
   it("caps concurrency at four and stops at 500 requests", async () => {
     const concurrency: { active: number; max: number } = { active: 0, max: 0 };
     const responses: Record<string, ResponseSpec> = {};

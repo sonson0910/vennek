@@ -46,7 +46,16 @@ export type {
 } from "./knowledge/sourceRegistry.js";
 
 export { extractContent } from "./knowledge/extractContent.js";
-export type { ExtractContentInput, ExtractedContent } from "./knowledge/extractContent.js";
+export type { ExtractContentInput, ExtractedContent, PdfExtractor } from "./knowledge/extractContent.js";
+export { PdfExtractorClient, createPdfExtractorClient } from "./knowledge/pdfExtractorClient.js";
+export type { PdfExtractorClientConfig } from "./knowledge/pdfExtractorClient.js";
+export {
+  PDF_EXTRACTOR_PATH,
+  PDF_MAX_INPUT_BYTES,
+  PDF_MAX_OUTPUT_CHARS,
+  PdfExtractorError,
+} from "./knowledge/pdfExtractorProtocol.js";
+export type { PdfExtractionResult } from "./knowledge/pdfExtractorProtocol.js";
 
 export { fetchGithubSource } from "./knowledge/githubSource.js";
 export type {
