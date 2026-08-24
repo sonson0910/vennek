@@ -44,6 +44,9 @@ export function parseAgentConfig(env: Environment): AgentConfig {
   } catch {
     throw new Error("LITELLM_BASE_URL must be a valid URL");
   }
+  if (liteLlmBaseUrl.username || liteLlmBaseUrl.password) {
+    throw new Error("LITELLM_BASE_URL must not include credentials");
+  }
   if (!["http:", "https:"].includes(liteLlmBaseUrl.protocol)) {
     throw new Error("LITELLM_BASE_URL must use http or https");
   }

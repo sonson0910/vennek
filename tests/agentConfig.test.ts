@@ -38,9 +38,63 @@ describe("parseAgentConfig", () => {
     ).toThrow(/VENNEK_ENCRYPTION_KEY/);
   });
 
+  it("rejects encryption keys with invalid base64 characters", () => {
+    expect(() =>
+      parseAgentConfig({
+        ...validEnvironment,
+        VENNEK_ENCRYPTION_KEY: `!${validEnvironment.VENNEK_ENCRYPTION_KEY.slice(1)}`,
+      }),
+    ).toThrow(/valid base64/);
+  });
+
+  it("rejects noncanonical base64 that decodes to 32 bytes", () => {
+    expect(() =>
+      parseAgentConfig({
+        ...validEnvironment,
+        VENNEK_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB=",
+      }),
+    ).toThrow(/VENNEK_ENCRYPTION_KEY/);
+  });
+
+  it("trims required values and rejects whitespace-only values", () => {
+    const config = parseAgentConfig({
+      ...validEnvironment,
+      DATABASE_URL: `  ${validEnvironment.DATABASE_URL}  `,
+    });
+    expect(config.databaseUrl).toBe(validEnvironment.DATABASE_URL);
+
+    expect(() =>
+      parseAgentConfig({ ...validEnvironment, LITELLM_API_KEY: " \t" }),
+    ).toThrow(/LITELLM_API_KEY is required/);
+  });
+
   it("rejects non-http(s) LiteLLM URLs", () => {
     expect(() =>
       parseAgentConfig({ ...validEnvironment, LITELLM_BASE_URL: "file:///tmp/model" }),
     ).toThrow(/LITELLM_BASE_URL/);
+  });
+
+  it("rejects malformed LiteLLM URLs", () => {
+    expect(() =>
+      parseAgentConfig({ ...validEnvironment, LITELLM_BASE_URL: "http://[::1" }),
+    ).toThrow(/LITELLM_BASE_URL must be a valid URL/);
+  });
+
+  it("rejects LiteLLM URLs containing credentials", () => {
+    let thrown: unknown;
+    try {
+      parseAgentConfig({
+        ...validEnvironment,
+        LITELLM_BASE_URL: "https://agent:secret@localhost:4000",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toMatch(/credentials/);
+    expect(message).not.toContain("agent");
+    expect(message).not.toContain("secret");
   });
 });
