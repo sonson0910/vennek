@@ -357,7 +357,7 @@ CREATE INDEX conversation_messages_user_created_idx
   ON conversation_messages (telegram_user_id, created_at DESC);
 ```
 
-Remove the first inline `PRIMARY KEY` from `id` when using the composite partition key. In the same migration, create previous/current/next monthly partitions with a PostgreSQL `DO` block using `format('%I', partition_name)` and literal date bounds. `ensureConversationPartitions(db, now)` creates the next two monthly partitions under an advisory lock. Task 4 exports and verifies this helper; Task 8 wires it into the webhook/worker runtimes and schedules it daily after those runtimes and their pg-boss instance exist.
+Remove the first inline `PRIMARY KEY` from `id` when using the composite partition key. In the same migration, create previous/current/next monthly partitions with a PostgreSQL `DO` block using `format('%I', partition_name)` and explicit UTC `timestamptz` bounds. `ensureConversationPartitions(db, now)` creates the current and next two monthly partitions under an advisory lock, independent of the database session timezone. Task 4 exports and verifies this helper; Task 8 wires it into the webhook/worker runtimes and schedules it daily after those runtimes and their pg-boss instance exist.
 
 Create the initial local PostgreSQL service now so the migration test is runnable:
 
@@ -416,6 +416,8 @@ export class ConversationRepository {
   }
 }
 ```
+
+`append` must reject detected wallet secrets before querying PostgreSQL and write the user/message rows in one transaction. Bind each AES-GCM envelope to an unambiguous versioned AAD value containing the Telegram user, chat, and role so moving ciphertext between rows fails authentication.
 
 - [ ] **Step 5: Run against PostgreSQL**
 
@@ -690,6 +692,8 @@ git commit -m "feat: open Telegram agent access"
 - [ ] **Step 1: Add Docker Compose services**
 
 Extend the existing PostgreSQL compose file with a pinned LiteLLM image plus `telegram-webhook` and `agent-worker` application services built from the same repository image. Application services wait for healthy PostgreSQL and successful migration. Do not put real provider keys or Telegram tokens in the compose file.
+
+Staging must separate the migration owner from the application DML role. Expose partition maintenance through a narrowly scoped migration-owned operation with a pinned `search_path`; grant the application role only the minimum DML and maintenance execution privileges, never general `CREATE` privileges.
 
 `config/litellm.example.yaml` defines these aliases with provider deployments supplied through environment variables:
 
