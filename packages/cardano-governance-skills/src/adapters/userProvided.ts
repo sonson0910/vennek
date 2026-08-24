@@ -44,42 +44,37 @@ export async function fetchUserProvidedUrl(input: {
   sourceType?: SourceType;
   now?: Date;
   allowedDomains?: string[];
+  lookup?: PublicHttpsLookup;
+  request?: PublicHttpsRequest;
 }): Promise<ProposalDocument> {
-  const safeUrl = await assertPublicFetchUrl(input.url, input.allowedDomains);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-
-  try {
-    const response = await fetch(safeUrl, {
-      signal: controller.signal,
-      redirect: "error",
-      headers: {
-        "accept": "text/html,text/plain,application/json;q=0.9,application/xhtml+xml;q=0.8"
-      }
-    });
-    if (!response.ok) {
-      controller.abort();
-      await cancelResponseBody(response);
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const raw = await readResponseTextLimited(response);
-    const title = extractTitle(raw) ?? safeUrl;
-    const text = htmlToText(raw);
-    if (text.length < 40) {
-      throw new Error("Source body too short after normalization");
-    }
-
-    return normalizeUserProvidedText({
-      text,
-      title,
-      url: safeUrl,
-      sourceType: input.sourceType,
-      now: input.now
-    });
-  } finally {
-    clearTimeout(timeout);
+  const signal = AbortSignal.timeout(8_000);
+  const response = await requestPublicHttps({
+    url: input.url,
+    allowedDomains: input.allowedDomains ?? [],
+    signal,
+    headers: { accept: "text/html,text/plain,application/json;q=0.9,application/xhtml+xml;q=0.8" },
+    lookup: input.lookup,
+    request: input.request
+  });
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    response.cancel();
+    throw new Error(`HTTP ${response.statusCode}`);
   }
+
+  const raw = await readIncomingMessageTextLimited(response, signal);
+  const title = extractTitle(raw) ?? response.url;
+  const text = htmlToText(raw);
+  if (text.length < 40) {
+    throw new Error("Source body too short after normalization");
+  }
+
+  return normalizeUserProvidedText({
+    text,
+    title,
+    url: response.url,
+    sourceType: input.sourceType,
+    now: input.now
+  });
 }
 
 export async function readResponseTextLimited(response: Response, maxBytes = MAX_FETCH_BYTES): Promise<string> {
@@ -154,8 +149,8 @@ export function hostMatches(host: string, allowedDomains: string[]): boolean {
   });
 }
 
-export async function assertPublicFetchUrl(value: string, allowedDomains: string[] = []): Promise<string> {
-  return (await resolvePublicHttpsUrl(value, allowedDomains, new AbortController().signal)).url.toString();
+export async function assertPublicFetchUrl(value: string, allowedDomains: string[] = []): Promise<void> {
+  await resolvePublicHttpsUrl(value, allowedDomains, AbortSignal.timeout(8_000));
 }
 
 const NON_GLOBAL_IPV4 = new BlockList();
@@ -209,8 +204,10 @@ export type PublicHttpsLookup = (
 ) => Promise<LookupAddress[]>;
 
 export type PublicHttpsResponse = {
+  url: string;
   statusCode: number;
   headers: IncomingHttpHeaders;
+  body: IncomingMessage;
   cancel: () => void;
 };
 
@@ -280,8 +277,10 @@ export async function requestPublicHttps(input: {
         settled = true;
         cleanup();
         resolve({
+          url: resolved.url.toString(),
           statusCode: response.statusCode,
           headers: response.headers,
+          body: response,
           cancel: () => response.destroy()
         });
       });
@@ -297,6 +296,55 @@ export async function requestPublicHttps(input: {
       reject(error);
     }
   });
+}
+
+async function readIncomingMessageTextLimited(
+  response: PublicHttpsResponse,
+  signal: AbortSignal,
+  maxBytes = MAX_FETCH_BYTES
+): Promise<string> {
+  const rawContentType = response.headers["content-type"];
+  const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType)
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase() ?? "";
+  if (!contentType) {
+    response.cancel();
+    throw new Error("Missing content-type");
+  }
+  if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
+    response.cancel();
+    throw new Error(`Unsupported content-type: ${contentType}`);
+  }
+
+  const rawContentLength = response.headers["content-length"];
+  const contentLength = Number(Array.isArray(rawContentLength) ? rawContentLength[0] : rawContentLength);
+  if (Number.isFinite(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
+    response.cancel();
+    throw new Error(`Source body too large: ${contentLength} bytes`);
+  }
+
+  signal.throwIfAborted();
+  const abort = () => response.body.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+  signal.addEventListener("abort", abort, { once: true });
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  try {
+    for await (const chunk of response.body) {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk as Uint8Array;
+      totalBytes += bytes.byteLength;
+      if (totalBytes > maxBytes) {
+        response.cancel();
+        throw new Error(`Source body too large: ${totalBytes} bytes`);
+      }
+      text += decoder.decode(bytes, { stream: true });
+    }
+    signal.throwIfAborted();
+    return text + decoder.decode();
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 async function resolvePublicHttpsUrl(

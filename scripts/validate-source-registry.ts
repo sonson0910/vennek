@@ -16,7 +16,7 @@ const CONFIG_URL = new URL("../config/cardano-sources.json", import.meta.url);
 export const LIVE_SOURCE_TIMEOUT_MS = 8_000;
 export const LIVE_OVERALL_TIMEOUT_MS = 45_000;
 const LIVE_WORKERS = 4;
-const REQUIRED_REFRESH_POLICIES: Record<string, "hourly" | "daily"> = {
+const REQUIRED_REFRESH_POLICIES: Record<(typeof REQUIRED_OFFICIAL_SOURCE_IDS)[number], "hourly" | "daily"> = {
   "cardano-docs": "daily",
   "cardano-org": "daily",
   "cardano-developer-portal": "daily",
@@ -243,9 +243,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function printRequiredCoverage(config: SourceConfig): string[] {
   const officialIds = new Set(config.official.map((entry) => isRecord(entry) && typeof entry.id === "string" ? entry.id : ""));
-  const requiredIds = [...REQUIRED_OFFICIAL_SOURCE_IDS, "cardano-org"];
   const missing: string[] = [];
-  for (const id of requiredIds) {
+  for (const id of REQUIRED_OFFICIAL_SOURCE_IDS) {
     const covered = officialIds.has(id);
     console.log(`Required source ${id}: ${covered ? "covered" : "MISSING"}`);
     if (!covered) {
@@ -260,7 +259,7 @@ async function main(): Promise<void> {
     const config = readSourceConfig();
     const missing = printRequiredCoverage(config);
     const entries = validateSourceConfig(config);
-    console.log(`Official source coverage: ${REQUIRED_OFFICIAL_SOURCE_IDS.length}/${REQUIRED_OFFICIAL_SOURCE_IDS.length}`);
+    console.log(`Official source coverage: ${REQUIRED_OFFICIAL_SOURCE_IDS.length - missing.length}/${REQUIRED_OFFICIAL_SOURCE_IDS.length}`);
     console.log(`Community sources: ${config.community.length}`);
     console.log(`Validated registry entries: ${entries.length}`);
     if (missing.length > 0) {

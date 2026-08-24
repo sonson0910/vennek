@@ -120,6 +120,7 @@ describe("Cardano source registry", () => {
     expect(config.official.every((entry) => entry.trustTier === "official")).toBe(true);
     expect(config.community.every((entry) => entry.trustTier === "community")).toBe(true);
     const ids = new Set(config.official.map((entry) => entry.id));
+    expect(REQUIRED_OFFICIAL_SOURCE_IDS).toContain("cardano-org");
     expect(REQUIRED_OFFICIAL_SOURCE_IDS.every((id) => ids.has(id))).toBe(true);
     expect(config.community.length).toBeGreaterThanOrEqual(2);
     expect(validateSourceRegistry([...config.official, ...config.community])).toHaveLength(
@@ -143,8 +144,10 @@ describe("Cardano source registry", () => {
       calls.push(input.method ?? "GET");
       expect(input.signal).toBeInstanceOf(AbortSignal);
       return {
+        url: official.url,
         statusCode: input.method === "HEAD" ? 405 : 200,
         headers: { "content-type": "text/plain" },
+        body: {} as never,
         cancel: () => undefined
       };
     };
@@ -155,8 +158,10 @@ describe("Cardano source registry", () => {
     expect(JSON.stringify(official)).toBe(before);
 
     const failingRequest = async () => ({
+      url: official.url,
       statusCode: 503,
       headers: { "content-type": "text/plain" },
+      body: {} as never,
       cancel: () => undefined
     });
     const results = await runLiveValidation([official, { ...official, id: "second-source" }], {

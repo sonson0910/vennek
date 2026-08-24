@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import {
   assertPublicFetchUrl,
   fetchUserProvidedUrl,
@@ -140,69 +143,69 @@ describe("adapters URL classification and fetch guards", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("fetches through the single-resolution pinned HTTPS transport", async () => {
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+    const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 as const }]);
+    const { request } = pinnedResponse({ "content-type": "text/plain" }, [
+      "A Cardano governance source body that is long enough to normalize."
+    ]);
+
+    await expect(fetchUserProvidedUrl({
+      url: "https://example.com/source",
+      allowedDomains: ["example.com"],
+      lookup,
+      request
+    })).resolves.toMatchObject({ url: "https://example.com/source" });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
   it("rejects a byte response with no content-type before reading its body", async () => {
-    const response = new Response(new Uint8Array([1, 2, 3]));
-    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const { request } = pinnedResponse({}, [new Uint8Array([1, 2, 3])]);
 
     await expect(fetchUserProvidedUrl({
       url: "https://8.8.8.8/source",
-      allowedDomains: ["8.8.8.8"]
+      allowedDomains: ["8.8.8.8"],
+      request
     })).rejects.toThrow(/content-type/i);
   });
 
   it("rejects unsupported content-types before reading the body", async () => {
-    let reads = 0;
-    const response = {
-      ok: true,
-      headers: new Headers({ "content-type": "application/octet-stream" }),
-      body: { getReader: () => { reads += 1; throw new Error("body should not be read"); } }
-    } as unknown as Response;
-    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const { request, response } = pinnedResponse({ "content-type": "application/octet-stream" }, ["ignored"]);
 
     await expect(fetchUserProvidedUrl({
       url: "https://8.8.8.8/source",
-      allowedDomains: ["8.8.8.8"]
+      allowedDomains: ["8.8.8.8"],
+      request
     })).rejects.toThrow(/Unsupported content-type/);
-    expect(reads).toBe(0);
+    expect(response.readableDidRead).toBe(false);
   });
 
   it("rejects an oversized declared content-length without reading the body", async () => {
-    let reads = 0;
-    const response = {
-      ok: true,
-      headers: new Headers({
-        "content-length": String(2 * 1024 * 1024 + 1),
-        "content-type": "text/plain"
-      }),
-      body: { getReader: () => { reads += 1; throw new Error("body should not be read"); } }
-    } as unknown as Response;
-    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const { request, response } = pinnedResponse({
+      "content-length": String(2 * 1024 * 1024 + 1),
+      "content-type": "text/plain"
+    }, ["ignored"]);
 
     await expect(fetchUserProvidedUrl({
       url: "https://8.8.8.8/source",
-      allowedDomains: ["8.8.8.8"]
+      allowedDomains: ["8.8.8.8"],
+      request
     })).rejects.toThrow(/Source body too large/);
-    expect(reads).toBe(0);
+    expect(response.readableDidRead).toBe(false);
   });
 
   it("cancels a non-ok response body before throwing HTTP errors", async () => {
-    let cancelCalled = false;
-    const response = {
-      ok: false,
-      status: 503,
-      body: {
-        cancel: async () => {
-          cancelCalled = true;
-        }
-      }
-    } as unknown as Response;
-    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const { request, response } = pinnedResponse({ "content-type": "text/plain" }, ["ignored"], 503);
 
     await expect(fetchUserProvidedUrl({
       url: "https://8.8.8.8/source",
-      allowedDomains: ["8.8.8.8"]
+      allowedDomains: ["8.8.8.8"],
+      request
     })).rejects.toThrow(/HTTP 503/);
-    expect(cancelCalled).toBe(true);
+    expect(response.destroyed).toBe(true);
   });
 
   it("cancels the body when the helper rejects an unsupported content-type", async () => {
@@ -290,3 +293,16 @@ describe("adapters URL classification and fetch guards", () => {
     await expect(readResponseTextLimited(new Response(null))).rejects.toThrow(/body/i);
   });
 });
+
+function pinnedResponse(
+  headers: Record<string, string>,
+  chunks: Array<string | Uint8Array>,
+  statusCode = 200
+): { request: PublicHttpsRequest; response: Readable & IncomingMessage } {
+  const response = Object.assign(Readable.from(chunks), { statusCode, headers }) as Readable & IncomingMessage;
+  const request = vi.fn((_, callback: (response: IncomingMessage) => void) => {
+    callback(response);
+    return Object.assign(new EventEmitter(), { end() {} });
+  }) as unknown as PublicHttpsRequest;
+  return { request, response };
+}

@@ -10,20 +10,24 @@ export type GithubScope = {
   repository?: string;
 };
 
-export type SourceRegistryEntry = {
+type SourceRegistryEntryBase = {
   id: string;
   owner: string;
   trustTier: TrustTier;
-  kind: SourceKind;
   url: string;
   allowedDomains: string[];
   topics: string[];
   networks: CardanoNetwork[];
   refresh: RefreshRate;
-  github?: GithubScope;
 };
 
+export type SourceRegistryEntry = SourceRegistryEntryBase & (
+  | { kind: "github"; github: GithubScope }
+  | { kind: Exclude<SourceKind, "github">; github?: never }
+);
+
 export const REQUIRED_OFFICIAL_SOURCE_IDS = [
+  "cardano-org",
   "cardano-docs",
   "cardano-developer-portal",
   "iog-research",
@@ -133,18 +137,19 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
   if (kind === "github" && github?.repository === undefined && requiresGithubRepository(parsedUrl)) {
     throw new Error(`Source entry ${index} github repository is required for repository or release URLs.`);
   }
-  const entry: SourceRegistryEntry = {
+  const common = {
     id,
     owner,
     trustTier,
-    kind,
     url,
     allowedDomains,
     topics,
     networks,
-    refresh,
-    ...(github ? { github } : {})
+    refresh
   };
+  const entry: SourceRegistryEntry = kind === "github"
+    ? { ...common, kind, github: github! }
+    : { ...common, kind };
   if (!urlMatchesSourceScope(url, entry)) {
     throw new Error(`Source entry ${index} url is outside the allowed domain or declared source scope.`);
   }
