@@ -32,7 +32,7 @@ export class ConversationRepository {
     telegramChatId: string;
     role: ConversationRole;
     text: string;
-  }): Promise<void> {
+  }): Promise<{ firstInteraction: boolean }> {
     if (findWalletSecret(input.text)) {
       throw new Error("Conversation text contains a wallet secret.");
     }
@@ -60,8 +60,8 @@ export class ConversationRepository {
           createdAtIso,
         ),
       );
-      await client.query(
-        "INSERT INTO telegram_users (telegram_user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      const user = await client.query(
+        "INSERT INTO telegram_users (telegram_user_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING telegram_user_id",
         [input.telegramUserId],
       );
       await client.query(
@@ -82,6 +82,7 @@ export class ConversationRepository {
       );
       await client.query("COMMIT");
       inTransaction = false;
+      return { firstInteraction: user.rows.length > 0 };
     } catch (error) {
       if (inTransaction) {
         try {

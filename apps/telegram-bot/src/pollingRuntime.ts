@@ -1,11 +1,14 @@
 import { sha256Hex, type CommandContext } from "@vennek/shared";
-import { FixedWindowRateLimiter, isAllowedChat, type RateLimiter } from "./accessControl.js";
+import { FixedWindowRateLimiter, type RateLimiter } from "./accessControl.js";
 import { routeTelegramText } from "./router.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
 
 export type TelegramUpdate = {
   update_id: number;
   message?: {
+    from?: {
+      id: number | string;
+    };
     chat?: {
       id: number | string;
     };
@@ -24,8 +27,8 @@ export type RuntimeLogger = (level: RuntimeLogLevel, event: string, fields?: Rec
 
 export type PollingOptions = {
   api: TelegramApi;
-  allowedChatIds: ReadonlySet<string>;
   context?: CommandContext;
+  answer?: (input: { telegramUserId: string; telegramChatId: string; text: string }) => Promise<string>;
   logger?: RuntimeLogger;
   signal?: AbortSignal;
   pollTimeoutSeconds?: number;
@@ -90,17 +93,6 @@ export async function runPolling(options: PollingOptions): Promise<void> {
             continue;
           }
 
-          if (!isAllowedChat(chatId, options.allowedChatIds)) {
-            offset = Math.max(offset, nextOffset);
-            writeTelegramOffset(context.persistenceRoot, offset);
-            logger("warn", "telegram_update_rejected", {
-              updateId: update.update_id,
-              chatHash: chatHash(chatId),
-              offset
-            });
-            continue;
-          }
-
           if (!rateLimiter.allow(chatId)) {
             offset = Math.max(offset, nextOffset);
             writeTelegramOffset(context.persistenceRoot, offset);
@@ -113,7 +105,23 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           }
 
           const startedAt = Date.now();
-          const response = await routeTelegramText(text, context);
+          let response: string;
+          if (options.answer) {
+            const userId = update.message?.from?.id;
+            if (!isTelegramIdentifier(userId, true)) {
+              offset = Math.max(offset, nextOffset);
+              writeTelegramOffset(context.persistenceRoot, offset);
+              logger("info", "telegram_update_skipped", { updateId: update.update_id, offset });
+              continue;
+            }
+            response = await options.answer({
+              telegramUserId: String(userId),
+              telegramChatId: String(chatId),
+              text,
+            });
+          } else {
+            response = await routeTelegramText(text, context);
+          }
           const delivery = await deliverMessage(options.api, {
             chat_id: chatId,
             text: response,
@@ -244,6 +252,21 @@ export function abortableSleep(milliseconds: number, signal?: AbortSignal): Prom
 
 function chatHash(chatId: number | string): string {
   return `chat-${sha256Hex(String(chatId)).slice(0, 12)}`;
+}
+
+function isTelegramIdentifier(value: unknown, user: boolean): value is number | string {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && (user ? value > 0 : value !== 0);
+  }
+  if (typeof value !== "string" || !/^-?[1-9][0-9]*$/u.test(value) || (user && value.startsWith("-"))) {
+    return false;
+  }
+  try {
+    const parsed = BigInt(value);
+    return parsed >= BigInt("-9223372036854775808") && parsed <= BigInt("9223372036854775807") && (user ? parsed > 0n : parsed !== 0n);
+  } catch {
+    return false;
+  }
 }
 
 function sanitizeRuntimeError(error: unknown): string {

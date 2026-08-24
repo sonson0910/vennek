@@ -13,6 +13,7 @@
   "files": ["dist"],
   "dependencies": {
     "@vennek/cardano-agent": "0.1.0",
-    "@vennek/cardano-governance-skills": "0.1.0"
+    "@vennek/cardano-governance-skills": "0.1.0",
+    "pg-boss": "^12.0.0"
   }
 }

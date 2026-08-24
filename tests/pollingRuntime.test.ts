@@ -18,7 +18,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, enableFixtures: true, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, enableFixtures: true, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(offsets).toEqual([10]);
     expect(readTelegramOffset(root)).toBe(11);
@@ -34,7 +34,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(readTelegramOffset(root)).toBe(3);
     expect(api.sentMessages).toHaveLength(1);
@@ -57,7 +57,6 @@ describe("Telegram polling runtime", () => {
 
     await runPolling({
       api,
-      allowedChatIds: new Set(["12345"]),
       context: { persistenceRoot: root, now },
       logger: logs.logger,
       rateLimiter,
@@ -85,7 +84,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(api.sendAttempts).toBe(1);
     expect(readTelegramOffset(root)).toBe(21);
@@ -104,7 +103,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(api.sendAttempts).toBe(2);
     expect(api.sentMessages).toHaveLength(1);
@@ -131,7 +130,7 @@ describe("Telegram polling runtime", () => {
     };
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
 
     expect(sendAttempts).toBe(1);
     expect(readTelegramOffset(root)).toBe(60);
@@ -157,7 +156,7 @@ describe("Telegram polling runtime", () => {
     };
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 1_000 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 1_000 });
 
     expect(sendAttempts).toBe(1);
     expect(readTelegramOffset(root)).toBe(70);
@@ -181,7 +180,7 @@ describe("Telegram polling runtime", () => {
     };
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, signal: controller.signal, maxCycles: 1, retryDelayMs: 0 });
 
     expect(sendAttempts).toBe(1);
     expect(readTelegramOffset(root)).toBe(81);
@@ -204,7 +203,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(api.sendAttempts).toBe(4);
     expect(api.sentMessages).toHaveLength(1);
@@ -225,7 +224,7 @@ describe("Telegram polling runtime", () => {
     });
     const logs = captureLogs();
 
-    await runPolling({ api, allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api, context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(api.sendAttempts).toBe(3);
     expect(api.sentMessages).toHaveLength(1);
@@ -253,7 +252,7 @@ describe("Telegram polling runtime", () => {
     vi.stubGlobal("fetch", fetchMock);
     const logs = captureLogs();
 
-    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(readTelegramOffset(root)).toBe(91);
@@ -272,7 +271,7 @@ describe("Telegram polling runtime", () => {
     vi.stubGlobal("fetch", fetchMock);
     const logs = captureLogs();
 
-    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), allowedChatIds: new Set(["12345"]), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+    await runPolling({ api: createTelegramApi("TOKEN_SECRET"), context: { persistenceRoot: root, now }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(readTelegramOffset(root)).toBe(101);
@@ -281,7 +280,7 @@ describe("Telegram polling runtime", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rejects unauthorized chats without routing or persistence but advances offset", async () => {
+  it("routes public chats without an allowlist when rate limit permits", async () => {
     const root = mkdtempSync(join(tmpdir(), "vennek-poll-"));
     const consumedChats: Array<number | string> = [];
     const api = fakeApi({
@@ -297,7 +296,6 @@ describe("Telegram polling runtime", () => {
 
     await runPolling({
       api,
-      allowedChatIds: new Set(["123"]),
       context: { persistenceRoot: root, enableFixtures: true, now },
       logger: logs.logger,
       rateLimiter,
@@ -305,21 +303,10 @@ describe("Telegram polling runtime", () => {
       retryDelayMs: 0
     });
 
-    expect(consumedChats).toEqual([]);
+    expect(consumedChats).toEqual([999]);
     expect(readTelegramOffset(root)).toBe(9);
-    expect(api.sentMessages).toHaveLength(0);
-    expect(existsSync(join(root, "source-cache"))).toBe(false);
-    expect(existsSync(join(root, "audit-logs", "commands.jsonl"))).toBe(false);
-    const rejected = logs.events.find((event) => event.event === "telegram_update_rejected");
-    expect(rejected).toEqual({
-      level: "warn",
-      event: "telegram_update_rejected",
-      updateId: 8,
-      chatHash: expect.any(String),
-      offset: 9
-    });
-    expect(JSON.stringify(rejected)).not.toContain("999");
-    expect(JSON.stringify(rejected)).not.toContain("/sources");
+    expect(api.sentMessages).toHaveLength(1);
+    expect(logs.events.some((event) => event.event === "telegram_update_processed" && event.updateId === 8)).toBe(true);
   });
 
   it("rate-limits allowed chats before routing and side effects", async () => {
@@ -332,7 +319,6 @@ describe("Telegram polling runtime", () => {
 
     await runPolling({
       api,
-      allowedChatIds: new Set(["12345"]),
       context: { persistenceRoot: root, enableFixtures: true, now },
       logger: logs.logger,
       rateLimiter,
@@ -381,7 +367,6 @@ describe("Telegram polling runtime", () => {
 
     await runPolling({
       api,
-      allowedChatIds: new Set(["12345"]),
       context: { persistenceRoot: root, now },
       logger: logs.logger,
       maxCycles: 2,
