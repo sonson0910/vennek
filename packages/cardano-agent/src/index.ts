@@ -44,3 +44,10 @@ export type {
   SourceRegistryEntry,
   TrustTier,
 } from "./knowledge/sourceRegistry.js";
+
+export { KnowledgeRepository } from "./knowledge/knowledgeRepository.js";
+export type {
+  KnowledgeChunkInput,
+  KnowledgeVersion,
+  StoreVersionInput,
+} from "./knowledge/knowledgeRepository.js";
