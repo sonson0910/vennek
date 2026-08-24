@@ -10,9 +10,11 @@ function conversationAad(
   telegramUserId: string,
   telegramChatId: string,
   role: ConversationRole,
+  id: string,
+  createdAt: string,
 ): Buffer {
   return Buffer.from(
-    [CONVERSATION_AAD_VERSION, telegramUserId, telegramChatId, role]
+    [CONVERSATION_AAD_VERSION, telegramUserId, telegramChatId, role, id, createdAt]
       .map((field) => `${Buffer.byteLength(field, "utf8")}:${field}`)
       .join(""),
     "utf8",
@@ -34,32 +36,48 @@ export class ConversationRepository {
     if (findWalletSecret(input.text)) {
       throw new Error("Conversation text contains a wallet secret.");
     }
-    const encrypted = encryptText(
-      input.text,
-      this.key,
-      conversationAad(input.telegramUserId, input.telegramChatId, input.role),
-    );
 
     const client: PoolClient = await this.db.connect();
     let inTransaction = false;
     try {
       await client.query("BEGIN");
       inTransaction = true;
+      const sequence = await client.query<{ id: string }>(
+        "SELECT nextval(pg_get_serial_sequence('conversation_messages', 'id'))::text AS id",
+      );
+      const id = sequence.rows[0]?.id;
+      if (!id) throw new Error("Could not allocate a conversation message id.");
+      const createdAt = new Date();
+      const createdAtIso = createdAt.toISOString();
+      const encrypted = encryptText(
+        input.text,
+        this.key,
+        conversationAad(
+          input.telegramUserId,
+          input.telegramChatId,
+          input.role,
+          id,
+          createdAtIso,
+        ),
+      );
       await client.query(
         "INSERT INTO telegram_users (telegram_user_id) VALUES ($1) ON CONFLICT DO NOTHING",
         [input.telegramUserId],
       );
       await client.query(
         `INSERT INTO conversation_messages
-         (telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         (id, telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag, created_at)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
+          id,
           input.telegramUserId,
           input.telegramChatId,
           input.role,
           encrypted.ciphertext,
           encrypted.iv,
           encrypted.tag,
+          createdAt,
         ],
       );
       await client.query("COMMIT");
@@ -87,6 +105,8 @@ export class ConversationRepository {
     }
 
     const result = await this.db.query<{
+      id: string;
+      created_at: Date;
       telegram_user_id: string;
       telegram_chat_id: string;
       role: ConversationRole;
@@ -94,7 +114,7 @@ export class ConversationRepository {
       iv: string;
       auth_tag: string;
     }>(
-      `SELECT telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag FROM conversation_messages
+      `SELECT id, created_at, telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag FROM conversation_messages
        WHERE telegram_user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`,
       [telegramUserId, limit],
     );
@@ -104,7 +124,13 @@ export class ConversationRepository {
       text: decryptText(
         { ciphertext: row.ciphertext, iv: row.iv, tag: row.auth_tag },
         this.key,
-        conversationAad(row.telegram_user_id, row.telegram_chat_id, row.role),
+        conversationAad(
+          row.telegram_user_id,
+          row.telegram_chat_id,
+          row.role,
+          row.id,
+          row.created_at.toISOString(),
+        ),
       ),
     }));
   }

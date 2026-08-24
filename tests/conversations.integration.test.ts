@@ -148,42 +148,63 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
     }
   });
 
-  it("rejects copied message envelopes in another conversation", async () => {
+  it("rejects copied envelopes between same-context messages and blocks identity clones", async () => {
     const db = createDatabase(databaseUrl!);
     const repository = new ConversationRepository(db, Buffer.alloc(32, 3));
-    const sourceUserId = `aad-source-${process.pid}-${Date.now()}`;
-    const targetUserId = `${sourceUserId}-target`;
+    const telegramUserId = `aad-source-${process.pid}-${Date.now()}`;
 
     try {
       await repository.append({
-        telegramUserId: sourceUserId,
+        telegramUserId,
         telegramChatId: "source-chat",
         role: "user",
-        text: "source message",
+        text: "first message",
       });
-      await db.query(
-        `INSERT INTO telegram_users (telegram_user_id) VALUES ($1)
-         ON CONFLICT DO NOTHING`,
-        [targetUserId],
-      );
+      await repository.append({
+        telegramUserId,
+        telegramChatId: "source-chat",
+        role: "user",
+        text: "second message",
+      });
       const source = await db.query<{
+        id: string;
+        created_at: Date;
         ciphertext: string;
         iv: string;
         auth_tag: string;
       }>(
-        `SELECT ciphertext, iv, auth_tag FROM conversation_messages
-         WHERE telegram_user_id = $1 ORDER BY id DESC LIMIT 1`,
-        [sourceUserId],
+        `SELECT id, created_at, ciphertext, iv, auth_tag FROM conversation_messages
+         WHERE telegram_user_id = $1 ORDER BY id ASC`,
+        [telegramUserId],
       );
       const copied = source.rows[0]!;
+      const target = source.rows[1]!;
       await db.query(
-        `INSERT INTO conversation_messages
-         (telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [targetUserId, "other-chat", "assistant", copied.ciphertext, copied.iv, copied.auth_tag],
+        `UPDATE conversation_messages
+         SET ciphertext = $1, iv = $2, auth_tag = $3
+         WHERE id = $4 AND created_at = $5`,
+        [copied.ciphertext, copied.iv, copied.auth_tag, target.id, target.created_at],
       );
 
-      await expect(repository.recent(targetUserId, 10)).rejects.toThrow(/authentication/);
+      await expect(repository.recent(telegramUserId, 10)).rejects.toThrow(/authentication/);
+      await expect(
+        db.query(
+          `INSERT INTO conversation_messages
+           (id, created_at, telegram_user_id, telegram_chat_id, role, ciphertext, iv, auth_tag)
+           OVERRIDING SYSTEM VALUE
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            copied.id,
+            copied.created_at,
+            telegramUserId,
+            "source-chat",
+            "user",
+            copied.ciphertext,
+            copied.iv,
+            copied.auth_tag,
+          ],
+        ),
+      ).rejects.toThrow(/duplicate key|already exists/i);
     } finally {
       await db.end();
     }
