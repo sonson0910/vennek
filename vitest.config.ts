@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       "@vennek/shared": new URL("./packages/shared/src/index.ts", import.meta.url).pathname,
       "@vennek/cardano-governance-skills": new URL("./packages/cardano-governance-skills/src/index.ts", import.meta.url).pathname,
+      "@vennek/cardano-agent": new URL("./packages/cardano-agent/src/index.ts", import.meta.url).pathname,
       "@vennek/telegram-bot": new URL("./apps/telegram-bot/src/index.ts", import.meta.url).pathname
     }
   }
