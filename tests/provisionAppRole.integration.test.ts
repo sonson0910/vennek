@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PgBoss } from "pg-boss";
 import { sha256Hex } from "@vennek/shared";
@@ -99,6 +99,33 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       await expect(app.query("DELETE FROM usage_ledger WHERE telegram_user_id = $1", [telegramUserId])).rejects.toThrow(/permission denied/i);
       await expect(app.query("SELECT setval('public.usage_ledger_id_seq'::regclass, 1)")).rejects.toThrow(/permission denied/i);
       await expect(app.query("SELECT setval('public.conversation_messages_id_seq'::regclass, 1)")).rejects.toThrow(/permission denied/i);
+      const auditGrants = await owner.query<{ table_name: string; privilege_type: string }>(
+        `SELECT table_name, privilege_type FROM information_schema.role_table_grants
+         WHERE grantee = $1 AND table_schema = 'public'
+           AND table_name = 'knowledge_promotion_requests'
+         ORDER BY privilege_type`,
+        [roleName],
+      );
+      expect(auditGrants.rows).toEqual([]);
+      const auditRequestId = randomUUID();
+      const auditNonceDigest = createHash("sha256").update(auditRequestId).digest();
+      await expect(app.query(
+        "SELECT state FROM public.knowledge_promotion_requests WHERE request_id = $1",
+        [auditRequestId],
+      )).rejects.toThrow(/permission denied/i);
+      await expect(app.query(
+        `INSERT INTO public.knowledge_promotion_requests (request_id, caller_id, nonce_digest, state)
+         VALUES ($1, $2, $3, 'started')`,
+        [auditRequestId, `app-role-${process.pid}`, auditNonceDigest],
+      )).rejects.toThrow(/permission denied/i);
+      await expect(app.query(
+        "UPDATE public.knowledge_promotion_requests SET state = 'started' WHERE request_id = $1",
+        [auditRequestId],
+      )).rejects.toThrow(/permission denied/i);
+      await expect(app.query(
+        "DELETE FROM public.knowledge_promotion_requests WHERE request_id = $1",
+        [auditRequestId],
+      )).rejects.toThrow(/permission denied/i);
       const request = {
         query,
         language: "en",

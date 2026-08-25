@@ -45,6 +45,7 @@ export async function provisionKnowledgeRole(databaseUrl: string, roleName: stri
     await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgboss FROM ${roleIdentifier}`);
     await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM ${roleIdentifier}`);
     await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgboss FROM ${roleIdentifier}`);
+    await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.knowledge_promotion_requests TO ${roleIdentifier}`);
     await client.query(`
       GRANT SELECT, INSERT, UPDATE ON TABLE public.knowledge_sources TO ${roleIdentifier};
       GRANT SELECT, INSERT ON TABLE public.source_versions TO ${roleIdentifier};
