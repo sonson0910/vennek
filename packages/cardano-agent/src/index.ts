@@ -72,11 +72,12 @@ export type { EmbeddingResult } from "./llm/embeddingClient.js";
 export { selectModelProfile } from "./llm/modelRouter.js";
 export type { ModelProfile } from "./llm/modelRouter.js";
 
-export { answerQuestion, detectQuestionLanguage, RETENTION_NOTICE } from "./agent/answerQuestion.js";
+export { answerQuestion, detectQuestionLanguage, localizedQuestionMessage, RETENTION_NOTICE } from "./agent/answerQuestion.js";
 export type {
   AnswerQuestionDependencies,
   AnswerCompletionInput,
   AnswerUsage,
+  LocalizedQuestionMessageKind,
   QuestionInput,
   QuestionLanguage,
   QuestionPersistenceResult,

@@ -2,6 +2,7 @@ import {
   comparePrivateDocument,
   detectQuestionLanguage,
   findWalletSecret,
+  localizedQuestionMessage,
   PrivateDocumentClientError,
   PrivateComparisonProviderError,
   type EmbeddingProvider,
@@ -339,15 +340,14 @@ function isFreshEvidence(value: unknown): boolean {
 }
 
 function walletSecretWarning(language: QuestionLanguage): string {
-  return language === "vi"
-    ? "Đừng gửi seed phrase hoặc private key vào đây. Vui lòng xóa nội dung đó khỏi tài liệu."
-    : "Do not send wallet secrets such as a seed phrase or private key here. Please remove them from the document.";
+  return localizedQuestionMessage(language, "secret");
 }
 
-function terminalFailureMessage(language: QuestionLanguage, _category: PrivateComparisonFailureCategory): string {
-  return language === "vi"
-    ? "Xin lỗi, tài liệu này chưa thể được xử lý an toàn. Vui lòng thử lại sau."
-    : "Sorry, this document could not be processed safely. Please try again later.";
+function terminalFailureMessage(language: QuestionLanguage, category: PrivateComparisonFailureCategory): string {
+  const kind = category === "validation" || category === "extraction" || category === "retrieval"
+    ? "invalid"
+    : "dependency";
+  return localizedQuestionMessage(language, kind);
 }
 
 function normalizeDelivery(delivery: { delivered: boolean; attempts: number; aborted?: boolean; status?: number } | void): PrivateComparisonJobOutcome {

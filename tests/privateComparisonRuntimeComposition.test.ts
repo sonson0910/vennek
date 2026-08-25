@@ -217,6 +217,20 @@ describe("private comparison worker composition", () => {
     expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "processed"]]);
   });
 
+  it("uses the shared Spanish terminal message for permanent private failures", async () => {
+    const send = vi.fn(async (_chatId: string, text: string) => ({ delivered: true, attempts: 1, text }));
+    const input = dependencies({
+      send,
+      extractor: { extract: vi.fn(async () => { throw new PrivateDocumentClientError("rejected", false, 422); }) },
+    });
+
+    await expect(processPrivateComparisonJob(jobWithCaption("¿Cómo comparar esta afirmación de Cardano?"), {
+      ...input,
+      encryptionKey: key,
+    })).resolves.toMatchObject({ delivered: true, terminal: true });
+    expect(send.mock.calls[0]?.[1]).toMatch(/Lo siento/);
+  });
+
   it("retries transient extractor failures without disclosure", async () => {
     const markStatus = vi.fn(async () => undefined);
     const send = vi.fn(async () => ({ delivered: true, attempts: 1 }));

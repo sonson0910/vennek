@@ -187,6 +187,15 @@ const MESSAGES: Record<QuestionLanguage, LocalizedMessages> = {
   },
 };
 
+export type LocalizedQuestionMessageKind = keyof LocalizedMessages;
+
+export function localizedQuestionMessage(
+  language: QuestionLanguage,
+  kind: LocalizedQuestionMessageKind,
+): string {
+  return MESSAGES[language][kind];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -504,25 +513,25 @@ export async function answerQuestion(
     const inputText = isPlainRecord(input) ? readOwnDataProperty(input, "text") : MISSING;
     language = detectQuestionLanguage(inputText === MISSING ? undefined : inputText);
     const question = canonicalQuestionInput(input);
-    if (!question) return MESSAGES[language].invalid;
+    if (!question) return localizedQuestionMessage(language, "invalid");
 
-    if (questionContainsWalletSecret(question)) return MESSAGES[language].secret;
-    if (!validDependencies(dependencies)) return MESSAGES[language].dependency;
+    if (questionContainsWalletSecret(question)) return localizedQuestionMessage(language, "secret");
+    if (!validDependencies(dependencies)) return localizedQuestionMessage(language, "dependency");
 
     const persistenceResult = persistenceStateFrom(await dependencies.persist(question));
     firstInteraction = persistenceResult.firstInteraction;
     persisted = true;
-    if (questionContainsWalletSecret(question)) return withNotice(MESSAGES[language].secret, firstInteraction);
+    if (questionContainsWalletSecret(question)) return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
 
-    if (persistenceResult.retryBlocked) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (persistenceResult.retryBlocked) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
 
     if (persistenceResult.existingAnswer !== undefined) {
-      if (findWalletSecret(persistenceResult.existingAnswer)) return withNotice(MESSAGES[language].secret, firstInteraction);
+      if (findWalletSecret(persistenceResult.existingAnswer)) return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
       return withNotice(persistenceResult.existingAnswer, firstInteraction);
     }
 
     if (isGreeting(question.text, language)) {
-      return withNotice(MESSAGES[language].greeting, firstInteraction);
+      return withNotice(localizedQuestionMessage(language, "greeting"), firstInteraction);
     }
 
     let retrieved = await dependencies.retrieve({
@@ -532,7 +541,7 @@ export async function answerQuestion(
     let evidence = safeSnapshot(retrieved);
     if (!evidence) {
       return withNotice(
-        Array.isArray(retrieved) ? MESSAGES[language].insufficient : MESSAGES[language].dependency,
+        Array.isArray(retrieved) ? localizedQuestionMessage(language, "insufficient") : localizedQuestionMessage(language, "dependency"),
         firstInteraction,
       );
     }
@@ -546,18 +555,18 @@ export async function answerQuestion(
         // Keep the bounded original evidence and render stale labels if discovery is unavailable.
       }
     }
-    if (evidence.length === 0) return withNotice(MESSAGES[language].insufficient, firstInteraction);
-    if (snapshotContainsWalletSecret(evidence)) return withNotice(MESSAGES[language].secret, firstInteraction);
+    if (evidence.length === 0) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
+    if (snapshotContainsWalletSecret(evidence)) return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
     let models: ModelSnapshot | undefined;
     try {
       models = snapshotModels(dependencies);
     } catch (error) {
       if (error instanceof WalletSecretConfigurationError) {
-        return withNotice(MESSAGES[language].secret, firstInteraction);
+        return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
       }
       throw error;
     }
-    if (!models) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (!models) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
     const profile = selectModelProfile({ sourceCount: evidence.length, hasConflicts: false, technical: false });
     const model = models[profile];
     const messages = buildGroundedMessages(question.text, language, evidence);
@@ -566,14 +575,14 @@ export async function answerQuestion(
     try {
       generatedOutput = await canonicalComplete(dependencies, { model, messages, temperature: 0 });
     } catch {
-      return withNotice(MESSAGES[language].insufficient, firstInteraction);
+      return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
     }
     if (findWalletSecret(generatedOutput.text) || findWalletSecret(generatedOutput.model)) {
-      return withNotice(MESSAGES[language].secret, firstInteraction);
+      return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
     }
     await recordUsage(dependencies, generatedOutput, generatedStartedAt);
     const generated = parseGeneratedAnswer(generatedOutput.text, language, evidence);
-    if (!generated) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (!generated) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
 
     const verifierStartedAt = Date.now();
     let verification: Awaited<ReturnType<typeof verifyClaims>>;
@@ -589,15 +598,15 @@ export async function answerQuestion(
         },
       );
     } catch (error) {
-      if (error instanceof WalletSecretOutputError) return withNotice(MESSAGES[language].secret, firstInteraction);
-      return withNotice(MESSAGES[language].insufficient, firstInteraction);
+      if (error instanceof WalletSecretOutputError) return withNotice(localizedQuestionMessage(language, "secret"), firstInteraction);
+      return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
     }
-    if (!verification) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (!verification) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
     const rendered = renderAnswer(verification.claims, evidence, language);
-    if (!rendered || findWalletSecret(rendered)) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (!rendered || findWalletSecret(rendered)) return withNotice(localizedQuestionMessage(language, "insufficient"), firstInteraction);
     return withNotice(rendered, firstInteraction);
   } catch {
-    const failure = MESSAGES[language].dependency;
+    const failure = localizedQuestionMessage(language, "dependency");
     return persisted ? withNotice(failure, firstInteraction) : failure;
   }
 }
