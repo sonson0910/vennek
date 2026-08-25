@@ -127,7 +127,7 @@ function inspectDocxStructure(preflight: ZipPreflight): void {
     normalizePartName(tag.attributes.get("PartName")) === "word/document.xml" &&
     tag.attributes.get("ContentType") === mainType
   );
-  if (!mainDocument || contentTypes.some((tag) => /macroenabled|template|vnd\.ms-word/iu.test(tag.attributes.get("ContentType") ?? ""))) {
+  if (!mainDocument || contentTypes.some((tag) => hasForbiddenDocxSemanticName(tag.attributes.get("ContentType")))) {
     throw new Error("Unsafe document");
   }
 
@@ -149,12 +149,17 @@ function inspectDocxStructure(preflight: ZipPreflight): void {
       const mode = relationship.attributes.get("TargetMode")?.toLowerCase() ?? "";
       if (
         mode === "external" || /^(?:https?:|file:|data:)/u.test(target) ||
-        type.endsWith("/package") || type.includes("attachedtemplate") || target.includes("attachedtemplate")
+        hasForbiddenDocxSemanticName(type) || hasForbiddenDocxSemanticName(target)
       ) {
         throw new Error("Unsafe document");
       }
     }
   }
+}
+
+function hasForbiddenDocxSemanticName(value: string | undefined): boolean {
+  const normalized = value?.toLowerCase() ?? "";
+  return /(?:macroenabled|template|vnd\.ms-word|vbaproject|activex|oleobject|afchunk|attachedtemplate)/u.test(normalized) || normalized.endsWith("/package");
 }
 
 function parseXml(xml: string, expectedRoot: string): XmlTag[] {
@@ -360,7 +365,7 @@ function hasForbiddenDocxPart(name: string): boolean {
 }
 
 async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Promise<PrivateExtractionResult> {
-  if (hasUnsafePdfMarker(buffer)) throw new Error("Unsafe document");
+  if (hasUnsafePdfSyntax(buffer)) throw new Error("Unsafe document");
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
@@ -435,10 +440,10 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
   }
 }
 
-function hasUnsafePdfMarker(buffer: Buffer): boolean {
+function hasUnsafePdfSyntax(buffer: Buffer): boolean {
   const names = pdfNameTokens(buffer);
   return [
-    "A", "AA", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
+    "__ObjStm", "ObjStm", "A", "AA", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
     "FileAttachment", "Launch", "SubmitForm", "ImportData", "GoToR", "GoToE", "GoTo", "Rendition", "Movie",
     "Sound", "ResetForm",
   ].some((name) => names.has(name));
@@ -447,15 +452,91 @@ function hasUnsafePdfMarker(buffer: Buffer): boolean {
 function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
   const source = buffer.toString("latin1");
   const names = new Set<string>();
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] !== "/" || source[index - 1] === "/") continue;
-    let end = index + 1;
-    while (end < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[end]!)) end += 1;
-    if (end === index + 1) continue;
-    names.add(decodePdfName(source.slice(index + 1, end)));
-    index = end - 1;
+  let index = 0;
+  let previousName = "";
+  while (index < source.length) {
+    const character = source[index]!;
+    if (/\s|\x00/u.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === "%") {
+      index = skipPdfComment(source, index + 1);
+      continue;
+    }
+    if (character === "(") {
+      index = skipPdfLiteralString(source, index);
+      previousName = "";
+      continue;
+    }
+    if (character === "<" && source[index + 1] !== "<") {
+      index = skipPdfHexString(source, index);
+      previousName = "";
+      continue;
+    }
+    if (character === "<" || character === ">" || character === "[" || character === "]") {
+      index += source.startsWith("<<", index) || source.startsWith(">>", index) ? 2 : 1;
+      previousName = "";
+      continue;
+    }
+    if (character === "/") {
+      let end = index + 1;
+      while (end < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[end]!)) end += 1;
+      if (end === index + 1) {
+        index += 1;
+        previousName = "";
+        continue;
+      }
+      const name = decodePdfName(source.slice(index + 1, end));
+      names.add(name);
+      if (previousName === "Type" && name === "ObjStm") names.add("__ObjStm");
+      previousName = name;
+      index = end;
+      continue;
+    }
+    const wordStart = index;
+    while (index < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[index]!)) index += 1;
+    const word = source.slice(wordStart, index);
+    if (word === "stream") {
+      index = skipPdfLineEnding(source, index);
+      const endStream = source.indexOf("endstream", index);
+      index = endStream < 0 ? source.length : endStream + "endstream".length;
+    }
+    previousName = "";
   }
   return names;
+}
+
+function skipPdfComment(source: string, index: number): number {
+  while (index < source.length && source[index] !== "\r" && source[index] !== "\n") index += 1;
+  return index;
+}
+
+function skipPdfLiteralString(source: string, index: number): number {
+  let depth = 1;
+  index += 1;
+  while (index < source.length && depth > 0) {
+    if (source[index] === "\\") index += 2;
+    else if (source[index] === "(") {
+      depth += 1;
+      index += 1;
+    } else if (source[index] === ")") {
+      depth -= 1;
+      index += 1;
+    } else index += 1;
+  }
+  return index;
+}
+
+function skipPdfHexString(source: string, index: number): number {
+  index += 1;
+  while (index < source.length && source[index] !== ">") index += 1;
+  return Math.min(index + 1, source.length);
+}
+
+function skipPdfLineEnding(source: string, index: number): number {
+  if (source[index] === "\r" && source[index + 1] === "\n") return index + 2;
+  return source[index] === "\r" || source[index] === "\n" ? index + 1 : index;
 }
 
 function decodePdfName(value: string): string {
