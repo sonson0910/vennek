@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createKnowledgePromotionHandler } from "../apps/telegram-bot/src/main.js";
 import {
   KNOWLEDGE_DAILY_CRON,
   KNOWLEDGE_DEAD_QUEUE,
@@ -35,6 +36,59 @@ function fakeBoss() {
 }
 
 describe("knowledge worker contract", () => {
+  it("uses one registry snapshot for search promotion and revalidation", async () => {
+    const registry = [{
+      id: "official-docs",
+      owner: "Cardano",
+      trustTier: "official" as const,
+      kind: "page" as const,
+      url: "https://docs.cardano.org/",
+      allowedDomains: ["docs.cardano.org"],
+      topics: ["developer"],
+      networks: ["mainnet" as const],
+      refresh: "daily" as const,
+    }];
+    const loadRegistry = vi.fn(() => registry);
+    const search = vi.fn(async () => [{ title: "Guide", content: "Cardano docs", url: "https://docs.cardano.org/guide" }]);
+    const promoteLink = vi.fn(async (input: { registry: unknown; link: unknown }) => ({ ...input.link as object, sourceId: "official-docs" }));
+    const promote = createKnowledgePromotionHandler({
+      loadRegistry,
+      search: { search },
+      promoteLink: promoteLink as never,
+      repository: {} as never,
+      embedder: {} as never,
+      embeddingModel: "cardano-embedding",
+    });
+
+    await expect(promote("Cardano guide", new AbortController().signal)).resolves.toEqual({ outcome: "promoted", promotedCount: 1 });
+    expect(loadRegistry).toHaveBeenCalledOnce();
+    expect(promoteLink).toHaveBeenCalledWith(expect.objectContaining({ registry }));
+    expect((promoteLink.mock.calls[0]?.[0] as { registry: unknown }).registry).toBe(registry);
+  });
+
+  it("rejects a promotion result without a source id generically", async () => {
+    const promote = createKnowledgePromotionHandler({
+      loadRegistry: () => [{
+        id: "official-docs",
+        owner: "Cardano",
+        trustTier: "official" as const,
+        kind: "page" as const,
+        url: "https://docs.cardano.org/",
+        allowedDomains: ["docs.cardano.org"],
+        topics: ["developer"],
+        networks: ["mainnet" as const],
+        refresh: "daily" as const,
+      }],
+      search: { search: async () => [{ title: "Guide", content: "Cardano docs", url: "https://docs.cardano.org/guide" }] },
+      promoteLink: (async (input: { link: unknown }) => input.link) as never,
+      repository: {} as never,
+      embedder: {} as never,
+      embeddingModel: "cardano-embedding",
+    });
+
+    await expect(promote("Cardano guide", new AbortController().signal)).rejects.toThrow("Live source promotion failed");
+  });
+
   it("uses a native pg-boss-safe schedule key prefix", () => {
     expect(KNOWLEDGE_SCHEDULE_PREFIX).toBe("source/");
   });

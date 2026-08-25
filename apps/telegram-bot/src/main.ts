@@ -9,13 +9,19 @@ import {
   LiteLlmClient,
   KnowledgeRepository,
   PdfExtractorClient,
+  PromotionAuditRepository,
+  SearxngClient,
   parseAgentConfig,
+  promoteDiscoveredLink,
+  promoteQuestionSources,
   retrieveEvidence,
   syncSource,
   type AgentConfig,
   type AnswerCompletionInput,
   type CompletionOutput,
   type EmbeddingProvider,
+  type PdfExtractor,
+  type PromoteDiscoveredLinkInput,
   type QuestionRetrievalInput,
 } from "@vennek/cardano-agent";
 import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
@@ -25,9 +31,11 @@ import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js
 import {
   KNOWLEDGE_BOSS_SCHEMA,
   enqueueKnowledgeSource,
+  loadKnowledgeSourceRegistry,
   loadKnowledgeSourceMap,
   registerKnowledgeWorker,
 } from "./knowledgeWorker.js";
+import { createKnowledgePromotionServer, type KnowledgePromotionServerDependencies } from "./knowledgePromotionServer.js";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { KnowledgePromotionClient } from "./knowledgePromotionClient.js";
 import { parsePromotionIdentity, parsePromotionOrigin, type PromotionIdentity } from "./knowledgePromotionProtocol.js";
@@ -77,6 +85,9 @@ export type KnowledgeRuntimeConfig = {
   liteLlmBaseUrl: URL;
   liteLlmApiKey: string;
   embeddingModel: string;
+  searxngBaseUrl: URL;
+  promotionPort: number;
+  promotionIdentity: PromotionIdentity;
   githubToken?: string;
   pdfExtractorUrl?: string;
   pdfExtractorToken?: string;
@@ -96,23 +107,59 @@ export function parseKnowledgeRuntimeConfig(env: NodeJS.ProcessEnv | Record<stri
     if (!value) throw new Error(`${name} is required`);
     return value;
   };
+  const database = parseKnowledgeDatabaseConfig(env);
+  if (env.KNOWLEDGE_PROMOTION_URL !== undefined) {
+    throw new Error("KNOWLEDGE_PROMOTION_URL is client-only");
+  }
   const baseValue = required("LITELLM_BASE_URL");
   let baseUrl: URL;
   try { baseUrl = new URL(baseValue); } catch { throw new Error("LITELLM_BASE_URL must be a valid URL"); }
   if (!["http:", "https:"].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
     throw new Error("LITELLM_BASE_URL must be an HTTP(S) URL without credentials");
   }
+  const searxngBaseUrl = parseSearxngBaseUrl(required("SEARXNG_BASE_URL"));
+  const promotionPort = parseKnowledgePromotionPort(required("KNOWLEDGE_PROMOTION_PORT"));
+  const promotionIdentity = parsePromotionIdentity(
+    required("KNOWLEDGE_PROMOTION_KEY_ID"),
+    required("KNOWLEDGE_PROMOTION_KEY"),
+  );
   const pdfUrl = env.PDF_EXTRACTOR_URL?.trim();
   const pdfToken = env.PDF_EXTRACTOR_TOKEN?.trim();
   if ((pdfUrl && !pdfToken) || (!pdfUrl && pdfToken)) throw new Error("PDF extractor URL and token must be configured together");
   return {
-    ...parseKnowledgeDatabaseConfig(env),
+    ...database,
     liteLlmBaseUrl: baseUrl,
     liteLlmApiKey: required("LITELLM_API_KEY"),
     embeddingModel: required("VENNEK_EMBEDDING_MODEL"),
+    searxngBaseUrl,
+    promotionPort,
+    promotionIdentity,
     ...(env.GITHUB_TOKEN?.trim() ? { githubToken: env.GITHUB_TOKEN.trim() } : {}),
     ...(pdfUrl && pdfToken ? { pdfExtractorUrl: pdfUrl, pdfExtractorToken: pdfToken } : {}),
   };
+}
+
+function parseSearxngBaseUrl(value: string): URL {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("SEARXNG_BASE_URL must be a valid URL"); }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("SEARXNG_BASE_URL must be an HTTP(S) origin without credentials or path");
+  }
+  return url;
+}
+
+function parseKnowledgePromotionPort(value: string): number {
+  if (!/^[1-9][0-9]{0,4}$/.test(value)) throw new Error("KNOWLEDGE_PROMOTION_PORT must be a canonical integer from 1 to 65535");
+  const port = Number(value);
+  if (port > 65_535) throw new Error("KNOWLEDGE_PROMOTION_PORT must be a canonical integer from 1 to 65535");
+  return port;
 }
 
 async function runKnowledgeSync(sourceId: string): Promise<void> {
@@ -131,23 +178,86 @@ async function runKnowledgeSync(sourceId: string): Promise<void> {
   }
 }
 
+export type KnowledgePromotionHandlerInput = Readonly<{
+  search: Pick<SearxngClient, "search">;
+  repository: PromoteDiscoveredLinkInput["repository"];
+  embedder: PromoteDiscoveredLinkInput["embedder"];
+  embeddingModel: string;
+  loadRegistry?: () => unknown;
+  promoteLink?: (input: PromoteDiscoveredLinkInput) => Promise<unknown>;
+  pdfExtractor?: PdfExtractor;
+}>;
+
+export function createKnowledgePromotionHandler(
+  input: KnowledgePromotionHandlerInput,
+): KnowledgePromotionServerDependencies["promote"] {
+  const loadRegistry = input.loadRegistry ?? loadKnowledgeSourceRegistry;
+  const promoteLink = input.promoteLink ?? promoteDiscoveredLink;
+  return (question, signal) => {
+    const registry = loadRegistry();
+    return promoteQuestionSources({
+      question,
+      registry,
+      search: input.search,
+      signal,
+      promote: async (link, promotionSignal, deadlineAt) => {
+        const promoted = await promoteLink({
+          link,
+          registry,
+          repository: input.repository,
+          embedder: input.embedder,
+          embeddingModel: input.embeddingModel,
+          signal: promotionSignal,
+          deadlineAt,
+          ...(input.pdfExtractor ? { pdfExtractor: input.pdfExtractor } : {}),
+        });
+        if (!hasSourceId(promoted)) throw new Error("Live source promotion failed");
+        return promoted;
+      },
+    });
+  };
+}
+
+function hasSourceId(value: unknown): value is { sourceId: string } {
+  return typeof value === "object" && value !== null && "sourceId" in value &&
+    typeof (value as { sourceId?: unknown }).sourceId === "string" &&
+    (value as { sourceId: string }).sourceId.length > 0;
+}
+
 async function runKnowledgeWorker(): Promise<void> {
   const config = parseKnowledgeRuntimeConfig();
   const db = createDatabase(config.databaseUrl);
   const boss = createRuntimePgBoss(db, KNOWLEDGE_BOSS_SCHEMA);
   const embedder = new EmbeddingClient(config.liteLlmBaseUrl, config.liteLlmApiKey, config.embeddingModel);
   const repository = new KnowledgeRepository(db);
+  const search = new SearxngClient(config.searxngBaseUrl);
+  const audit = new PromotionAuditRepository(db);
   const pdfExtractor = config.pdfExtractorUrl && config.pdfExtractorToken
     ? new PdfExtractorClient({ url: config.pdfExtractorUrl, token: config.pdfExtractorToken })
     : undefined;
+  let promotionServer: ReturnType<typeof createKnowledgePromotionServer> | undefined;
   try {
+    promotionServer = createKnowledgePromotionServer({
+      identity: config.promotionIdentity,
+      audit,
+      promote: createKnowledgePromotionHandler({
+        search,
+        repository,
+        embedder,
+        embeddingModel: config.embeddingModel,
+        ...(pdfExtractor ? { pdfExtractor } : {}),
+      }),
+    });
     await boss.start();
+    await audit.prune(new Date()).catch(() => undefined);
+    await listen(promotionServer, config.promotionPort);
     await registerKnowledgeWorker({
       boss,
       sync: (entry, signal) => syncSource({ entry, repository, embedder, embeddingModel: config.embeddingModel, signal, ...(config.githubToken ? { githubToken: config.githubToken } : {}), ...(pdfExtractor ? { pdfExtractor } : {}) }),
     });
     await waitForSignal();
   } finally {
+    if (promotionServer) await closeServer(promotionServer);
     await boss.stop().catch(() => undefined);
     await db.end().catch(() => undefined);
   }
