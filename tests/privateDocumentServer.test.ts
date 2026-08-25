@@ -5,6 +5,10 @@ import {
   createPrivateDocumentServer,
   type PrivateDocumentWorkerLike,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js";
+import {
+  PRIVATE_DOCUMENT_MAX_BYTES,
+  PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
+} from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
 
 const token = Buffer.alloc(32, 9).toString("base64url");
 const body = Buffer.from("Cardano uses proof of stake.");
@@ -14,13 +18,17 @@ class FakeWorker extends EventEmitter implements PrivateDocumentWorkerLike {
   transferred?: ArrayBuffer;
   received?: { fileName: string; mime: string };
 
+  constructor(private readonly result: unknown = { type: "text", title: "claim", text: "Cardano" }) {
+    super();
+  }
+
   postMessage(message: unknown, transferList?: readonly ArrayBuffer[]): void {
     const value = message as { bytes?: ArrayBuffer; metadata?: { fileName: string; mime: string } };
     this.transferred = transferList?.[0];
     this.received = value.metadata;
     setImmediate(() => this.emit("message", {
       ok: true,
-      result: { type: "text", title: "claim", text: "Cardano" },
+      result: this.result,
     }));
   }
 
@@ -46,14 +54,14 @@ async function withServer(
   }
 }
 
-function request(port: number, options: { token?: string; path?: string; body?: Buffer; headers?: Record<string, string> } = {}) {
+function request(port: number, options: { token?: string; path?: string; method?: string; body?: Buffer; headers?: Record<string, string> } = {}) {
   const requestBody = options.body ?? body;
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const request = http.request({
       host: "127.0.0.1",
       port,
       path: options.path ?? "/v1/extract/private-document",
-      method: "POST",
+      method: options.method ?? "POST",
       headers: {
         authorization: `Bearer ${options.token ?? token}`,
         "content-type": "application/octet-stream",
@@ -87,11 +95,16 @@ describe("private document server", () => {
 
   it("rejects the wrong endpoint, token, content type, transfer encoding, and length", async () => {
     await withServer(() => new FakeWorker(), async (port) => {
+      expect((await request(port, { method: "GET" })).status).not.toBe(200);
       expect((await request(port, { path: "/v1/extract/private-document/" })).status).not.toBe(200);
       expect((await request(port, { token: "bad" })).status).toBe(401);
       expect((await request(port, { headers: { "content-type": "application/json" } })).status).toBe(415);
       expect((await request(port, { headers: { "transfer-encoding": "chunked" } })).status).not.toBe(200);
       expect((await request(port, { body: Buffer.alloc(0) })).status).toBe(413);
+      expect((await request(port, { headers: { "content-length": "01" } })).status).toBe(413);
+      expect((await request(port, { headers: { "content-length": String(PRIVATE_DOCUMENT_MAX_BYTES + 1) } })).status).toBe(413);
+      expect((await request(port, { headers: { "x-private-document-file-name": Buffer.from("a".repeat(1025)).toString("base64url") } })).status).toBe(422);
+      expect((await request(port, { headers: { "x-private-document-mime": "%" } })).status).toBe(422);
       const oversized = await request(port, { headers: { "content-length": String(body.byteLength + 1) } });
       expect(oversized.status).not.toBe(200);
       expect(oversized.body).not.toContain(token);
@@ -112,5 +125,82 @@ describe("private document server", () => {
       expect((await request(port)).status).toBe(429);
       expect((await first).status).toBe(504);
     }, 25);
+  });
+
+  it("terminates the worker and releases the global slot when the caller cancels", async () => {
+    class HangingWorker extends EventEmitter implements PrivateDocumentWorkerLike {
+      terminated = false;
+      postMessage(): void {}
+      terminate(): Promise<number> {
+        this.terminated = true;
+        this.emit("exit", 0);
+        return Promise.resolve(0);
+      }
+    }
+    let workers = 0;
+    let hangingWorker!: HangingWorker;
+    await withServer(() => workers++ === 0 ? (hangingWorker = new HangingWorker()) : new FakeWorker(), async (port) => {
+      await new Promise<void>((resolve) => {
+        const requestToAbort = http.request({
+          host: "127.0.0.1",
+          port,
+          path: "/v1/extract/private-document",
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/octet-stream",
+            "content-length": body.byteLength,
+            "x-private-document-file-name": Buffer.from(metadata.fileName).toString("base64url"),
+            "x-private-document-mime": Buffer.from(metadata.mime).toString("base64url"),
+          },
+        });
+        requestToAbort.on("error", () => resolve());
+        requestToAbort.end(body);
+        setTimeout(() => requestToAbort.destroy(), 10);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(hangingWorker.terminated).toBe(true);
+      expect((await request(port)).status).toBe(200);
+    }, 100);
+  });
+
+  it("shares the active parser slot across server instances", async () => {
+    class HangingWorker extends EventEmitter implements PrivateDocumentWorkerLike {
+      postMessage(): void {}
+      terminate(): Promise<number> {
+        this.emit("exit", 0);
+        return Promise.resolve(0);
+      }
+    }
+    const first = createPrivateDocumentServer({ token, workerFactory: () => new HangingWorker(), timeoutMs: 25 });
+    const second = createPrivateDocumentServer({ token, workerFactory: () => new FakeWorker(), timeoutMs: 25 });
+    await first.listen(0);
+    await second.listen(0);
+    const firstAddress = first.server.address();
+    const secondAddress = second.server.address();
+    if (!firstAddress || typeof firstAddress === "string" || !secondAddress || typeof secondAddress === "string") throw new Error("server did not bind");
+    try {
+      const extraction = request(firstAddress.port);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect((await request(secondAddress.port)).status).toBe(429);
+      expect((await extraction).status).toBe(504);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  it("rejects invalid worker output and oversized JSON responses generically", async () => {
+    await withServer(() => new FakeWorker({ type: "invalid", title: "claim", text: "Cardano" }), async (port) => {
+      const response = await request(port);
+      expect(response.status).toBe(503);
+      expect(response.body).toBe('{"error":"Private document extraction unavailable"}');
+    });
+    await withServer(() => new FakeWorker({ type: "text", title: "claim", text: "\0".repeat(2_700_000) }), async (port) => {
+      const response = await request(port);
+      expect(response.status).toBe(503);
+      expect(response.body).toBe('{"error":"Private document extraction unavailable"}');
+    });
+    expect(PRIVATE_DOCUMENT_MAX_TEXT_BYTES).toBe(8_000_000);
   });
 });

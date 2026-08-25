@@ -108,7 +108,7 @@ export class PrivateDocumentClient {
             return;
           }
           try {
-            const value = JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+            const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total)));
             finish(undefined, validatePrivateExtractionResult(value));
           } catch {
             finish(new Error("Private extractor response rejected"));

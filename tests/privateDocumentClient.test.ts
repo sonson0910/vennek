@@ -1,9 +1,11 @@
 import * as http from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PrivateDocumentClient,
   createPrivateDocumentClient,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentClient.js";
+import { PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES } from "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js";
+import { PRIVATE_DOCUMENT_TIMEOUT_MS } from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
 
 const token = Buffer.alloc(32, 8).toString("base64url");
 const metadata = { fileName: "claim 😀.txt", mime: "text/plain" };
@@ -75,6 +77,49 @@ describe("private document client", () => {
       await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json", "content-length": PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES + 1 });
+      response.end();
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      const payload = Buffer.from("{bad");
+      response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ type: "invalid", title: "claim", text: "Cardano" }));
+      response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      const prefix = Buffer.from('{"type":"text","title":"claim","text":"');
+      const suffix = Buffer.from('"}');
+      const payload = Buffer.concat([prefix, Buffer.from([0xff]), suffix]);
+      response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
+      response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength + 1 });
+      response.end(payload);
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
+      response.writeHead(200, { "content-type": "application/json", "content-length": "01" });
+      response.end(payload);
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
       setTimeout(() => response.end(JSON.stringify({ type: "text", title: "claim", text: "Cardano" })), 100);
     }, async (url) => {
       const controller = new AbortController();
@@ -82,5 +127,20 @@ describe("private document client", () => {
       controller.abort();
       await expect(extraction).rejects.toThrow(/private extractor/i);
     });
+  });
+
+  it("times out a response at the fixed request deadline", async () => {
+    const timeoutController = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    try {
+      await withServer((_request, _response) => undefined, async (url) => {
+        const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata);
+        expect(timeout).toHaveBeenCalledWith(PRIVATE_DOCUMENT_TIMEOUT_MS);
+        timeoutController.abort();
+        await expect(extraction).rejects.toThrow(/private extractor/i);
+      });
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });

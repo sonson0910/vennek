@@ -41,6 +41,7 @@ const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 const MAX_HEADER_SIZE = 16 * 1024;
 const MAX_HEADERS_COUNT = 64;
+let activePrivateDocumentExtraction = false;
 
 class PrivateDocumentServiceError extends Error {
   constructor(readonly statusCode: number, message: string) {
@@ -66,7 +67,6 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
     throw new Error("Private extractor timeout is invalid");
   }
   const workerFactory = options.workerFactory ?? defaultWorkerFactory;
-  let active = false;
 
   const server = http.createServer({
     headersTimeout: 10_000,
@@ -116,12 +116,12 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       sendError(response, 413, "Private document request rejected");
       return;
     }
-    if (active) {
+    if (activePrivateDocumentExtraction) {
       sendError(response, 429, "Private document extraction unavailable");
       return;
     }
 
-    active = true;
+    activePrivateDocumentExtraction = true;
     const abortController = new AbortController();
     const deadlineAt = Date.now() + timeoutMs;
     const deadlineTimer = setTimeout(() => abortController.abort(new PrivateDocumentServiceError(504, "Private document extraction timed out")), timeoutMs);
@@ -158,7 +158,7 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       request.off("aborted", abortRequest);
       response.off("close", abortResponse);
       clearTimeout(deadlineTimer);
-      active = false;
+      activePrivateDocumentExtraction = false;
     }
   }
 
