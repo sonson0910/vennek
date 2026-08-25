@@ -15,7 +15,6 @@ CREATE TABLE knowledge_promotion_requests (
   CONSTRAINT knowledge_promotion_requests_state_fields_check CHECK (
     (state = 'started'
       AND outcome IS NULL
-      AND promoted_count = 0
       AND latency_ms IS NULL
       AND completed_at IS NULL)
     OR

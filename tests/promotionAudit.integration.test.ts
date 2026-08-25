@@ -8,9 +8,7 @@ import {
 } from "@vennek/cardano-agent";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
-if (!databaseUrl) throw new Error("TEST_DATABASE_URL is required for promotion audit integration tests.");
-
-const db = createDatabase(databaseUrl);
+const db = databaseUrl ? createDatabase(databaseUrl) : undefined;
 const ownedRequestIds: string[] = [];
 const ownedCallers: string[] = [];
 
@@ -37,7 +35,7 @@ async function insertTerminalRows(
     values.push(row.requestId, row.callerId, row.nonceDigest, row.receivedAt, row.completedAt);
     return `($${offset + 1}, $${offset + 2}, $${offset + 3}, 'succeeded', 'no_match', 0, 0, $${offset + 4}, $${offset + 5})`;
   });
-  await db.query(
+  await db!.query(
     `INSERT INTO knowledge_promotion_requests
       (request_id, caller_id, nonce_digest, state, outcome, promoted_count, latency_ms, received_at, completed_at)
      VALUES ${placeholders.join(", ")}`,
@@ -46,14 +44,15 @@ async function insertTerminalRows(
 }
 
 afterAll(async () => {
+  if (!db) return;
   await db.query("DELETE FROM knowledge_promotion_requests WHERE request_id = ANY($1::uuid[])", [ownedRequestIds]).catch(() => undefined);
   await db.end();
 });
 
-describe("durable promotion audit", () => {
+describe.skipIf(!databaseUrl)("durable promotion audit", () => {
   it("allows exactly one winner among eight concurrent independent claims", async () => {
     const input = request();
-    const pools = Array.from({ length: 8 }, () => createDatabase(databaseUrl));
+    const pools = Array.from({ length: 8 }, () => createDatabase(databaseUrl!));
     try {
       const results = await Promise.all(
         pools.map((pool) => new PromotionAuditRepository(pool).claim(input)),
@@ -66,7 +65,7 @@ describe("durable promotion audit", () => {
   });
 
   it("replays a completed request as completed with the original safe outcome", async () => {
-    const repository = new PromotionAuditRepository(db);
+    const repository = new PromotionAuditRepository(db!);
     const input = request();
     await expect(repository.claim(input)).resolves.toEqual({ kind: "claimed" });
     await expect(repository.complete(input.requestId, {
@@ -76,7 +75,7 @@ describe("durable promotion audit", () => {
     })).resolves.toBeUndefined();
     await expect(repository.claim(input)).resolves.toEqual({ kind: "completed", outcome: "promoted" });
 
-    const row = await db.query(
+    const row = await db!.query(
       "SELECT state, outcome, promoted_count, latency_ms, completed_at FROM knowledge_promotion_requests WHERE request_id = $1",
       [input.requestId],
     );
@@ -90,7 +89,7 @@ describe("durable promotion audit", () => {
   });
 
   it("returns conflict for one-sided identity matches and cross collisions", async () => {
-    const repository = new PromotionAuditRepository(db);
+    const repository = new PromotionAuditRepository(db!);
     const first = request();
     const second = request();
     await expect(repository.claim(first)).resolves.toEqual({ kind: "claimed" });
@@ -106,7 +105,7 @@ describe("durable promotion audit", () => {
   });
 
   it("keeps an abandoned started claim running and allows only one completion", async () => {
-    const repository = new PromotionAuditRepository(db);
+    const repository = new PromotionAuditRepository(db!);
     const input = request();
     await expect(repository.claim(input)).resolves.toEqual({ kind: "claimed" });
     await expect(repository.claim(input)).resolves.toEqual({ kind: "running" });
@@ -136,7 +135,7 @@ describe("durable promotion audit", () => {
     ];
     for (const row of invalidRows) {
       const input = request();
-      await expect(db.query(
+      await expect(db!.query(
         `INSERT INTO knowledge_promotion_requests
           (request_id, caller_id, nonce_digest, state, outcome, promoted_count, latency_ms, completed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, now())`,
@@ -145,19 +144,19 @@ describe("durable promotion audit", () => {
     }
 
     const invalidDigest = request();
-    await expect(db.query(
+    await expect(db!.query(
       `INSERT INTO knowledge_promotion_requests (request_id, caller_id, nonce_digest, state)
        VALUES ($1, $2, $3, 'started')`,
       [invalidDigest.requestId, invalidDigest.callerId, Buffer.alloc(31)],
     )).rejects.toThrow(/digest|octet/i);
     const invalidCaller = request();
-    await expect(db.query(
+    await expect(db!.query(
       `INSERT INTO knowledge_promotion_requests (request_id, caller_id, nonce_digest, state)
        VALUES ($1, $2, $3, 'started')`,
       [invalidCaller.requestId, "Bad Caller", invalidCaller.nonceDigest],
     )).rejects.toThrow(/caller|check/i);
 
-    const columns = await db.query<{ column_name: string }>(
+    const columns = await db!.query<{ column_name: string }>(
       `SELECT column_name
        FROM information_schema.columns
        WHERE table_schema = current_schema() AND table_name = 'knowledge_promotion_requests'
@@ -170,7 +169,7 @@ describe("durable promotion audit", () => {
     expect(columns.rows.map((row) => row.column_name)).not.toEqual(expect.arrayContaining([
       "question", "body", "hash", "url", "source", "content", "error", "telegram_user_id", "telegram_chat_id",
     ]));
-    const sequences = await db.query(
+    const sequences = await db!.query(
       "SELECT 1 FROM pg_class WHERE relname LIKE 'knowledge_promotion_requests%seq%'",
     );
     expect(sequences.rows).toHaveLength(0);
@@ -183,23 +182,28 @@ describe("durable promotion audit", () => {
     const oldRows = Array.from({ length: 1_005 }, (_, index) => {
       const requestId = randomUUID();
       ownedRequestIds.push(requestId);
-      return { requestId, callerId: `prune-${process.pid}`, nonceDigest: digestFor(index + 10_000), receivedAt: oldDate, completedAt: oldDate };
+      const receivedAt = new Date(oldDate.getTime() + index * 1_000);
+      return { requestId, callerId: `prune-${process.pid}`, nonceDigest: digestFor(index + 10_000), receivedAt, completedAt: receivedAt };
     });
     const recent = request(`prune-${process.pid}-recent`);
     await insertTerminalRows(oldRows);
     await insertTerminalRows([{ requestId: recent.requestId, callerId: recent.callerId, nonceDigest: recent.nonceDigest, receivedAt: recentDate, completedAt: recentDate }]);
 
-    const deleted = await new PromotionAuditRepository(db).prune(now);
+    const deleted = await new PromotionAuditRepository(db!).prune(now);
     expect(deleted).toBe(1_000);
-    const remaining = await db.query<{ old_count: string; recent_count: string }>(
-      `SELECT
-         count(*) FILTER (WHERE received_at < $1::timestamptz - interval '30 days')::text AS old_count,
-         count(*) FILTER (WHERE request_id = $2)::text AS recent_count
+    const remainingOld = await db!.query<{ request_id: string }>(
+      `SELECT request_id::text
        FROM knowledge_promotion_requests
-       WHERE request_id = ANY($3::uuid[]) OR request_id = $2`,
-      [now, recent.requestId, oldRows.map((row) => row.requestId)],
+       WHERE request_id = ANY($1::uuid[])
+       ORDER BY received_at ASC`,
+      [oldRows.map((row) => row.requestId)],
     );
-    expect(remaining.rows[0]).toEqual({ old_count: "5", recent_count: "1" });
+    expect(remainingOld.rows.map((row) => row.request_id)).toEqual(oldRows.slice(1_000).map((row) => row.requestId));
+    const recentCount = await db!.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM knowledge_promotion_requests WHERE request_id = $1",
+      [recent.requestId],
+    );
+    expect(recentCount.rows[0]?.count).toBe("1");
   });
 
   it("rejects malformed inputs before connecting to the database", async () => {
