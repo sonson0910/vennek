@@ -20,6 +20,7 @@ const migrationFiles = (await readdir(migrationDirectory))
 
 const db = createDatabase(databaseUrl);
 let boss: PgBoss | undefined;
+let knowledgeBoss: PgBoss | undefined;
 let client: PoolClient | undefined;
 let lockAcquired = false;
 
@@ -61,7 +62,23 @@ try {
   await boss.start();
   await boss.createQueue("telegram-answer");
   await boss.createQueue("conversation-partition-maintenance");
+  knowledgeBoss = new PgBoss({ connectionString: databaseUrl, schema: "knowledge_boss" });
+  await knowledgeBoss.start();
+  await knowledgeBoss.createQueue("sync-cardano-source-dead", {
+    policy: "standard",
+    expireInSeconds: 300,
+  });
+  await knowledgeBoss.createQueue("sync-cardano-source", {
+    policy: "exclusive",
+    retryLimit: 2,
+    retryDelay: 60,
+    retryBackoff: true,
+    retryDelayMax: 900,
+    expireInSeconds: 300,
+    deadLetter: "sync-cardano-source-dead",
+  });
 } finally {
+  await knowledgeBoss?.stop().catch(() => undefined);
   await boss?.stop().catch(() => undefined);
   if (client) {
     if (lockAcquired) {

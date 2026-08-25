@@ -6,10 +6,10 @@ import {
 } from "@vennek/cardano-governance-skills";
 import {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  validateSourceRegistryEnvelope,
   urlMatchesSourceScope,
   validateSourceRegistry,
-  type SourceRegistryEntry,
-  type TrustTier
+  type SourceRegistryEntry
 } from "@vennek/cardano-agent";
 
 const CONFIG_URL = new URL("../config/cardano-sources.json", import.meta.url);
@@ -49,10 +49,7 @@ const SUPPORTED_CONTENT_TYPES = new Set([
   "text/xml"
 ]);
 
-type SourceConfig = {
-  official: unknown[];
-  community: unknown[];
-};
+type SourceConfig = { official: unknown[]; community: unknown[] };
 
 export type LiveCheckResult = {
   id: string;
@@ -68,18 +65,10 @@ export function readSourceConfig(): SourceConfig {
   } catch (error) {
     throw new Error(`Unable to parse source registry JSON: ${error instanceof Error ? error.message : "invalid JSON"}`);
   }
-  if (!isRecord(parsed) || Object.keys(parsed).some((key) => key !== "official" && key !== "community")) {
-    throw new Error("Source registry config must contain only official and community sections.");
-  }
-  if (!Array.isArray(parsed.official) || !Array.isArray(parsed.community)) {
-    throw new Error("Source registry config sections must be arrays.");
-  }
-  return { official: parsed.official, community: parsed.community };
+  return validateSourceRegistryEnvelope(parsed);
 }
 
 export function validateSourceConfig(config: SourceConfig): SourceRegistryEntry[] {
-  validateSectionTier(config.official, "official");
-  validateSectionTier(config.community, "community");
   const entries = validateSourceRegistry([...config.official, ...config.community]);
   validateRequiredRefreshPolicies(entries);
   return entries;
@@ -94,14 +83,6 @@ export function validateRequiredRefreshPolicies(entries: SourceRegistryEntry[]):
     }
     if (entry.trustTier !== "official" || entry.refresh !== refresh) {
       throw new Error(`Required source ${id} must be official and refresh ${refresh}.`);
-    }
-  }
-}
-
-function validateSectionTier(entries: unknown[], tier: TrustTier): void {
-  for (const [index, entry] of entries.entries()) {
-    if (!isRecord(entry) || entry.trustTier !== tier) {
-      throw new Error(`${tier} source entry ${index} must have trustTier ${tier}.`);
     }
   }
 }
@@ -187,6 +168,10 @@ export function liveValidationSucceeded(results: LiveCheckResult[]): boolean {
   return results.length > 0 && results.every((result) => result.ok);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function requestLive(
   entry: SourceRegistryEntry,
   method: "HEAD" | "GET",
@@ -235,10 +220,6 @@ function safeReason(error: unknown): string {
     return "HTTPS is required";
   }
   return "network or URL validation error";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function printRequiredCoverage(config: SourceConfig): string[] {

@@ -40,6 +40,18 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  provision-knowledge-role:
+    image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
+    environment:
+      DATABASE_OWNER_URL: ${DATABASE_OWNER_URL:?DATABASE_OWNER_URL is required}
+      VENNEK_KNOWLEDGE_DB_USER: ${VENNEK_KNOWLEDGE_DB_USER:?VENNEK_KNOWLEDGE_DB_USER is required}
+      VENNEK_KNOWLEDGE_DB_PASSWORD: ${VENNEK_KNOWLEDGE_DB_PASSWORD:?VENNEK_KNOWLEDGE_DB_PASSWORD is required}
+    command: ["npm", "run", "provision:knowledge-role"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   litellm:
     image: ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -96,11 +108,27 @@ services:
       VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
       VENNEK_EMBEDDING_MODEL: ${VENNEK_EMBEDDING_MODEL:?VENNEK_EMBEDDING_MODEL is required}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
-      PDF_EXTRACTOR_URL: http://pdf-extractor:8081
-      PDF_EXTRACTOR_TOKEN: ${PDF_EXTRACTOR_TOKEN:?PDF_EXTRACTOR_TOKEN is required}
     command: ["node", "apps/telegram-bot/dist/main.js", "--worker"]
     depends_on:
       provision-app-role:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_started
+    restart: unless-stopped
+
+  knowledge-worker:
+    image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
+    environment:
+      DATABASE_KNOWLEDGE_URL: ${DATABASE_KNOWLEDGE_APP_URL:?DATABASE_KNOWLEDGE_APP_URL is required}
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:?LITELLM_API_KEY is required}
+      VENNEK_EMBEDDING_MODEL: ${VENNEK_EMBEDDING_MODEL:?VENNEK_EMBEDDING_MODEL is required}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      PDF_EXTRACTOR_URL: http://pdf-extractor:8081
+      PDF_EXTRACTOR_TOKEN: ${PDF_EXTRACTOR_TOKEN:?PDF_EXTRACTOR_TOKEN is required}
+    command: ["node", "apps/telegram-bot/dist/main.js", "--knowledge-worker"]
+    depends_on:
+      provision-knowledge-role:
         condition: service_completed_successfully
       litellm:
         condition: service_started

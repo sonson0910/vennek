@@ -46,8 +46,10 @@ export type {
   RefreshRate,
   SourceKind,
   SourceRegistryEntry,
+  SourceRegistryEnvelope,
   TrustTier,
 } from "./knowledge/sourceRegistry.js";
+export { validateSourceRegistryEnvelope } from "./knowledge/sourceRegistry.js";
 
 export { extractContent } from "./knowledge/extractContent.js";
 export type { ExtractContentInput, ExtractedContent, PdfExtractor } from "./knowledge/extractContent.js";
@@ -77,6 +79,8 @@ export type {
   CrawlSourceResult,
   CrawledDocument,
 } from "./knowledge/crawlSource.js";
+export { syncSource } from "./knowledge/syncSource.js";
+export type { SyncSourceDependencies, SyncSourceInput } from "./knowledge/syncSource.js";
 export { indexDocument, indexCrawlResult } from "./knowledge/indexDocument.js";
 export type {
   EmbeddingProvider,

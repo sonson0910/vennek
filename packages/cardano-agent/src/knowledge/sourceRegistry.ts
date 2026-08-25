@@ -26,6 +26,11 @@ export type SourceRegistryEntry = SourceRegistryEntryBase & (
   | { kind: Exclude<SourceKind, "github">; github?: never }
 );
 
+export type SourceRegistryEnvelope = {
+  official: unknown[];
+  community: unknown[];
+};
+
 export const REQUIRED_OFFICIAL_SOURCE_IDS = [
   "cardano-org",
   "cardano-docs",
@@ -92,6 +97,24 @@ export function validateSourceRegistry(input: unknown): SourceRegistryEntry[] {
     ids.add(entry.id);
     return entry;
   });
+}
+
+/** Validate the on-disk registry envelope before flattening its tiered entries. */
+export function validateSourceRegistryEnvelope(input: unknown): SourceRegistryEnvelope {
+  if (!isRecord(input) || Object.keys(input).some((key) => key !== "official" && key !== "community")) {
+    throw new Error("Source registry config must contain only official and community sections.");
+  }
+  if (!Array.isArray(input.official) || !Array.isArray(input.community)) {
+    throw new Error("Source registry config sections must be arrays.");
+  }
+  for (const [tier, entries] of [["official", input.official], ["community", input.community]] as const) {
+    for (const [index, entry] of entries.entries()) {
+      if (!isRecord(entry) || entry.trustTier !== tier) {
+        throw new Error(`${tier} source entry ${index} must have trustTier ${tier}.`);
+      }
+    }
+  }
+  return { official: input.official, community: input.community };
 }
 
 function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {

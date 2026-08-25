@@ -5,6 +5,7 @@ COPY package.json package-lock.json tsconfig.json vitest.config.ts ./
 COPY apps ./apps
 COPY packages ./packages
 COPY scripts ./scripts
+COPY config/cardano-sources.json ./config/cardano-sources.json
 RUN npm ci
 RUN npm run build
 
@@ -17,5 +18,6 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/apps ./apps
 COPY --from=build --chown=node:node /app/packages ./packages
 COPY --from=build --chown=node:node /app/scripts ./scripts
+COPY --from=build --chown=node:node /app/config/cardano-sources.json ./config/cardano-sources.json
 USER node
 CMD ["node", "apps/telegram-bot/dist/main.js", "--health"]

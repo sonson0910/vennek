@@ -7,8 +7,11 @@ import {
   EmbeddingClient,
   ensureConversationPartitions,
   LiteLlmClient,
+  KnowledgeRepository,
+  PdfExtractorClient,
   parseAgentConfig,
   retrieveEvidence,
+  syncSource,
   type AgentConfig,
   type AnswerCompletionInput,
   type CompletionOutput,
@@ -18,6 +21,12 @@ import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerD
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
 import { createTelegramApi, deliverMessage, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js";
+import {
+  KNOWLEDGE_BOSS_SCHEMA,
+  enqueueKnowledgeSource,
+  loadKnowledgeSourceMap,
+  registerKnowledgeWorker,
+} from "./knowledgeWorker.js";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 
 const TELEGRAM_QUEUE = "telegram-answer";
@@ -26,6 +35,9 @@ const SERVER_DRAIN_TIMEOUT_MS = 15_000;
 
 export async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  const knowledgeMode = parseKnowledgeMode(args);
+  if (knowledgeMode === "worker") return runKnowledgeWorker();
+  if (knowledgeMode?.startsWith("sync:")) return runKnowledgeSync(knowledgeMode.slice("sync:".length));
   if (args.includes("--health")) {
     const { validateRuntimeState } = await import("./runtimeState.js");
     const state = validateRuntimeState(process.env.VENNEK_DATA_DIR);
@@ -42,6 +54,99 @@ export async function main(): Promise<void> {
     console.log(await agent.answer(input, runtimeContext()));
   } finally {
     await agent.close();
+  }
+}
+
+export function parseKnowledgeMode(args: readonly string[]): "worker" | `sync:${string}` | undefined {
+  const worker = args.includes("--knowledge-worker");
+  const syncIndex = args.indexOf("--sync-source");
+  if (!worker && syncIndex < 0) return undefined;
+  if (worker && syncIndex >= 0) throw new Error("--knowledge-worker and --sync-source are mutually exclusive.");
+  if (worker && args.length !== 1) throw new Error("--knowledge-worker does not accept additional arguments.");
+  if (syncIndex >= 0 && (args.length !== 2 || syncIndex !== 0 || !args[1])) {
+    throw new Error("--sync-source requires exactly one source id.");
+  }
+  return worker ? "worker" : `sync:${args[1]!}`;
+}
+
+export type KnowledgeRuntimeConfig = {
+  databaseUrl: string;
+  liteLlmBaseUrl: URL;
+  liteLlmApiKey: string;
+  embeddingModel: string;
+  githubToken?: string;
+  pdfExtractorUrl?: string;
+  pdfExtractorToken?: string;
+};
+
+export type KnowledgeDatabaseConfig = { databaseUrl: string };
+
+export function parseKnowledgeDatabaseConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): KnowledgeDatabaseConfig {
+  const databaseUrl = env.DATABASE_KNOWLEDGE_URL?.trim();
+  if (!databaseUrl) throw new Error("DATABASE_KNOWLEDGE_URL is required");
+  return { databaseUrl };
+}
+
+export function parseKnowledgeRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): KnowledgeRuntimeConfig {
+  const required = (name: string): string => {
+    const value = env[name]?.trim();
+    if (!value) throw new Error(`${name} is required`);
+    return value;
+  };
+  const baseValue = required("LITELLM_BASE_URL");
+  let baseUrl: URL;
+  try { baseUrl = new URL(baseValue); } catch { throw new Error("LITELLM_BASE_URL must be a valid URL"); }
+  if (!["http:", "https:"].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
+    throw new Error("LITELLM_BASE_URL must be an HTTP(S) URL without credentials");
+  }
+  const pdfUrl = env.PDF_EXTRACTOR_URL?.trim();
+  const pdfToken = env.PDF_EXTRACTOR_TOKEN?.trim();
+  if ((pdfUrl && !pdfToken) || (!pdfUrl && pdfToken)) throw new Error("PDF extractor URL and token must be configured together");
+  return {
+    ...parseKnowledgeDatabaseConfig(env),
+    liteLlmBaseUrl: baseUrl,
+    liteLlmApiKey: required("LITELLM_API_KEY"),
+    embeddingModel: required("VENNEK_EMBEDDING_MODEL"),
+    ...(env.GITHUB_TOKEN?.trim() ? { githubToken: env.GITHUB_TOKEN.trim() } : {}),
+    ...(pdfUrl && pdfToken ? { pdfExtractorUrl: pdfUrl, pdfExtractorToken: pdfToken } : {}),
+  };
+}
+
+async function runKnowledgeSync(sourceId: string): Promise<void> {
+  const config = parseKnowledgeDatabaseConfig();
+  const entries = loadKnowledgeSourceMap();
+  if (!entries.has(sourceId)) throw new Error("Unknown Cardano source id.");
+  const db = createDatabase(config.databaseUrl);
+  const boss = createRuntimePgBoss(db, KNOWLEDGE_BOSS_SCHEMA);
+  try {
+    await boss.start();
+    const jobId = await enqueueKnowledgeSource(boss, sourceId);
+    console.log(jobId);
+  } finally {
+    await boss.stop().catch(() => undefined);
+    await db.end();
+  }
+}
+
+async function runKnowledgeWorker(): Promise<void> {
+  const config = parseKnowledgeRuntimeConfig();
+  const db = createDatabase(config.databaseUrl);
+  const boss = createRuntimePgBoss(db, KNOWLEDGE_BOSS_SCHEMA);
+  const embedder = new EmbeddingClient(config.liteLlmBaseUrl, config.liteLlmApiKey, config.embeddingModel);
+  const repository = new KnowledgeRepository(db);
+  const pdfExtractor = config.pdfExtractorUrl && config.pdfExtractorToken
+    ? new PdfExtractorClient({ url: config.pdfExtractorUrl, token: config.pdfExtractorToken })
+    : undefined;
+  try {
+    await boss.start();
+    await registerKnowledgeWorker({
+      boss,
+      sync: (entry, signal) => syncSource({ entry, repository, embedder, embeddingModel: config.embeddingModel, signal, ...(config.githubToken ? { githubToken: config.githubToken } : {}), ...(pdfExtractor ? { pdfExtractor } : {}) }),
+    });
+    await waitForSignal();
+  } finally {
+    await boss.stop().catch(() => undefined);
+    await db.end().catch(() => undefined);
   }
 }
 
@@ -147,11 +252,12 @@ async function runWebhook(): Promise<void> {
   }
 }
 
-function createRuntimePgBoss(db: ReturnType<typeof createDatabase>): PgBoss {
+function createRuntimePgBoss(db: ReturnType<typeof createDatabase>, schema?: string): PgBoss {
   return new PgBoss({
     db: { executeSql: (text, values) => db.query(text, values) },
     migrate: false,
     createSchema: false,
+    ...(schema ? { schema } : {}),
   });
 }
 

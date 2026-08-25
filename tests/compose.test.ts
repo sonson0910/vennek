@@ -39,7 +39,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       }>;
       networks: Record<string, { internal?: boolean }>;
     };
-    const appServices = ["migrate", "provision-app-role", "telegram-webhook", "agent-worker"];
+    const appServices = ["migrate", "provision-app-role", "provision-knowledge-role", "telegram-webhook", "agent-worker", "knowledge-worker"];
     const images = appServices.map((name) => config.services[name]?.image);
 
     expect(new Set(images).size).toBe(1);
@@ -79,8 +79,15 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       expect(webhookEnvironment?.[name]).toBeUndefined();
     }
     expect(workerEnvironment?.TELEGRAM_WEBHOOK_SECRET).toBeUndefined();
-    expect(workerEnvironment?.PDF_EXTRACTOR_URL).toBe("http://pdf-extractor:8081");
-    expect(workerEnvironment?.PDF_EXTRACTOR_TOKEN).toBe("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    const knowledgeEnvironment = config.services["knowledge-worker"]?.environment;
+    expect(knowledgeEnvironment?.DATABASE_KNOWLEDGE_URL).toBe(
+      "postgresql://vennek_knowledge:replace-with-a-long-knowledge-password@postgres:5432/vennek",
+    );
+    expect(knowledgeEnvironment?.PDF_EXTRACTOR_URL).toBe("http://pdf-extractor:8081");
+    expect(knowledgeEnvironment?.PDF_EXTRACTOR_TOKEN).toBe("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    for (const name of ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "VENNEK_ENCRYPTION_KEY", "VENNEK_MODEL_FAST", "VENNEK_MODEL_QUALITY", "VENNEK_MODEL_VERIFIER", "DATABASE_OWNER_URL"]) {
+      expect(knowledgeEnvironment?.[name]).toBeUndefined();
+    }
     expect(config.services["telegram-webhook"]?.environment?.PORT).toBe("8080");
     expect(config.services["telegram-webhook"]?.ports).toHaveLength(1);
     expect(config.services["telegram-webhook"]?.ports).toContainEqual(expect.objectContaining({
@@ -89,7 +96,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       published: "9090",
     }));
     expect(config.services["telegram-webhook"]?.healthcheck?.test?.join(" ")).toContain("127.0.0.1:8080");
-    for (const name of ["telegram-webhook", "agent-worker"]) {
+    for (const name of ["telegram-webhook", "agent-worker", "knowledge-worker"]) {
       expect(config.services[name]?.environment?.DATABASE_OWNER_URL).toBeUndefined();
     }
     const extractor = config.services["pdf-extractor"];
@@ -108,10 +115,11 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(extractor?.init).toBe(true);
     expect(extractor?.tmpfs?.[0]).toContain("/tmp:size=16m");
     expect(config.networks["pdf-sandbox"]?.internal).toBe(true);
-    for (const name of ["postgres", "migrate", "provision-app-role", "litellm", "telegram-webhook"]) {
+    for (const name of ["postgres", "migrate", "provision-app-role", "provision-knowledge-role", "litellm", "telegram-webhook", "agent-worker"]) {
       expect(config.services[name]?.networks?.["pdf-sandbox"]).toBeUndefined();
     }
-    expect(config.services["agent-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
+    expect(config.services["agent-worker"]?.networks).toEqual({ default: null });
+    expect(config.services["knowledge-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
   });
 });
 

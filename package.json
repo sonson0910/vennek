@@ -19,6 +19,7 @@
     "health": "node apps/telegram-bot/dist/main.js --health",
     "start:telegram": "node apps/telegram-bot/dist/main.js --poll",
     "provision:app-role": "tsx scripts/provision-app-role.ts",
+    "provision:knowledge-role": "tsx scripts/provision-knowledge-role.ts",
     "demo": "tsx scripts/run-demo.ts",
     "validate:sources": "tsx scripts/validate-data-sources.ts --mode sample --write-report",
     "validate:sources:live": "tsx scripts/validate-data-sources.ts --mode live --write-report",

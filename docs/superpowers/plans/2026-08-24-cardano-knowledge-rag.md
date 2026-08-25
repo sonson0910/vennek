@@ -503,17 +503,20 @@ git commit -m "feat: compose the grounded Cardano agent runtime"
 - Create: `packages/cardano-agent/src/knowledge/syncSource.ts`
 - Create: `apps/telegram-bot/src/knowledgeWorker.ts`
 - Modify: `apps/telegram-bot/src/main.ts`
-- Test: `tests/knowledgeWorker.test.ts`
+- Create: `scripts/provision-knowledge-role.ts`
+- Modify: `scripts/migrate-agent.ts`, `Dockerfile`, `docker-compose.yml`, `.env.example`, `deploy/vennek.env.example`
+- Modify: `packages/cardano-agent/src/index.ts`, `packages/cardano-agent/src/knowledge/sourceRegistry.ts`, `scripts/validate-source-registry.ts`, `package.json`
+- Test: `tests/syncSource.test.ts`, `tests/knowledgeWorker.test.ts`, `tests/knowledgeRuntime.test.ts`, `tests/sourceRegistry.test.ts`, `tests/compose.test.ts`, `tests/provisionKnowledgeRole.integration.test.ts`
 
-- [ ] **Step 1: Write failing scheduling tests**
+- [x] **Step 1: Write failing scheduling tests**
 
 Assert hourly sources use cron `0 * * * *`, daily sources use `15 2 * * *`, duplicate scheduled jobs collapse by source ID, unchanged content skips embedding, and failed refresh keeps the previous valid version.
 
-- [ ] **Step 2: Implement one job per registry source**
+- [x] **Step 2: Implement one job per registry source**
 
 Use pg-boss queue `sync-cardano-source`. Job data contains only `{ sourceId }`; the worker reloads the validated registry entry rather than trusting job-supplied URLs. Configure two retries with exponential backoff and a dead-letter queue named `sync-cardano-source-dead`.
 
-- [ ] **Step 3: Add administrator-triggered refresh**
+- [x] **Step 3: Add administrator-triggered refresh**
 
 Add CLI mode:
 
@@ -523,14 +526,24 @@ node apps/telegram-bot/dist/main.js --sync-source cardano-cips
 
 It accepts only an exact registry ID, enqueues a singleton job, prints the job ID, and never accepts an arbitrary URL.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
-Run: `npm test -- --run tests/knowledgeWorker.test.ts && npm run typecheck && npm run build`
+Run: `npm test -- --run tests/syncSource.test.ts tests/knowledgeWorker.test.ts tests/knowledgeRuntime.test.ts tests/sourceRegistry.test.ts tests/compose.test.ts tests/provisionKnowledgeRole.integration.test.ts && npm test -- --run && npm run typecheck && npm run build && npm run verify:imports && npm run validate:registry && git diff --check`
 
 ```bash
-git add apps/telegram-bot/src packages/cardano-agent/src tests/knowledgeWorker.test.ts
+git add .env.example Dockerfile docker-compose.yml deploy/vennek.env.example package.json \
+  apps/telegram-bot/src/main.ts apps/telegram-bot/src/knowledgeWorker.ts \
+  packages/cardano-agent/src/index.ts packages/cardano-agent/src/knowledge/sourceRegistry.ts \
+  packages/cardano-agent/src/knowledge/syncSource.ts scripts/migrate-agent.ts \
+  scripts/provision-knowledge-role.ts scripts/validate-source-registry.ts \
+  tests/compose.test.ts tests/knowledgeRuntime.test.ts tests/knowledgeWorker.test.ts \
+  tests/provisionKnowledgeRole.integration.test.ts tests/sourceRegistry.test.ts tests/syncSource.test.ts
 git commit -m "feat: synchronize Cardano knowledge incrementally"
 ```
+
+### Task 8b: Wire authenticated live-discovery promotion before release
+
+Keep live discovery promotion out of the public Telegram path. Before release, add a separately authenticated, question-only internal endpoint owned by the ingestion boundary; it must validate the requesting service identity, bounded question, and source registry before calling `promoteDiscoveredLink`. Add authorization, audit, replay, and integration tests before enabling it in production.
 
 ### Task 9: Add the Cardano RAG Evaluation Harness
 

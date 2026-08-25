@@ -9,6 +9,7 @@ import {
 } from "../scripts/validate-source-registry";
 import {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  validateSourceRegistryEnvelope,
   urlMatchesSourceScope,
   validateSourceRegistry,
   type SourceRegistryEntry
@@ -27,6 +28,12 @@ const official: SourceRegistryEntry = {
 };
 
 describe("Cardano source registry", () => {
+  it("validates the exact tiered registry envelope before flattening", () => {
+    expect(validateSourceRegistryEnvelope({ official: [official], community: [] })).toMatchObject({ official: [official], community: [] });
+    expect(() => validateSourceRegistryEnvelope({ official: [official], community: [], extra: [] })).toThrow(/only official/i);
+    expect(() => validateSourceRegistryEnvelope({ official: [{ ...official, trustTier: "community" }], community: [] })).toThrow(/official/i);
+  });
+
   it("accepts a bounded official source without normalizing it", () => {
     expect(validateSourceRegistry([official])).toEqual([official]);
   });
