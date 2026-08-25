@@ -44,6 +44,7 @@ export { PrivateDocumentClient, createPrivateDocumentClient } from "./privateCom
 export type { PrivateDocumentClientConfig } from "./privateComparison/privateDocumentClient.js";
 export {
   comparePrivateDocument,
+  PrivateComparisonProviderError,
   buildPrivateComparisonMessages,
   buildPrivateVerificationMessages,
   selectPrivateChunks,
@@ -57,6 +58,7 @@ export type {
   PrivateComparisonCompletionInput,
   PrivateComparisonInput,
   PrivateComparisonUsage,
+  PrivateComparisonProviderStage,
 } from "./privateComparison/comparePrivateDocument.js";
 
 export { LiteLlmClient } from "./llm/liteLlmClient.js";

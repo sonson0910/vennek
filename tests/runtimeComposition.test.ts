@@ -90,7 +90,7 @@ describe("runtime agent composition", () => {
       VENNEK_MODEL_QUALITY: "cardano-quality",
       VENNEK_MODEL_VERIFIER: "cardano-verifier",
       VENNEK_EMBEDDING_MODEL: "cardano-embedding",
-      PRIVATE_DOCUMENT_EXTRACTOR_URL: "http://private-document-extractor/",
+      PRIVATE_DOCUMENT_EXTRACTOR_URL: "http://private-document-extractor:8083/",
       PRIVATE_DOCUMENT_EXTRACTOR_TOKEN: Buffer.alloc(32, 8).toString("base64url"),
       VENNEK_PRIVATE_MODEL_QUALITY: "cardano-private-quality",
       VENNEK_PRIVATE_MODEL_VERIFIER: "cardano-private-verifier",

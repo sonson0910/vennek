@@ -1,4 +1,8 @@
 import { validatePrivateDocumentToken } from "./privateComparison/privateDocumentProtocol.js";
+import {
+  PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME,
+  PRIVATE_DOCUMENT_EXTRACTOR_PORT,
+} from "./privateComparison/privateDocumentClient.js";
 
 export interface AgentConfig {
   databaseUrl: string;
@@ -126,7 +130,8 @@ function parsePrivateExtractorUrl(value: string): URL {
   }
   if (
     url.protocol !== "http:" ||
-    !url.hostname ||
+    url.hostname !== PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME ||
+    url.port !== String(PRIVATE_DOCUMENT_EXTRACTOR_PORT) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

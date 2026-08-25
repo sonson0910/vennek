@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { encryptText } from "@vennek/cardano-agent";
+import { PrivateComparisonProviderError } from "@vennek/cardano-agent";
 import {
   PRIVATE_COMPARISON_AAD_PREFIX,
   type EncryptedPrivateComparisonJob,
@@ -154,5 +155,36 @@ describe("private comparison worker composition", () => {
     expect(markStatus).toHaveBeenCalledWith(owner.updateId, "failed");
     expect(log).toHaveBeenCalledWith("retrieval");
     expect(JSON.stringify(log.mock.calls)).not.toContain(metadata.caption);
+  });
+
+  it("marks a structurally invalid job failed when its own update id is safe", async () => {
+    const markStatus = vi.fn(async () => undefined);
+    await expect(processPrivateComparisonJob({ updateId: owner.updateId, encrypted: "invalid" }, {
+      ...dependencies(),
+      encryptionKey: key,
+      markStatus,
+    })).rejects.toThrow(/validation/i);
+    expect(markStatus).toHaveBeenCalledOnce();
+    expect(markStatus).toHaveBeenCalledWith(owner.updateId, "failed");
+  });
+
+  it("does not redeliver when the processed status write fails", async () => {
+    const markStatus = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("database unavailable"));
+    const input = dependencies({ markStatus });
+    const result = await processPrivateComparisonJob(job(), { ...input, encryptionKey: key });
+
+    expect(result.delivered).toBe(true);
+    expect(input.send).toHaveBeenCalledOnce();
+    expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "processed"]]);
+  });
+
+  it("rethrows provider outages without delivery", async () => {
+    const input = dependencies({ compare: vi.fn(async () => { throw new PrivateComparisonProviderError("generation"); }) });
+    const markStatus = vi.fn(async () => undefined);
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key, markStatus })).rejects.toBeInstanceOf(PrivateComparisonProviderError);
+    expect(input.send).not.toHaveBeenCalled();
+    expect(markStatus).toHaveBeenCalledWith(owner.updateId, "failed");
   });
 });

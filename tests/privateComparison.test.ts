@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   comparePrivateDocument,
+  PrivateComparisonProviderError,
   boundPrivateChunk,
   selectPrivateChunks,
   type PrivateComparisonInput,
@@ -46,6 +47,24 @@ const request = (overrides: Partial<PrivateComparisonInput> = {}): PrivateCompar
 });
 
 describe("private Cardano comparison", () => {
+  it("propagates a typed generation provider outage for queue retry", async () => {
+    await expect(comparePrivateDocument(request({ complete: vi.fn().mockRejectedValue(new Error("provider secret details")) })))
+      .rejects.toBeInstanceOf(PrivateComparisonProviderError);
+  });
+
+  it("propagates a typed verification provider outage for queue retry", async () => {
+    const complete = vi.fn()
+      .mockResolvedValueOnce(output(JSON.stringify({
+        language: "en",
+        claims: [{ text: "A claim", privateCitationIds: ["U1"], cardanoCitationIds: ["E1"], kind: "fact" }],
+      }), "private-generation"))
+      .mockRejectedValueOnce(new Error("provider secret details"));
+
+    await expect(comparePrivateDocument(request({ complete })))
+      .rejects.toMatchObject({ stage: "verification" });
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
   it("grounds two namespaces, keeps private citations URL-free, and verifies exactly once", async () => {
     const complete = vi.fn()
       .mockResolvedValueOnce(output(JSON.stringify({

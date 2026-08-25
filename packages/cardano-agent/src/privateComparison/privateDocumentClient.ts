@@ -17,7 +17,12 @@ import type { PrivateDocumentMetadata } from "./privateDocumentWorker.js";
 export type PrivateDocumentClientConfig = {
   url: string;
   token: string;
+  /** Test seam for the fixed internal transport; production uses node:http. */
+  request?: typeof http.request;
 };
+
+export const PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME = "private-document-extractor";
+export const PRIVATE_DOCUMENT_EXTRACTOR_PORT = 8083;
 
 const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
@@ -32,18 +37,20 @@ export class PrivateDocumentClient {
     agent: false;
   }>;
   #token: string;
+  #request: typeof http.request;
 
   constructor(config: PrivateDocumentClientConfig) {
     const url = validateConfig(config);
     this.#requestOptions = Object.freeze({
       protocol: "http:",
       hostname: url.hostname,
-      port: url.port || 80,
+      port: url.port,
       path: PRIVATE_DOCUMENT_PATH,
       method: "POST",
       agent: false,
     });
     this.#token = config.token;
+    this.#request = config.request ?? http.request;
   }
 
   extract(bytes: Uint8Array, metadata: PrivateDocumentMetadata, signal?: AbortSignal): Promise<PrivateExtractionResult> {
@@ -77,7 +84,7 @@ export class PrivateDocumentClient {
         if (error) reject(error);
         else resolve(result!);
       };
-      const request = http.request({
+      const request = this.#request({
         ...this.#requestOptions,
         headers: {
           authorization: `Bearer ${this.#token}`,
@@ -182,6 +189,8 @@ function validateConfig(config: PrivateDocumentClientConfig): URL {
   }
   if (
     url.protocol !== "http:" ||
+    url.hostname !== PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME ||
+    url.port !== String(PRIVATE_DOCUMENT_EXTRACTOR_PORT) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

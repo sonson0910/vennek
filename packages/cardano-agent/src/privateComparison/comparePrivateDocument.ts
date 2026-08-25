@@ -80,6 +80,17 @@ export type PrivateComparisonUsage = {
   latencyMs: number;
 };
 
+export type PrivateComparisonProviderStage = "generation" | "verification";
+
+export class PrivateComparisonProviderError extends Error {
+  readonly category = "comparison" as const;
+
+  constructor(readonly stage: PrivateComparisonProviderStage) {
+    super(`Private comparison provider unavailable during ${stage}`);
+    this.name = "PrivateComparisonProviderError";
+  }
+}
+
 /** Request-scoped input. It never writes to conversation, knowledge, or cache storage. */
 export type PrivateComparisonInput = Readonly<{
   caption: string;
@@ -680,13 +691,13 @@ export async function comparePrivateDocument(input: unknown): Promise<string> {
     if (findWalletSecret(JSON.stringify(evidence))) return safeResult(language, "secret");
 
     const complete = snapshot.complete!;
-    const run = async (model: string, messages: ChatMessage[]): Promise<CompletionOutput> => {
+    const run = async (model: string, messages: ChatMessage[], stage: PrivateComparisonProviderStage): Promise<CompletionOutput> => {
       const startedAt = Date.now();
       let output: unknown;
       try {
         output = await complete({ model, messages: messages.map((message) => ({ role: message.role, content: message.content })), temperature: 0 });
       } catch {
-        throw new Error("comparison completion failed");
+        throw new PrivateComparisonProviderError(stage);
       }
       const validOutput = snapshotCompletionOutput(output, model);
       if (!validOutput) throw new Error("comparison completion invalid");
@@ -700,10 +711,10 @@ export async function comparePrivateDocument(input: unknown): Promise<string> {
       return validOutput;
     };
 
-    const generatedOutput = await run(snapshot.generationModel, buildPrivateComparisonMessages(snapshot.caption, language, title, privateChunks, evidence));
+    const generatedOutput = await run(snapshot.generationModel, buildPrivateComparisonMessages(snapshot.caption, language, title, privateChunks, evidence), "generation");
     const generated = parseClaims(generatedOutput.text, language, privateChunks, evidence);
     if (!generated) return safeResult(language, "insufficient");
-    const verifiedOutput = await run(snapshot.verifierModel, buildPrivateVerificationMessages(generated, title, privateChunks, evidence));
+    const verifiedOutput = await run(snapshot.verifierModel, buildPrivateVerificationMessages(generated, title, privateChunks, evidence), "verification");
     const support = parseSupport(verifiedOutput.text, generated.claims.length);
     if (!support) return safeResult(language, "insufficient");
     const supportedClaims = generated.claims.filter((_claim, index) => support[index]);
@@ -712,6 +723,7 @@ export async function comparePrivateDocument(input: unknown): Promise<string> {
     if (!rendered || findWalletSecret(rendered)) return safeResult(language, "insufficient");
     return rendered;
   } catch (error) {
+    if (error instanceof PrivateComparisonProviderError) throw error;
     if (error instanceof WalletSecretInputError || (error instanceof Error && /wallet secret/iu.test(error.message))) return safeResult(language, "secret");
     return safeResult(language, "dependency");
   }

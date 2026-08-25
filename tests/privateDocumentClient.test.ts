@@ -12,15 +12,24 @@ import {
 
 const token = Buffer.alloc(32, 8).toString("base64url");
 const metadata = { fileName: "claim 😀.txt", mime: "text/plain" };
+let requestOverride: typeof http.request | undefined;
+
+function makeClient(url: string, tokenValue: string): PrivateDocumentClient {
+  return createPrivateDocumentClient({ url, token: tokenValue, ...(requestOverride ? { request: requestOverride } : {}) });
+}
 
 async function withServer(handler: http.RequestListener, callback: (url: string) => Promise<void>): Promise<void> {
   const server = http.createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("server did not bind");
+  const request = http.request;
+  requestOverride = ((options: http.RequestOptions, callback: (response: http.IncomingMessage) => void) =>
+    request({ ...options, hostname: "127.0.0.1", port: address.port }, callback)) as typeof http.request;
   try {
-    await callback(`http://127.0.0.1:${address.port}`);
+    await callback("http://private-document-extractor:8083");
   } finally {
+    requestOverride = undefined;
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 }
@@ -44,7 +53,7 @@ describe("private document client", () => {
           response.end(payload);
         });
       }, async (url) => {
-        const client = createPrivateDocumentClient({ url, token });
+        const client = makeClient(url, token);
         expect(client).toBeInstanceOf(PrivateDocumentClient);
         await expect(client.extract(new Uint8Array([67, 97, 114, 100, 97, 110, 111]), metadata)).resolves.toEqual({
           type: "text",
@@ -59,11 +68,16 @@ describe("private document client", () => {
   });
 
   it("requires an exact internal HTTP origin and never follows redirects", () => {
-    expect(() => createPrivateDocumentClient({ url: "https://example.com", token })).toThrow();
-    expect(() => createPrivateDocumentClient({ url: "http://user@example.com", token })).toThrow();
-    expect(() => createPrivateDocumentClient({ url: "http://example.com/private", token })).toThrow();
-    expect(() => createPrivateDocumentClient({ url: "http://example.com/?secret=1", token })).toThrow();
-    expect(() => createPrivateDocumentClient({ url: "http://example.com/#secret", token })).toThrow();
+    expect(() => makeClient("https://example.com", token)).toThrow();
+    expect(() => makeClient("http://example.com:8083", token)).toThrow();
+    expect(() => makeClient("http://127.0.0.1:8083", token)).toThrow();
+    expect(() => makeClient("http://169.254.169.254:8083", token)).toThrow();
+    expect(() => makeClient("http://private-document-extractor", token)).toThrow();
+    expect(() => makeClient("http://private-document-extractor:8082", token)).toThrow();
+    expect(() => makeClient("http://user@example.com", token)).toThrow();
+    expect(() => makeClient("http://example.com/private", token)).toThrow();
+    expect(() => makeClient("http://example.com/?secret=1", token)).toThrow();
+    expect(() => makeClient("http://example.com/#secret", token)).toThrow();
   });
 
   it("fails closed on malformed, encoded, oversized, or cancelled responses", async () => {
@@ -71,39 +85,39 @@ describe("private document client", () => {
       response.writeHead(200, { "content-type": "text/plain", "content-length": 1 });
       response.end("x");
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       response.writeHead(302, { location: "http://example.com/secret" });
       response.end();
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": 1 });
       response.end("x");
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json", "content-length": PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES + 1 });
       response.end();
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       const payload = Buffer.from("{bad");
       response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
       response.end(payload);
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       const payload = Buffer.from(JSON.stringify({ type: "invalid", title: "claim", text: "Cardano" }));
       response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
       response.end(payload);
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       const prefix = Buffer.from('{"type":"text","title":"claim","text":"');
@@ -112,27 +126,27 @@ describe("private document client", () => {
       response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
       response.end(payload);
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
       response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength + 1 });
       response.end(payload);
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
       response.writeHead(200, { "content-type": "application/json", "content-length": "01" });
       response.end(payload);
     }, async (url) => {
-      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
       setTimeout(() => response.end(JSON.stringify({ type: "text", title: "claim", text: "Cardano" })), 100);
     }, async (url) => {
       const controller = new AbortController();
-      const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata, controller.signal);
+      const extraction = makeClient(url, token).extract(new Uint8Array([1]), metadata, controller.signal);
       controller.abort();
       await expect(extraction).rejects.toThrow(/private extractor/i);
     });
@@ -143,7 +157,7 @@ describe("private document client", () => {
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
     try {
       await withServer((_request, _response) => undefined, async (url) => {
-        const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata);
+        const extraction = makeClient(url, token).extract(new Uint8Array([1]), metadata);
         expect(timeout).toHaveBeenCalledWith(PRIVATE_DOCUMENT_TIMEOUT_MS);
         timeoutController.abort();
         await expect(extraction).rejects.toThrow(/private extractor/i);
@@ -154,7 +168,7 @@ describe("private document client", () => {
   });
 
   it("rejects unsafe metadata and out-of-bounds input before making a request", () => {
-    const client = createPrivateDocumentClient({ url: "http://127.0.0.1", token });
+    const client = makeClient("http://private-document-extractor:8083", token);
     expect(() => client.extract(new Uint8Array(0), metadata)).toThrow();
     expect(() => client.extract(Buffer.alloc(PRIVATE_DOCUMENT_MAX_BYTES + 1), metadata)).toThrow();
     expect(() => client.extract(new Uint8Array([1]), { fileName: "claim\n.txt", mime: "text/plain" })).toThrow();
@@ -168,7 +182,7 @@ describe("private document client", () => {
       response.writeHead(500, { "content-type": "application/json", "content-length": payload.byteLength });
       response.end(payload);
     }, async (url) => {
-      const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata);
+      const extraction = makeClient(url, token).extract(new Uint8Array([1]), metadata);
       await expect(extraction).rejects.toThrow(/private extractor/i);
       await expect(extraction).rejects.not.toThrow(token);
     });
@@ -180,7 +194,7 @@ describe("private document client", () => {
       response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
       response.end(payload);
     }, async (url) => {
-      const client = createPrivateDocumentClient({ url, token });
+      const client = makeClient(url, token);
       expect(JSON.stringify(client)).not.toContain(token);
       expect(Object.keys(client)).not.toContain("token");
       (client as unknown as { url?: string }).url = "http://127.0.0.1:1";

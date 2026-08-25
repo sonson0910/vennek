@@ -1,6 +1,7 @@
 import {
   comparePrivateDocument,
   findWalletSecret,
+  PrivateComparisonProviderError,
   type EmbeddingProvider,
   type Evidence,
   type PrivateComparisonCompletion,
@@ -96,6 +97,12 @@ export async function processPrivateComparisonJob(
   value: unknown,
   dependencies: PrivateComparisonRuntimeDependencies,
 ): Promise<PrivateComparisonJobOutcome> {
+  let failedStatusAttempted = false;
+  const initialUpdateId = safeUpdateId(value);
+  if (initialUpdateId !== undefined) {
+    failedStatusAttempted = true;
+    await markPrivateStatus(dependencies, initialUpdateId, "failed");
+  }
   let job: EncryptedPrivateComparisonJob;
   try {
     job = validateEncryptedPrivateComparisonJob(value);
@@ -190,11 +197,13 @@ export async function processPrivateComparisonJob(
     await markPrivateStatus(dependencies, owner.updateId, outcome.delivered ? "processed" : "failed");
     return outcome;
   } catch (error) {
-    const safeError = error instanceof PrivateComparisonRuntimeError
+    const safeError = error instanceof PrivateComparisonProviderError
+      ? error
+      : error instanceof PrivateComparisonRuntimeError
       ? error
       : new PrivateComparisonRuntimeError(phase);
     dependencies.log?.(safeError.category);
-    await markPrivateStatus(dependencies, owner.updateId, "failed");
+    if (!failedStatusAttempted) await markPrivateStatus(dependencies, owner.updateId, "failed");
     throw safeError;
   } finally {
     // The downloader/client own byte cleanup; dropping references here bounds worker retention.
@@ -208,6 +217,18 @@ class PrivateComparisonRuntimeError extends Error {
   constructor(readonly category: PrivateComparisonFailureCategory) {
     super(`Private comparison failed: ${category}`);
     this.name = "PrivateComparisonRuntimeError";
+  }
+}
+
+function safeUpdateId(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, "updateId");
+    if (!descriptor || !("value" in descriptor)) return undefined;
+    const updateId = descriptor.value;
+    return typeof updateId === "number" && Number.isSafeInteger(updateId) && updateId > 0 ? updateId : undefined;
+  } catch {
+    return undefined;
   }
 }
 
