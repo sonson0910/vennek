@@ -42,6 +42,7 @@ const VOLATILE_TERMS: Readonly<Record<string, readonly string[]>> = {
 export type Evidence = {
   id: string;
   sourceId: string;
+  owner: string;
   trustTier: "official" | "community" | "unverified";
   title: string;
   url: string;
@@ -74,6 +75,7 @@ export type RetrieveEvidenceDependencies = {
 type RetrievalRow = {
   chunk_id: string;
   source_id: string;
+  owner: string;
   trust_tier: Evidence["trustTier"];
   title: string;
   canonical_url: string;
@@ -226,7 +228,7 @@ function validateTimeout(value: number | undefined): number | undefined {
 
 const RETRIEVAL_SQL =
   "WITH newest_indexed AS (\n" +
-  "  SELECT DISTINCT ON (sv.canonical_url) sv.id AS version_id, sv.source_id, sv.canonical_url, sv.title, sv.published_at, sv.retrieved_at, sv.content_hash AS version_hash, ks.trust_tier,\n" +
+  "  SELECT DISTINCT ON (sv.canonical_url) sv.id AS version_id, sv.source_id, ks.owner, sv.canonical_url, sv.title, sv.published_at, sv.retrieved_at, sv.content_hash AS version_hash, ks.trust_tier,\n" +
   "         (ks.registry ->> 'kind' = 'github' OR COALESCE(ks.registry -> 'topics', '[]'::jsonb) ?| ARRAY['governance','releases','release','on-chain','onchain','on_chain','node','ledger','staking','delegation','voting']) AS volatile_source\n" +
   "  FROM source_versions sv JOIN knowledge_sources ks ON ks.id = sv.source_id\n" +
   "  WHERE EXISTS (SELECT 1 FROM knowledge_chunks kc0 WHERE kc0.version_id = sv.id AND kc0.embedding_model = $5)\n" +
@@ -234,7 +236,7 @@ const RETRIEVAL_SQL =
   "    AND ($4::text[] IS NULL OR COALESCE(ks.registry -> 'networks', '[]'::jsonb) ?| $4::text[])\n" +
   "  ORDER BY sv.canonical_url, sv.retrieved_at DESC, sv.id DESC\n" +
   "), eligible_versions AS (\n" +
-  "  SELECT version_id, source_id, left(canonical_url, 2048) AS canonical_url, left(title, 300) AS title, published_at, retrieved_at, version_hash, trust_tier, volatile_source\n" +
+  "  SELECT version_id, source_id, left(owner, 200) AS owner, left(canonical_url, 2048) AS canonical_url, left(title, 300) AS title, published_at, retrieved_at, version_hash, trust_tier, volatile_source\n" +
   "  FROM newest_indexed\n" +
   "  WHERE char_length(canonical_url) <= 2048 AND char_length(title) <= 300\n" +
   "), lexical AS (\n" +
@@ -255,7 +257,7 @@ const RETRIEVAL_SQL =
   "), fused AS (\n" +
   "  SELECT chunk_id, sum(score)::double precision AS score FROM candidates GROUP BY chunk_id\n" +
   ")\n" +
-  "SELECT kc.id::text AS chunk_id, ev.source_id, ev.trust_tier, ev.title, ev.canonical_url,\n" +
+  "SELECT kc.id::text AS chunk_id, ev.source_id, ev.owner, ev.trust_tier, ev.title, ev.canonical_url,\n" +
   "       left(kc.heading || E'\\n' || kc.content, 1000) AS excerpt, ev.published_at, ev.retrieved_at, ev.version_hash,\n" +
   "       (f.score + CASE WHEN ev.trust_tier = 'official' THEN 0.01 WHEN ev.trust_tier = 'community' THEN 0.005 ELSE 0 END)::double precision AS score, ev.volatile_source\n" +
   "FROM fused f JOIN knowledge_chunks kc ON kc.id::text = f.chunk_id\n" +
@@ -264,7 +266,7 @@ const RETRIEVAL_SQL =
   "LIMIT 10";
 
 const HYDRATE_SQL =
-  "SELECT kc.id::text AS chunk_id, sv.source_id, ks.trust_tier, left(sv.title, 300) AS title, left(sv.canonical_url, 2048) AS canonical_url,\n" +
+  "SELECT kc.id::text AS chunk_id, sv.source_id, ks.owner, ks.trust_tier, left(sv.title, 300) AS title, left(sv.canonical_url, 2048) AS canonical_url,\n" +
   "       left(kc.heading || E'\\n' || kc.content, 1000) AS excerpt, sv.published_at, sv.retrieved_at, sv.content_hash AS version_hash,\n" +
   "       0::double precision AS score, (ks.registry ->> 'kind' = 'github' OR COALESCE(ks.registry -> 'topics', '[]'::jsonb) ?| ARRAY['governance','releases','release','on-chain','onchain','on_chain','node','ledger','staking','delegation','voting']) AS volatile_source\n" +
   "FROM knowledge_chunks kc JOIN source_versions sv ON sv.id = kc.version_id\n" +
@@ -299,6 +301,7 @@ function toEvidence(row: RetrievalRow, now: Date): Evidence {
   return {
     id: row.chunk_id,
     sourceId: row.source_id,
+    owner: boundedText(row.owner, 200),
     trustTier: row.trust_tier,
     title: boundedText(row.title, 300),
     url: boundedText(row.canonical_url, 2_048),

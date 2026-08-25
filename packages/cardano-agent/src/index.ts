@@ -27,6 +27,8 @@ export type { ModelProfile } from "./llm/modelRouter.js";
 export { answerQuestion, RETENTION_NOTICE } from "./agent/answerQuestion.js";
 export type {
   AnswerQuestionDependencies,
+  AnswerCompletionInput,
+  AnswerUsage,
   QuestionInput,
   QuestionLanguage,
   QuestionPersistenceResult,

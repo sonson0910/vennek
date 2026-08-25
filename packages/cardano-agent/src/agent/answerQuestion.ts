@@ -1,4 +1,14 @@
 import { findWalletSecret } from "../security/walletSecrets.js";
+import type { ChatMessage, CompletionOutput } from "../llm/liteLlmClient.js";
+import { selectModelProfile, type ModelProfile } from "../llm/modelRouter.js";
+import {
+  buildGroundedMessages,
+  parseGeneratedAnswer,
+  snapshotEvidence,
+  type GroundedEvidence,
+} from "./groundedPrompt.js";
+import { renderAnswer } from "./renderAnswer.js";
+import { verifyClaims } from "./verifyClaims.js";
 
 export const RETENTION_NOTICE =
   "Vennek lưu lịch sử hội thoại vô thời hạn để duy trì ngữ cảnh; dữ liệu không được dùng để huấn luyện nếu chưa có sự đồng ý riêng. Đừng gửi seed phrase hoặc private key.";
@@ -35,11 +45,28 @@ export type QuestionRetrievalInput = {
   language: QuestionLanguage;
 };
 
+export type AnswerUsage = {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  latencyMs: number;
+};
+
+export type AnswerCompletionInput = {
+  model: string;
+  messages: ChatMessage[];
+  temperature: 0;
+};
+
 export type AnswerQuestionDependencies = {
   persist: (
     input: QuestionInput,
   ) => Promise<QuestionPersistenceResult | void>;
   retrieve: (input: QuestionRetrievalInput) => Promise<unknown>;
+  discover?: (input: QuestionRetrievalInput) => Promise<void>;
+  complete?: (input: AnswerCompletionInput) => Promise<CompletionOutput>;
+  models?: Record<ModelProfile, string>;
+  recordUsage?: (usage: AnswerUsage) => Promise<void> | void;
 };
 
 type LocalizedMessages = {
@@ -237,6 +264,49 @@ function validDependencies(value: unknown): value is AnswerQuestionDependencies 
   );
 }
 
+type ModelSnapshot = Readonly<Record<ModelProfile, string>>;
+class WalletSecretConfigurationError extends Error {}
+
+function snapshotModels(value: AnswerQuestionDependencies): ModelSnapshot | undefined {
+  if (value.discover !== undefined && typeof value.discover !== "function") {
+    throw new Error("Answer discovery dependency is invalid");
+  }
+  const hasComplete = value.complete !== undefined;
+  const configuredModels = value.models;
+  const hasModels = configuredModels !== undefined;
+  const hasUsage = value.recordUsage !== undefined;
+  if (!hasComplete && !hasModels && !hasUsage) return undefined;
+  if (!hasComplete || !hasModels || typeof value.complete !== "function" || !isPlainRecord(configuredModels)) {
+    throw new Error("Answer generation dependencies are invalid");
+  }
+  const snapshot: Record<ModelProfile, string> = {
+    fast: "",
+    quality: "",
+    verifier: "",
+  };
+  for (const profile of ["fast", "quality", "verifier"] as const) {
+    // Read each configured model exactly once, including accessor-backed configuration,
+    // then use only the frozen snapshot for all provider calls.
+    const configured = configuredModels[profile];
+    if (
+      typeof configured !== "string" ||
+      !configured ||
+      configured.trim() !== configured ||
+      Array.from(configured).length > 128 ||
+      Buffer.byteLength(configured, "utf8") > 128 ||
+      /[\p{Cc}\p{Cf}]/u.test(configured)
+    ) {
+      throw new Error("Answer model configuration is invalid");
+    }
+    if (findWalletSecret(configured)) throw new WalletSecretConfigurationError("Answer model configuration contains a wallet secret");
+    snapshot[profile] = configured;
+  }
+  if (value.recordUsage !== undefined && typeof value.recordUsage !== "function") {
+    throw new Error("Answer usage dependency is invalid");
+  }
+  return Object.freeze(snapshot);
+}
+
 function firstInteractionFrom(value: unknown): boolean {
   if (value === undefined) return false;
   if (!isRecord(value)) throw new Error("Persistence result is invalid");
@@ -323,6 +393,67 @@ function questionContainsWalletSecret(question: QuestionInput): boolean {
   return fields.some((field) => findWalletSecret(field) !== undefined);
 }
 
+function canonicalCompletionOutput(value: unknown, requestedModel: string): CompletionOutput | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const text = readOwnDataProperty(value, "text");
+  const model = readOwnDataProperty(value, "model");
+  const promptTokens = readOwnDataProperty(value, "promptTokens");
+  const completionTokens = readOwnDataProperty(value, "completionTokens");
+  if (typeof text !== "string" || text.length > 16 * 1024 || Buffer.byteLength(text, "utf8") > 16 * 1024 ||
+      typeof model !== "string" || model !== requestedModel || !model.trim() || model !== model.trim() ||
+      model.length > 128 || Buffer.byteLength(model, "utf8") > 128 || /[\u0000-\u001f\u007f]/u.test(model) ||
+      typeof promptTokens !== "number" || typeof completionTokens !== "number" ||
+      !Number.isSafeInteger(promptTokens) || !Number.isSafeInteger(completionTokens) || promptTokens < 0 || completionTokens < 0) {
+    return undefined;
+  }
+  return Object.freeze({ text, model, promptTokens, completionTokens });
+}
+
+class WalletSecretOutputError extends Error {}
+
+async function canonicalComplete(
+  dependencies: AnswerQuestionDependencies,
+  input: AnswerCompletionInput,
+): Promise<CompletionOutput> {
+  const output = canonicalCompletionOutput(await dependencies.complete!(input), input.model);
+  if (!output) throw new Error("Completion output is invalid");
+  return output;
+}
+
+async function recordUsage(value: AnswerQuestionDependencies, output: CompletionOutput, startedAt: number): Promise<void> {
+  if (!value.recordUsage) return;
+  if (findWalletSecret(output.text) || findWalletSecret(output.model)) return;
+  const usage = Object.freeze({
+    model: output.model,
+    promptTokens: output.promptTokens,
+    completionTokens: output.completionTokens,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+  });
+  try {
+    await value.recordUsage(usage);
+  } catch {
+    // Usage telemetry must never discard an otherwise safe answer.
+  }
+}
+
+function safeSnapshot(value: unknown): readonly GroundedEvidence[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  if (value.length === 0) return Object.freeze([]);
+  try {
+    return snapshotEvidence(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotContainsWalletSecret(evidence: readonly GroundedEvidence[]): boolean {
+  try {
+    return findWalletSecret(JSON.stringify(evidence)) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
 export async function answerQuestion(
   input: unknown,
   dependencies: unknown,
@@ -348,14 +479,77 @@ export async function answerQuestion(
       return withNotice(MESSAGES[language].greeting, firstInteraction);
     }
 
-    const retrieved = await dependencies.retrieve({
+    let retrieved = await dependencies.retrieve({
       question: question.text,
       language,
     });
-    if (!Array.isArray(retrieved)) {
-      return withNotice(MESSAGES[language].dependency, firstInteraction);
+    let evidence = safeSnapshot(retrieved);
+    if (!evidence) {
+      return withNotice(
+        Array.isArray(retrieved) ? MESSAGES[language].insufficient : MESSAGES[language].dependency,
+        firstInteraction,
+      );
     }
-    return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if ((evidence.length === 0 || evidence.some((item) => item.stale)) && dependencies.discover) {
+      try {
+        await dependencies.discover({ question: question.text, language });
+        retrieved = await dependencies.retrieve({ question: question.text, language });
+        const refreshed = safeSnapshot(retrieved);
+        if (refreshed && refreshed.length > 0) evidence = refreshed;
+      } catch {
+        // Keep the bounded original evidence and render stale labels if discovery is unavailable.
+      }
+    }
+    if (evidence.length === 0) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    if (snapshotContainsWalletSecret(evidence)) return withNotice(MESSAGES[language].secret, firstInteraction);
+    let models: ModelSnapshot | undefined;
+    try {
+      models = snapshotModels(dependencies);
+    } catch (error) {
+      if (error instanceof WalletSecretConfigurationError) {
+        return withNotice(MESSAGES[language].secret, firstInteraction);
+      }
+      throw error;
+    }
+    if (!models) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    const profile = selectModelProfile({ sourceCount: evidence.length, hasConflicts: false, technical: false });
+    const model = models[profile];
+    const messages = buildGroundedMessages(question.text, language, evidence);
+    const generatedStartedAt = Date.now();
+    let generatedOutput: CompletionOutput;
+    try {
+      generatedOutput = await canonicalComplete(dependencies, { model, messages, temperature: 0 });
+    } catch {
+      return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    }
+    if (findWalletSecret(generatedOutput.text) || findWalletSecret(generatedOutput.model)) {
+      return withNotice(MESSAGES[language].secret, firstInteraction);
+    }
+    await recordUsage(dependencies, generatedOutput, generatedStartedAt);
+    const generated = parseGeneratedAnswer(generatedOutput.text, language, evidence);
+    if (!generated) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+
+    const verifierStartedAt = Date.now();
+    let verification: Awaited<ReturnType<typeof verifyClaims>>;
+    try {
+      verification = await verifyClaims(
+        generated,
+        evidence,
+        (input) => canonicalComplete(dependencies, input),
+        models.verifier,
+        (output) => {
+          if (findWalletSecret(output.text) || findWalletSecret(output.model)) throw new WalletSecretOutputError("Completion output contains wallet secret");
+          return recordUsage(dependencies, output, verifierStartedAt);
+        },
+      );
+    } catch (error) {
+      if (error instanceof WalletSecretOutputError) return withNotice(MESSAGES[language].secret, firstInteraction);
+      return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    }
+    if (!verification) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    const rendered = renderAnswer(verification.claims, evidence, language);
+    if (!rendered || findWalletSecret(rendered)) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+    return withNotice(rendered, firstInteraction);
   } catch {
     const failure = MESSAGES[language].dependency;
     return persisted ? withNotice(failure, firstInteraction) : failure;
