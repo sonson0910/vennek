@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-26
 
-**Status:** Design approved by the user; written specification pending review
+**Status:** Approved by the user
 
 **Release slice:** R8c — private, one-shot user-file comparison
 
