@@ -5,7 +5,8 @@ import type {
   CompletionOutput,
   EmbeddingProvider,
 } from "@vennek/cardano-agent";
-import { createRuntimeAgentDependencies, parseAgentWorkerConfig } from "../apps/telegram-bot/src/main.js";
+import { parsePrivateComparisonEncryptionKey } from "@vennek/telegram-bot";
+import { createPollingPrivateAdmission, createRuntimeAgentDependencies, parseAgentWorkerConfig } from "../apps/telegram-bot/src/main.js";
 
 function config(): AgentConfig {
   return {
@@ -117,5 +118,38 @@ describe("runtime agent composition", () => {
     expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_QUALITY: "cardano-quality" })).toThrow();
     expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_VERIFIER: environment.VENNEK_PRIVATE_MODEL_QUALITY })).toThrow();
     expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_VERIFIER: `cardano-private-${"a".repeat(128)}` })).toThrow();
+  });
+
+  it("wires polling private admission through the keyed encrypted queue", async () => {
+    const encryptionKey = Buffer.alloc(32, 9);
+    const client = {
+      query: vi.fn(async (text: string) => {
+        if (text.startsWith("INSERT INTO telegram_updates")) return { rows: [{ update_id: "901" }] };
+        if (text.startsWith("SELECT clock_timestamp")) return { rows: [{ now: new Date("2026-08-26T00:00:00.000Z") }] };
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const database = { connect: vi.fn(async () => client) };
+    const send = vi.fn().mockResolvedValue("job-901");
+    const enqueuePrivate = createPollingPrivateAdmission({ send }, database, parsePrivateComparisonEncryptionKey({
+      VENNEK_ENCRYPTION_KEY: encryptionKey.toString("base64"),
+    }));
+
+    await expect(enqueuePrivate({
+      kind: "private-compare",
+      updateId: 901,
+      telegramUserId: "901",
+      telegramChatId: "901",
+      metadata: { caption: "private caption", fileId: "file-901", fileUniqueId: "unique-901" },
+    })).resolves.toBe(true);
+
+    expect(send).toHaveBeenCalledWith(
+      "telegram-private-compare",
+      expect.objectContaining({ encrypted: expect.objectContaining({ ciphertext: expect.any(String) }) }),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(send.mock.calls[0])).not.toContain("private caption");
+    expect(JSON.stringify(send.mock.calls[0])).not.toContain("file-901");
   });
 });

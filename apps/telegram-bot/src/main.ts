@@ -27,7 +27,8 @@ import {
   type PrivateComparisonCompletion,
 } from "@vennek/cardano-agent";
 import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
-import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
+import { PgBossAgentQueue, type PgBossLike, type PgPoolLike, type TelegramAnswerJob } from "./agentQueue.js";
+import type { PrivateComparisonIngressJob } from "./privateComparisonQueue.js";
 import { PRIVATE_COMPARISON_QUEUE, parsePrivateComparisonEncryptionKey } from "./privateComparisonQueue.js";
 import {
   processPrivateComparisonJob,
@@ -49,6 +50,15 @@ import { parsePromotionIdentity, parsePromotionOrigin, type PromotionIdentity } 
 
 export function parseAgentWorkerConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AgentConfig {
   return parseAgentConfig(env, { mode: "worker" });
+}
+
+export function createPollingPrivateAdmission(
+  boss: PgBossLike,
+  database: PgPoolLike,
+  encryptionKey: Uint8Array,
+): (job: PrivateComparisonIngressJob) => Promise<boolean> {
+  const queue = new PgBossAgentQueue(boss, database, encryptionKey);
+  return queue.enqueue.bind(queue);
 }
 
 const TELEGRAM_QUEUE = "telegram-answer";
@@ -277,16 +287,20 @@ async function runKnowledgeWorker(): Promise<void> {
 async function runPoll(): Promise<void> {
   const { config, token } = agentRuntimeConfig();
   const db = createDatabase(config.databaseUrl);
+  const boss = createRuntimePgBoss(db);
   const controller = new AbortController();
+  const enqueuePrivate = createPollingPrivateAdmission(boss, db, config.encryptionKey);
   const stop = (): void => controller.abort();
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   try {
     await ensureConversationPartitions(db);
+    await boss.start();
     const agentAnswer = createRuntimeAgentAnswer(db, config);
     await runPolling({
       api: createTelegramApi(token, controller.signal),
       answer: agentAnswer,
+      enqueuePrivate,
       context: runtimeContext(),
       logger: (level, event, fields) => logJson(level, event, fields),
       signal: controller.signal,
@@ -294,6 +308,7 @@ async function runPoll(): Promise<void> {
   } finally {
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
+    await boss.stop().catch(() => undefined);
     await db.end();
   }
 }

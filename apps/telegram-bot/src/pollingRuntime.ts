@@ -3,6 +3,7 @@ import type { ClientRequest, IncomingHttpHeaders, IncomingMessage, RequestOption
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { FixedWindowRateLimiter, type RateLimiter } from "./accessControl.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
+import { canonicalizeTelegramUpdate, type TelegramParsedIngressJob } from "./webhookRuntime.js";
 
 export const TELEGRAM_PRIVATE_FILE_MAX_BYTES = 20 * 1024 * 1024;
 export const TELEGRAM_FILE_PATH_MAX_BYTES = 4_096;
@@ -45,8 +46,18 @@ export type TelegramUpdate = {
     };
     chat?: {
       id: number | string;
+      type?: string;
     };
     text?: string;
+    caption?: string;
+    media_group_id?: string;
+    document?: {
+      file_id: string;
+      file_unique_id: string;
+      file_name?: string;
+      mime_type?: string;
+      file_size?: number;
+    };
   };
 };
 
@@ -73,6 +84,7 @@ export type PollingOptions = {
   context?: CommandContext;
   answer: (input: { telegramUserId: string; telegramChatId: string; text: string; updateId?: number }) => Promise<string>;
   logger?: RuntimeLogger;
+  enqueuePrivate?: (job: Extract<TelegramParsedIngressJob, { kind: "private-compare" }>) => Promise<boolean>;
   signal?: AbortSignal;
   pollTimeoutSeconds?: number;
   retryDelayMs?: number;
@@ -102,9 +114,11 @@ export async function runPolling(options: PollingOptions): Promise<void> {
   const logger = options.logger ?? (() => undefined);
   const pollTimeoutSeconds = options.pollTimeoutSeconds ?? 50;
   const retryDelayMs = options.retryDelayMs ?? 3_000;
+  const privateRetryDelayMs = Math.max(1, retryDelayMs);
   const rateLimiter = options.rateLimiter ?? new FixedWindowRateLimiter();
   let offset = readTelegramOffset(context.persistenceRoot);
   let cycles = 0;
+  let pendingPrivateApproval: { updateId: number; chatId: string } | undefined;
 
   logger("info", "telegram_polling_started", { offset, persistenceEnabled: Boolean(context.persistenceRoot) });
 
@@ -134,6 +148,75 @@ export async function runPolling(options: PollingOptions): Promise<void> {
           const message = isRecord(update?.message) ? update.message : undefined;
           const rawChatId = isRecord(message?.chat) ? message.chat.id : undefined;
           const chatId = canonicalTelegramIdentifier(rawChatId, false);
+
+          if (message && Object.prototype.hasOwnProperty.call(message, "document")) {
+            let privateJob: Extract<TelegramParsedIngressJob, { kind: "private-compare" }> | undefined;
+            try {
+              const parsed = canonicalizeTelegramUpdate(update, { allowStringIds: true });
+              if (parsed?.kind === "private-compare") privateJob = parsed;
+            } catch {
+              pendingPrivateApproval = undefined;
+              const nextOffset = nextOffsetFor(updateId);
+              offset = Math.max(offset, nextOffset);
+              writeTelegramOffset(context.persistenceRoot, offset);
+              logger("info", "telegram_update_skipped", { updateId, offset });
+              continue;
+            }
+            if (!privateJob) {
+              pendingPrivateApproval = undefined;
+              const nextOffset = nextOffsetFor(updateId);
+              offset = Math.max(offset, nextOffset);
+              writeTelegramOffset(context.persistenceRoot, offset);
+              logger("info", "telegram_update_skipped", { updateId, offset });
+              continue;
+            }
+
+            const privateNextOffset = nextOffsetFor(updateId);
+            const approvalRetained = pendingPrivateApproval?.updateId === updateId && pendingPrivateApproval.chatId === privateJob.telegramChatId;
+            if (!approvalRetained && !rateLimiter.allow(privateJob.telegramChatId)) {
+              pendingPrivateApproval = undefined;
+              offset = Math.max(offset, privateNextOffset);
+              writeTelegramOffset(context.persistenceRoot, offset);
+              logger("warn", "telegram_update_rate_limited", {
+                updateId,
+                chatHash: chatHash(privateJob.telegramChatId),
+                offset,
+              });
+              continue;
+            }
+
+            if (!options.enqueuePrivate) {
+              pendingPrivateApproval = { updateId, chatId: privateJob.telegramChatId };
+              logger("error", "telegram_private_enqueue_unavailable", { updateId });
+              await abortableSleep(privateRetryDelayMs, options.signal);
+              break;
+            }
+
+            try {
+              const admitted = await options.enqueuePrivate(privateJob);
+              pendingPrivateApproval = undefined;
+              offset = Math.max(offset, privateNextOffset);
+              writeTelegramOffset(context.persistenceRoot, offset);
+              logger("info", admitted ? "telegram_private_update_admitted" : "telegram_private_update_rejected", {
+                updateId,
+                chatHash: chatHash(privateJob.telegramChatId),
+                ...(admitted ? {} : { reason: "duplicate_or_rejected" }),
+                offset,
+              });
+            } catch (error) {
+              if (options.signal?.aborted) break;
+              pendingPrivateApproval = { updateId, chatId: privateJob.telegramChatId };
+              logger("error", "telegram_private_enqueue_failed", {
+                updateId,
+                chatHash: chatHash(privateJob.telegramChatId),
+                errorHash: sha256Hex(sanitizeRuntimeError(error)).slice(0, 12),
+              });
+              await abortableSleep(privateRetryDelayMs, options.signal);
+              break;
+            }
+            continue;
+          }
+
           const rawText = message?.text;
           const text = typeof rawText === "string" ? rawText.trim() : undefined;
           if (chatId === undefined || !text) {

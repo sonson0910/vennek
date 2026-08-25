@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { abortableSleep, createTelegramApi, runPolling as runTelegramPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { abortableSleep, createTelegramApi, FixedWindowRateLimiter, runPolling as runTelegramPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
 import { routeTelegramText } from "@vennek/telegram-bot";
 
@@ -36,6 +36,208 @@ describe("Telegram polling runtime", () => {
     expect(answer).toHaveBeenCalledOnce();
     expect(answer).toHaveBeenCalledWith({ telegramUserId: "42", telegramChatId: "99", text: "hello", updateId: 1 });
     expect(api.sentMessages).toHaveLength(1);
+  });
+
+  it("admits a private document envelope without downloading it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-"));
+    const enqueuePrivate = vi.fn().mockResolvedValue(true);
+    const logs = captureLogs();
+    const api = fakeApi({
+      updates: [{
+        update_id: 101,
+        message: {
+          from: { id: 777 },
+          chat: { id: 777, type: "private" },
+          caption: "compare this",
+          document: {
+            file_id: "file-101",
+            file_unique_id: "unique-101",
+            file_name: "claims.pdf",
+            mime_type: "application/pdf",
+            file_size: 123,
+          },
+        },
+      }],
+    });
+
+    await runPolling({
+      api,
+      context: { persistenceRoot: root },
+      enqueuePrivate,
+      logger: logs.logger,
+      maxCycles: 1,
+      retryDelayMs: 0,
+    });
+
+    expect(enqueuePrivate).toHaveBeenCalledWith({
+      kind: "private-compare",
+      updateId: 101,
+      telegramUserId: "777",
+      telegramChatId: "777",
+      metadata: {
+        caption: "compare this",
+        fileId: "file-101",
+        fileUniqueId: "unique-101",
+        fileName: "claims.pdf",
+        mime: "application/pdf",
+        fileSize: 123,
+      },
+    });
+    expect(readTelegramOffset(root)).toBe(102);
+    expect(api.sentMessages).toHaveLength(0);
+    expect(logs.events.some((event) => event.event === "telegram_private_update_admitted" && event.updateId === 101)).toBe(true);
+  });
+
+  it("accepts canonical string owner IDs for private polling updates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-string-id-"));
+    const enqueuePrivate = vi.fn().mockResolvedValue(true);
+    const api = fakeApi({
+      updates: [{
+        update_id: 111,
+        message: {
+          from: { id: "777" },
+          chat: { id: "777", type: "private" },
+          caption: "string owner IDs",
+          document: { file_id: "file-111", file_unique_id: "unique-111" },
+        },
+      }],
+    });
+
+    await runPolling({ api, enqueuePrivate, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(enqueuePrivate).toHaveBeenCalledWith(expect.objectContaining({
+      telegramUserId: "777",
+      telegramChatId: "777",
+    }));
+    expect(readTelegramOffset(root)).toBe(112);
+  });
+
+  it("retries a transient private admission without advancing the offset", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-retry-"));
+    writeTelegramOffset(root, 102, now);
+    const enqueuePrivate = vi.fn().mockRejectedValue(new Error("queue unavailable"));
+    const api = fakeApi({
+      updates: [{
+        update_id: 102,
+        message: {
+          from: { id: 778 },
+          chat: { id: 778, type: "private" },
+          caption: "retry this",
+          document: { file_id: "file-102", file_unique_id: "unique-102" },
+        },
+      }],
+    });
+
+    await runPolling({ api, enqueuePrivate, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(enqueuePrivate).toHaveBeenCalledOnce();
+    expect(readTelegramOffset(root)).toBe(102);
+    expect(api.sentMessages).toHaveLength(0);
+  });
+
+  it("retains one rate approval while a private admission retries", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-rate-retry-"));
+    writeTelegramOffset(root, 110, now);
+    const enqueuePrivate = vi.fn()
+      .mockRejectedValueOnce(new Error("queue unavailable"))
+      .mockResolvedValueOnce(true);
+    const api = fakeApi({
+      updates: [{
+        update_id: 110,
+        message: {
+          from: { id: 790 },
+          chat: { id: 790, type: "private" },
+          caption: "retry with one token",
+          document: { file_id: "file-110", file_unique_id: "unique-110" },
+        },
+      }],
+    });
+    const logs = captureLogs();
+
+    await runPolling({
+      api,
+      enqueuePrivate,
+      context: { persistenceRoot: root },
+      logger: logs.logger,
+      rateLimiter: new FixedWindowRateLimiter(1),
+      maxCycles: 2,
+      retryDelayMs: 0,
+    });
+
+    expect(enqueuePrivate).toHaveBeenCalledTimes(2);
+    expect(readTelegramOffset(root)).toBe(111);
+    expect(logs.events.some((event) => event.event === "telegram_private_update_admitted" && event.updateId === 110)).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_private_update_processed")).toBe(false);
+  });
+
+  it("advances past a rejected private admission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-rejected-"));
+    const enqueuePrivate = vi.fn().mockResolvedValue(false);
+    const logs = captureLogs();
+    const api = fakeApi({
+      updates: [{
+        update_id: 103,
+        message: {
+          from: { id: 779 },
+          chat: { id: 779, type: "private" },
+          caption: "already admitted",
+          document: { file_id: "file-103", file_unique_id: "unique-103" },
+        },
+      }],
+    });
+
+    await runPolling({ api, enqueuePrivate, context: { persistenceRoot: root }, logger: logs.logger, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(enqueuePrivate).toHaveBeenCalledOnce();
+    expect(readTelegramOffset(root)).toBe(104);
+    expect(logs.events.some((event) => event.event === "telegram_private_update_rejected" && event.updateId === 103)).toBe(true);
+    expect(logs.events.some((event) => event.event === "telegram_private_update_processed")).toBe(false);
+  });
+
+  it("rate-limits valid private documents before admission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-rate-"));
+    const enqueuePrivate = vi.fn().mockResolvedValue(true);
+    const api = fakeApi({
+      updates: [{
+        update_id: 105,
+        message: {
+          from: { id: 780 },
+          chat: { id: 780, type: "private" },
+          caption: "rate limited",
+          document: { file_id: "file-105", file_unique_id: "unique-105" },
+        },
+      }],
+    });
+    const logs = captureLogs();
+
+    await runPolling({
+      api,
+      enqueuePrivate,
+      context: { persistenceRoot: root },
+      logger: logs.logger,
+      rateLimiter: { allow: () => false },
+      maxCycles: 1,
+      retryDelayMs: 0,
+    });
+
+    expect(enqueuePrivate).not.toHaveBeenCalled();
+    expect(readTelegramOffset(root)).toBe(106);
+    expect(logs.events.find((event) => event.event === "telegram_update_rate_limited")).toMatchObject({ updateId: 105, chatHash: expect.any(String) });
+  });
+
+  it.each([
+    { update_id: 107, message: { from: { id: 781 }, chat: { id: -7, type: "group" }, caption: "group", document: { file_id: "file-107", file_unique_id: "unique-107" } } },
+    { update_id: 108, message: { from: { id: 782 }, chat: { id: 782, type: "private" }, caption: "album", media_group_id: "album-1", document: { file_id: "file-108", file_unique_id: "unique-108" } } },
+    { update_id: 109, message: { from: { id: 783 }, chat: { id: 783, type: "private" }, caption: "bad", document: { file_id: "file-109" } } },
+  ] as TelegramUpdate[])("skips malformed private document envelopes safely", async (update) => {
+    const root = mkdtempSync(join(tmpdir(), "vennek-poll-private-invalid-"));
+    const enqueuePrivate = vi.fn().mockResolvedValue(true);
+    const api = fakeApi({ updates: [update] });
+
+    await runPolling({ api, enqueuePrivate, context: { persistenceRoot: root }, maxCycles: 1, retryDelayMs: 0 });
+
+    expect(enqueuePrivate).not.toHaveBeenCalled();
+    expect(readTelegramOffset(root)).toBe(update.update_id + 1);
   });
 
   it("skips malformed runtime identifiers without invoking the agent", async () => {

@@ -23,6 +23,10 @@ export type TelegramParsedIngressJob =
   | ({ kind: "answer" } & TelegramAnswerJob)
   | PrivateComparisonIngressJob;
 
+export type TelegramCanonicalizationOptions = Readonly<{
+  allowStringIds?: boolean;
+}>;
+
 class PayloadTooLargeError extends Error {}
 class InvalidPayloadError extends Error {}
 class RequestAbortedError extends Error {}
@@ -190,6 +194,15 @@ export function parseTelegramJob(bytes: Uint8Array): TelegramParsedIngressJob | 
     throw new InvalidPayloadError("Invalid JSON");
   }
 
+  return canonicalizeTelegramUpdate(value);
+}
+
+/** Canonicalizes one Telegram update before either ingress transport admits it. */
+export function canonicalizeTelegramUpdate(
+  value: unknown,
+  options: TelegramCanonicalizationOptions = {},
+): TelegramParsedIngressJob | undefined {
+
   if (!isPlainObject(value) || !isPositiveSafeInteger(value.update_id)) {
     throw new InvalidPayloadError("Invalid update");
   }
@@ -203,7 +216,7 @@ export function parseTelegramJob(bytes: Uint8Array): TelegramParsedIngressJob | 
   const userId = isPlainObject(from) ? from.id : undefined;
   const chatId = isPlainObject(chat) ? chat.id : undefined;
   if (Object.prototype.hasOwnProperty.call(message, "document")) {
-    return parsePrivateComparisonJob(value.update_id, message, userId, chatId);
+    return parsePrivateComparisonJob(value.update_id, message, userId, chatId, options.allowStringIds === true);
   }
   const hasText = Object.prototype.hasOwnProperty.call(message, "text");
   if (!hasText) return undefined;
@@ -232,11 +245,14 @@ function parsePrivateComparisonJob(
   message: Record<string, unknown>,
   userId: unknown,
   chatId: unknown,
+  allowStringIds: boolean,
 ): PrivateComparisonIngressJob {
+  const canonicalUserId = canonicalPrivateTelegramIdentifier(userId, allowStringIds);
+  const canonicalChatId = canonicalPrivateTelegramIdentifier(chatId, allowStringIds);
   if (
-    !isPositiveSafeInteger(userId) ||
-    !isPositiveSafeInteger(chatId) ||
-    userId !== chatId ||
+    canonicalUserId === undefined ||
+    canonicalChatId === undefined ||
+    canonicalUserId !== canonicalChatId ||
     !isPlainObject(message.chat) ||
     message.chat.type !== "private"
   ) {
@@ -279,10 +295,20 @@ function parsePrivateComparisonJob(
   return {
     kind: "private-compare",
     updateId,
-    telegramUserId: String(userId),
-    telegramChatId: String(chatId),
+    telegramUserId: canonicalUserId,
+    telegramChatId: canonicalChatId,
     metadata: validated,
   };
+}
+
+function canonicalPrivateTelegramIdentifier(value: unknown, allowStringIds: boolean): string | undefined {
+  if (typeof value === "number") return isPositiveSafeInteger(value) ? String(value) : undefined;
+  if (!allowStringIds || typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return undefined;
+  try {
+    return BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

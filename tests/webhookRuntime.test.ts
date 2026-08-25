@@ -144,6 +144,25 @@ describe("Telegram webhook", () => {
     });
   });
 
+  it("rejects string private owner IDs at the webhook boundary", async () => {
+    const enqueue = vi.fn();
+    const response = await handleTelegramWebhook(
+      request(JSON.stringify({
+        update_id: 78,
+        message: {
+          from: { id: "777" },
+          chat: { id: "777", type: "private" },
+          caption: "compare",
+          document: { file_id: "file-78", file_unique_id: "unique-78" },
+        },
+      })),
+      { secret, enqueue, encryptionKey: Buffer.alloc(32) },
+    );
+
+    await expectGeneric(response, 400);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("rejects an oversized declared body before reading it", async () => {
     const enqueue = vi.fn();
     const stream = new ReadableStream<Uint8Array>({
