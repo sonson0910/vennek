@@ -62,20 +62,20 @@ export function validatePrivateExtractionResult(value: unknown): PrivateExtracti
 }
 
 function isSafeTitle(value: string): boolean {
+  const codePoints = countUnicodeCodePoints(value, PRIVATE_DOCUMENT_MAX_TITLE_CODE_POINTS);
   return (
     value.trim().length > 0 &&
-    Array.from(value).length <= PRIVATE_DOCUMENT_MAX_TITLE_CODE_POINTS &&
-    !hasInvalidUnicode(value) &&
+    codePoints !== undefined &&
     !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) &&
     !hasWalletSecret(value)
   );
 }
 
 function isSafeText(value: string): boolean {
+  const codePoints = countUnicodeCodePoints(value, PRIVATE_DOCUMENT_MAX_CODE_POINTS);
   if (
     value.trim().length === 0 ||
-    hasInvalidUnicode(value) ||
-    Array.from(value).length > PRIVATE_DOCUMENT_MAX_CODE_POINTS ||
+    codePoints === undefined ||
     Buffer.byteLength(value, "utf8") > PRIVATE_DOCUMENT_MAX_TEXT_BYTES
   ) {
     return false;
@@ -83,12 +83,21 @@ function isSafeText(value: string): boolean {
   return !hasWalletSecret(value);
 }
 
-function hasInvalidUnicode(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true;
+function countUnicodeCodePoints(value: string, maximum: number): number | undefined {
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return undefined;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return undefined;
+    }
+    count += 1;
+    if (count > maximum) return undefined;
   }
-  return false;
+  return count;
 }
 
 function hasWalletSecret(value: string): boolean {

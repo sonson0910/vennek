@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PRIVATE_DOCUMENT_MAX_BYTES,
   PRIVATE_DOCUMENT_MAX_CODE_POINTS,
@@ -40,6 +40,20 @@ describe("private document protocol", () => {
     })).toThrow();
   });
 
+  it("rejects code-point overflow without materializing a code-point array", () => {
+    const text = "a".repeat(PRIVATE_DOCUMENT_MAX_CODE_POINTS + 1);
+    const arrayFrom = vi.spyOn(Array, "from").mockImplementation(() => {
+      throw new Error("Array.from allocation");
+    });
+    try {
+      expect(() => validatePrivateExtractionResult({ type: "text", title: "x", text })).toThrow(
+        "Private extractor output is invalid",
+      );
+    } finally {
+      arrayFrom.mockRestore();
+    }
+  });
+
   it("requires a canonical 32-byte base64url service token", () => {
     const token = Buffer.alloc(32, 7).toString("base64url");
     expect(validatePrivateDocumentToken(token)).toEqual(Buffer.alloc(32, 7));
@@ -52,7 +66,7 @@ describe("private document protocol", () => {
     for (const type of ["pdf", "docx", "text", "markdown"] as const) {
       expect(validatePrivateExtractionResult({ type, title: "safe title", text: "Cardano" }).type).toBe(type);
     }
-    for (const value of [
+    for (const [index, value] of [
       { type: "spreadsheet", title: "safe", text: "Cardano" },
       { type: "text", title: "safe", text: "Cardano", extra: true },
       { type: "text", title: "", text: "Cardano" },
@@ -62,8 +76,8 @@ describe("private document protocol", () => {
       { type: "text", title: "safe", text: "\ud800" },
       null,
       [],
-    ]) {
-      expect(() => validatePrivateExtractionResult(value)).toThrow();
+    ].entries()) {
+      expect(() => validatePrivateExtractionResult(value), `case ${index}`).toThrow();
     }
   });
 
