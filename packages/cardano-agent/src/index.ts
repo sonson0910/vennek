@@ -26,6 +26,8 @@ export type {
   PrivateDocumentType,
   PrivateExtractionResult,
 } from "./privateComparison/privateDocumentProtocol.js";
+export { extractPrivateDocument } from "./privateComparison/privateDocumentWorker.js";
+export type { PrivateDocumentMetadata } from "./privateComparison/privateDocumentWorker.js";
 
 export { LiteLlmClient } from "./llm/liteLlmClient.js";
 export type {
