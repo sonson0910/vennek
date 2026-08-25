@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseAgentConfig } from "@vennek/cardano-agent";
+import { parseKnowledgePromotionClientConfig } from "../apps/telegram-bot/src/main.js";
 
 const validEnvironment = {
   DATABASE_URL: "postgres://vennek:secret@localhost:5432/vennek",
@@ -118,5 +119,46 @@ describe("parseAgentConfig", () => {
     expect(message).toMatch(/credentials/);
     expect(message).not.toContain("agent");
     expect(message).not.toContain("secret");
+  });
+});
+
+describe("parseKnowledgePromotionClientConfig", () => {
+  const key = Buffer.alloc(32, 7).toString("base64");
+
+  it("trims and parses the promotion origin and identity", () => {
+    const config = parseKnowledgePromotionClientConfig({
+      KNOWLEDGE_PROMOTION_URL: " https://knowledge.example.test/ ",
+      KNOWLEDGE_PROMOTION_KEY_ID: " agent-worker-v1 ",
+      KNOWLEDGE_PROMOTION_KEY: ` ${key} `,
+    });
+
+    expect(config.origin).toEqual(new URL("https://knowledge.example.test/"));
+    expect(config.identity.keyId).toBe("agent-worker-v1");
+    expect(config.identity.key).toEqual(Buffer.alloc(32, 7));
+  });
+
+  it("requires all promotion settings", () => {
+    const valid = {
+      KNOWLEDGE_PROMOTION_URL: "https://knowledge.example.test/",
+      KNOWLEDGE_PROMOTION_KEY_ID: "agent-worker-v1",
+      KNOWLEDGE_PROMOTION_KEY: key,
+    };
+    for (const name of Object.keys(valid)) {
+      const environment = { ...valid, [name]: "  " };
+      expect(() => parseKnowledgePromotionClientConfig(environment)).toThrow(new RegExp(`${name} is required`));
+    }
+  });
+
+  it("delegates promotion URL and identity validation", () => {
+    expect(() => parseKnowledgePromotionClientConfig({
+      KNOWLEDGE_PROMOTION_URL: "https://knowledge.example.test/path",
+      KNOWLEDGE_PROMOTION_KEY_ID: "agent-worker-v1",
+      KNOWLEDGE_PROMOTION_KEY: key,
+    })).toThrow(/promotion origin/i);
+    expect(() => parseKnowledgePromotionClientConfig({
+      KNOWLEDGE_PROMOTION_URL: "https://knowledge.example.test/",
+      KNOWLEDGE_PROMOTION_KEY_ID: "Agent Worker",
+      KNOWLEDGE_PROMOTION_KEY: key,
+    })).toThrow(/key ID/i);
   });
 });

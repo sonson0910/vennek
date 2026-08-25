@@ -23,6 +23,26 @@ function repository(append: unknown, findForUpdate = vi.fn().mockResolvedValue(u
   return { append, findForUpdate } as never;
 }
 
+function evidence(overrides: Partial<{
+  id: string;
+  title: string;
+  excerpt: string;
+  stale: boolean;
+}> = {}) {
+  return {
+    id: overrides.id ?? "chunk-1",
+    sourceId: "docs",
+    owner: "Cardano Foundation",
+    trustTier: "official" as const,
+    title: overrides.title ?? "Cardano documentation",
+    url: "https://docs.cardano.org/guide",
+    excerpt: overrides.excerpt ?? "Cardano uses proof of stake.",
+    retrievedAt: "2026-08-25T00:00:00.000Z",
+    versionHash: "a".repeat(64),
+    stale: overrides.stale ?? false,
+  };
+}
+
 describe("agent worker", () => {
   it("answers a queued update once and sends the answer once", async () => {
     const answer = vi.fn<AgentAnswer>().mockResolvedValue("Xin chào Cardano");
@@ -176,9 +196,41 @@ describe("agent worker", () => {
     expect(append).toHaveBeenNthCalledWith(2, expect.objectContaining({ telegramUserId: "123", telegramChatId: "456", telegramUpdateId: 100, role: "assistant" }));
   });
 
+  it("discovers once between two retrievals and uses the fresh evidence", async () => {
+    const append = vi.fn().mockResolvedValue({ firstInteraction: false });
+    const retrieve = vi.fn()
+      .mockResolvedValueOnce([evidence({ title: "Stale docs", excerpt: "Stale fact.", stale: true })])
+      .mockResolvedValueOnce([evidence({ title: "Fresh docs", excerpt: "Fresh fact." })]);
+    const discover = vi.fn().mockResolvedValue(undefined);
+    const complete = vi.fn()
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ language: "en", claims: [{ text: "Fresh fact", citationIds: ["E1"], kind: "fact" }] }),
+        model: "fast",
+        promptTokens: 1,
+        completionTokens: 1,
+      })
+      .mockResolvedValueOnce({ text: '{"supported":[true]}', model: "verifier", promptTokens: 1, completionTokens: 1 });
+    const answer = createAgentAnswer(repository(append), answerDependencies({ retrieve, discover, complete }));
+
+    const result = await answer({ telegramUserId: "1", telegramChatId: "2", text: "What is Cardano?" });
+
+    expect(result).toContain("Fresh fact");
+    expect(retrieve).toHaveBeenCalledTimes(2);
+    expect(discover).toHaveBeenCalledOnce();
+    expect(retrieve.mock.invocationCallOrder[0]).toBeLessThan(discover.mock.invocationCallOrder[0]!);
+    expect(discover.mock.invocationCallOrder[0]).toBeLessThan(retrieve.mock.invocationCallOrder[1]!);
+    expect(discover).toHaveBeenCalledWith({ question: "What is Cardano?", language: "en" });
+    expect(retrieve.mock.calls).toEqual([
+      [{ question: "What is Cardano?", language: "en" }],
+      [{ question: "What is Cardano?", language: "en" }],
+    ]);
+    expect(complete.mock.calls[0]?.[0].messages[1]?.content).toContain("Fresh docs");
+    expect(complete.mock.calls[0]?.[0].messages[1]?.content).not.toContain("Stale docs");
+  });
+
   it("does not retrieve, complete, or record usage for greetings and wallet secrets", async () => {
     const append = vi.fn().mockResolvedValue({ firstInteraction: false });
-    const dependencies = answerDependencies();
+    const dependencies = answerDependencies({ discover: vi.fn().mockResolvedValue(undefined) });
     const answer = createAgentAnswer(repository(append), dependencies);
     const mnemonic = `${Array.from({ length: 11 }, () => "abandon").join(" ")} about`;
 
@@ -186,6 +238,7 @@ describe("agent worker", () => {
     await answer({ telegramUserId: "1", telegramChatId: "2", text: mnemonic });
 
     expect(dependencies.retrieve).not.toHaveBeenCalled();
+    expect(dependencies.discover).not.toHaveBeenCalled();
     expect(dependencies.complete).not.toHaveBeenCalled();
     expect(dependencies.recordUsage).not.toHaveBeenCalled();
   });

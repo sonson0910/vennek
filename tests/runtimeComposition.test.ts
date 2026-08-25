@@ -48,6 +48,7 @@ describe("runtime agent composition", () => {
     );
     expect(dependencies.models).toEqual({ fast: "cardano-fast", quality: "cardano-quality", verifier: "cardano-verifier" });
     expect(Object.isFrozen(dependencies.models)).toBe(true);
+    expect(dependencies.discover).toBeUndefined();
 
     const quality = await dependencies.complete({ model: "cardano-quality", messages: [], temperature: 0 });
     const verifier = await dependencies.complete({ model: "cardano-verifier", messages: [], temperature: 0 });
@@ -64,5 +65,17 @@ describe("runtime agent composition", () => {
     expect(sql).toMatch(/telegram_user_id.*model.*prompt_tokens.*completion_tokens.*latency_ms/is);
     expect(values).toEqual(["123", "cardano-quality", 11, 3, 7]);
     expect(values).toHaveLength(5);
+  });
+
+  it("passes only question and language to optional discovery", async () => {
+    const db = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    const embedder: EmbeddingProvider = { embed: vi.fn().mockResolvedValue([]) };
+    const discover = vi.fn().mockResolvedValue(undefined);
+    const dependencies = createRuntimeAgentDependencies(db as never, config(), { embedder, discover });
+
+    await dependencies.discover?.({ question: "What is Cardano?", language: "en" });
+
+    expect(discover).toHaveBeenCalledOnce();
+    expect(discover).toHaveBeenCalledWith({ question: "What is Cardano?", language: "en" });
   });
 });

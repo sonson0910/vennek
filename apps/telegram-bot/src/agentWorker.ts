@@ -19,6 +19,7 @@ export type AgentAnswer = (input: AgentAnswerInput) => Promise<string>;
 
 export type AgentAnswerDependencies = {
   retrieve: (input: QuestionRetrievalInput) => Promise<unknown>;
+  discover?: (input: QuestionRetrievalInput) => Promise<void>;
   complete: (input: AnswerCompletionInput) => Promise<CompletionOutput>;
   models: Readonly<Record<ModelProfile, string>>;
   recordUsage: (telegramUserId: string, usage: AnswerUsage) => Promise<void> | void;
@@ -88,6 +89,7 @@ export function createAgentAnswer(
           : existingAnswer === undefined ? result : { ...result, existingAnswer };
       },
       retrieve: dependencies.retrieve,
+      ...(dependencies.discover === undefined ? {} : { discover: dependencies.discover }),
       complete: dependencies.complete,
       models: dependencies.models as Record<ModelProfile, string>,
       recordUsage: (usage: AnswerUsage) => dependencies.recordUsage(question.telegramUserId, usage),

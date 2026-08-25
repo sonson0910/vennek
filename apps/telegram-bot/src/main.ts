@@ -16,6 +16,7 @@ import {
   type AnswerCompletionInput,
   type CompletionOutput,
   type EmbeddingProvider,
+  type QuestionRetrievalInput,
 } from "@vennek/cardano-agent";
 import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
@@ -28,6 +29,8 @@ import {
   registerKnowledgeWorker,
 } from "./knowledgeWorker.js";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
+import { KnowledgePromotionClient } from "./knowledgePromotionClient.js";
+import { parsePromotionIdentity, parsePromotionOrigin, type PromotionIdentity } from "./knowledgePromotionProtocol.js";
 
 const TELEGRAM_QUEUE = "telegram-answer";
 const PARTITION_QUEUE = "conversation-partition-maintenance";
@@ -176,6 +179,7 @@ async function runPoll(): Promise<void> {
 
 async function runWorker(): Promise<void> {
   const { config, token } = agentRuntimeConfig();
+  const promotionClient = new KnowledgePromotionClient(parseKnowledgePromotionClientConfig());
   const db = createDatabase(config.databaseUrl);
   const boss = createRuntimePgBoss(db);
   const api = createTelegramApi(token);
@@ -184,7 +188,7 @@ async function runWorker(): Promise<void> {
     await boss.start();
     await boss.schedule(PARTITION_QUEUE, "0 0 * * *");
     await boss.work(PARTITION_QUEUE, async () => ensureConversationPartitions(db));
-    const answer = createRuntimeAgentAnswer(db, config);
+    const answer = createRuntimeAgentAnswer(db, config, { discover: promotionClient.promote.bind(promotionClient) });
     await boss.work<TelegramAnswerJob>(TELEGRAM_QUEUE, async ([job]) => {
       if (!job) return;
       const outcome = await processAgentJob(job.data, {
@@ -309,8 +313,9 @@ async function createConfiguredAgentAnswer(config: AgentConfig): Promise<{
 function createRuntimeAgentAnswer(
   db: ReturnType<typeof createDatabase>,
   config: AgentConfig,
+  clients: RuntimeAgentClients = {},
 ): AgentAnswer {
-  const dependencies = createRuntimeAgentDependencies(db, config);
+  const dependencies = createRuntimeAgentDependencies(db, config, clients);
   return createAgentAnswer(new ConversationRepository(db, config.encryptionKey), dependencies);
 }
 
@@ -318,7 +323,25 @@ export type RuntimeAgentClients = {
   embedder?: EmbeddingProvider;
   complete?: (input: AnswerCompletionInput) => Promise<CompletionOutput>;
   retrieve?: typeof retrieveEvidence;
+  discover?: (input: QuestionRetrievalInput) => Promise<void>;
 };
+
+export function parseKnowledgePromotionClientConfig(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): { origin: URL; identity: PromotionIdentity } {
+  const required = (name: string): string => {
+    const value = env[name]?.trim();
+    if (!value) throw new Error(`${name} is required`);
+    return value;
+  };
+  return {
+    origin: parsePromotionOrigin(required("KNOWLEDGE_PROMOTION_URL")),
+    identity: parsePromotionIdentity(
+      required("KNOWLEDGE_PROMOTION_KEY_ID"),
+      required("KNOWLEDGE_PROMOTION_KEY"),
+    ),
+  };
+}
 
 export function createRuntimeAgentDependencies(
   db: ReturnType<typeof createDatabase>,
@@ -329,6 +352,7 @@ export function createRuntimeAgentDependencies(
   const llm = clients.complete ? undefined : new LiteLlmClient(config.liteLlmBaseUrl, config.liteLlmApiKey);
   const complete = clients.complete ?? ((input: AnswerCompletionInput) => llm!.complete(input));
   const retrieve = clients.retrieve ?? retrieveEvidence;
+  const discover = clients.discover;
   const models = Object.freeze({
     fast: config.models.fast,
     quality: config.models.quality,
@@ -339,6 +363,7 @@ export function createRuntimeAgentDependencies(
       { query: question, language, embeddingModel: config.models.embedding, cachePolicy: "stable" },
       { db, embedder },
     ),
+    ...(discover === undefined ? {} : { discover: ({ question, language }: QuestionRetrievalInput) => discover({ question, language }) }),
     complete: async (input) => {
       const requestedModel = input.model;
       const messages = input.messages.map((message) => Object.freeze({ role: message.role, content: message.content }));
