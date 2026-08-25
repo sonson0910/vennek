@@ -73,7 +73,11 @@ describe.skipIf(!ownerUrl)("restricted knowledge role", () => {
       )).resolves.toMatchObject({
         rows: [{ state: "succeeded", outcome: "promoted", promoted_count: 1, latency_ms: 12 }],
       });
-      await expect(audit.prune(new Date("2099-01-01T00:00:00.000Z"))).resolves.toBe(1);
+      await owner.query(
+        "UPDATE public.knowledge_promotion_requests SET received_at = $2 WHERE request_id = $1",
+        [auditRequestId, new Date("1900-01-01T00:00:00.000Z")],
+      );
+      await expect(audit.prune(new Date("1900-02-01T00:00:00.000Z"))).resolves.toBe(1);
       await expect(app.query(
         "SELECT 1 FROM public.knowledge_promotion_requests WHERE request_id = $1",
         [auditRequestId],
