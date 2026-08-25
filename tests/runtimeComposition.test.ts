@@ -73,7 +73,6 @@ describe("runtime agent composition", () => {
     const discover = vi.fn().mockResolvedValue(undefined);
     const dependencies = createRuntimeAgentDependencies(db as never, config(), { embedder, discover });
 
-    expect(dependencies.discover).toEqual(expect.any(Function));
     await dependencies.discover?.({ question: "What is Cardano?", language: "en" });
 
     expect(discover).toHaveBeenCalledOnce();

@@ -66,7 +66,9 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
     const sourceId = `task10-fixture-${suffix}`;
     const embeddingModel = `task10-cardano-embedding-${suffix}`;
     const callerId = identity.keyId;
-    const question = `task10 Cardano evidence ${suffix}`;
+    const promotionQuestion = `task10 Cardano evidence ${suffix}`;
+    const retrievalQuery = `vector-only retrieval probe ${randomUUID()}`;
+    const fixturePhrase = "Task 10 immutable Cardano fixture phrase";
     const entry: SourceRegistryEntry = {
       id: sourceId,
       owner: "Cardano",
@@ -80,13 +82,13 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
     };
     const registry = [entry];
     const sourceUrl = `https://docs.cardano.org/task10/${suffix}`;
-    const responseBody = `<html><head><title>${question}</title></head><body><h1>${question}</h1><p>Deterministic Cardano evidence fixture.</p></body></html>`;
+    const responseBody = `<html><head><title>${promotionQuestion}</title></head><body><h1>${promotionQuestion}</h1><p>${fixturePhrase}</p></body></html>`;
     const searchQueries: string[] = [];
     const search = new SearxngClient(new URL("https://search.example.test/"), async (url, init) => {
       expect(init?.method).toBe("GET");
       searchQueries.push(new URL(String(url)).searchParams.get("q") ?? "");
       return new Response(JSON.stringify({
-        results: [{ title: question, content: `Search result for ${question}`, url: sourceUrl }],
+        results: [{ title: promotionQuestion, content: `Search result for ${promotionQuestion}`, url: sourceUrl }],
       }), { status: 200, headers: { "content-type": "application/json" } });
     });
     const embedder: EmbeddingProvider = {
@@ -123,34 +125,40 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
       const client = new KnowledgePromotionClient({ origin, identity });
 
       const before = await retrieveEvidence(
-        { query: question, language: "en", embeddingModel },
+        { query: retrievalQuery, language: "en", embeddingModel },
         { db: db!, embedder },
       );
       expect(before).toEqual([]);
 
-      await client.promote({ question, language: "en" });
+      await client.promote({ question: promotionQuestion, language: "en" });
 
-      expect(searchQueries).toEqual([`${question} (site:docs.cardano.org)`]);
+      expect(searchQueries).toEqual([`${promotionQuestion} (site:docs.cardano.org)`]);
       const first = await retrieveEvidence(
-        { query: question, language: "en", embeddingModel },
+        { query: retrievalQuery, language: "en", embeddingModel },
         { db: db!, embedder },
       );
       expect(first).toHaveLength(1);
       expect(first[0]).toMatchObject({
         sourceId,
-        title: question,
+        title: promotionQuestion,
         url: sourceUrl,
         trustTier: "official",
         stale: false,
         versionHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        excerpt: expect.stringContaining(fixturePhrase),
       });
       const second = await retrieveEvidence(
-        { query: question, language: "en", embeddingModel },
+        { query: retrievalQuery, language: "en", embeddingModel },
         { db: db!, embedder },
       );
-      expect(second[0]?.sourceId).toBe(sourceId);
-      expect(second[0]?.versionHash).toBe(first[0]?.versionHash);
-      expect(second[0]?.stale).toBe(false);
+      expect(second).toHaveLength(1);
+      expect(second[0]).toMatchObject({
+        id: first[0]!.id,
+        sourceId: first[0]!.sourceId,
+        versionHash: first[0]!.versionHash,
+        excerpt: first[0]!.excerpt,
+        stale: false,
+      });
 
       const auditRows = await db!.query<{
         request_id: string;
