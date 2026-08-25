@@ -38,6 +38,8 @@ export type QuestionLanguage =
 
 export type QuestionPersistenceResult = {
   firstInteraction?: boolean;
+  existingAnswer?: string;
+  retryBlocked?: boolean;
 };
 
 export type QuestionRetrievalInput = {
@@ -307,13 +309,30 @@ function snapshotModels(value: AnswerQuestionDependencies): ModelSnapshot | unde
   return Object.freeze(snapshot);
 }
 
-function firstInteractionFrom(value: unknown): boolean {
-  if (value === undefined) return false;
+type PersistenceState = {
+  firstInteraction: boolean;
+  existingAnswer?: string;
+  retryBlocked: boolean;
+};
+
+function persistenceStateFrom(value: unknown): PersistenceState {
+  if (value === undefined) return { firstInteraction: false, retryBlocked: false };
   if (!isRecord(value)) throw new Error("Persistence result is invalid");
-  if (value.firstInteraction !== undefined && typeof value.firstInteraction !== "boolean") {
+  const firstInteraction = value.firstInteraction;
+  const existingAnswer = value.existingAnswer;
+  const retryBlocked = value.retryBlocked;
+  if (firstInteraction !== undefined && typeof firstInteraction !== "boolean") {
     throw new Error("Persistence result is invalid");
   }
-  return value.firstInteraction === true;
+  if (retryBlocked !== undefined && typeof retryBlocked !== "boolean") {
+    throw new Error("Persistence result is invalid");
+  }
+  if (existingAnswer !== undefined) {
+    const boundedAnswer = boundedText(existingAnswer, MAX_TEXT_LENGTH);
+    if (!boundedAnswer) throw new Error("Persistence result is invalid");
+    return { firstInteraction: firstInteraction === true, existingAnswer: boundedAnswer, retryBlocked: retryBlocked === true };
+  }
+  return { firstInteraction: firstInteraction === true, retryBlocked: retryBlocked === true };
 }
 
 function withNotice(answer: string, firstInteraction: boolean): string {
@@ -330,6 +349,7 @@ const CHAT_ID_PATTERN = /^-?[1-9][0-9]*$/u;
 const SIGNED_INT64_MIN = BigInt("-9223372036854775808");
 const SIGNED_INT64_MAX = BigInt("9223372036854775807");
 const ZERO = BigInt(0);
+const INT32_MAX = 2_147_483_647;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
@@ -403,7 +423,8 @@ function canonicalCompletionOutput(value: unknown, requestedModel: string): Comp
       typeof model !== "string" || model !== requestedModel || !model.trim() || model !== model.trim() ||
       model.length > 128 || Buffer.byteLength(model, "utf8") > 128 || /[\u0000-\u001f\u007f]/u.test(model) ||
       typeof promptTokens !== "number" || typeof completionTokens !== "number" ||
-      !Number.isSafeInteger(promptTokens) || !Number.isSafeInteger(completionTokens) || promptTokens < 0 || completionTokens < 0) {
+      !Number.isSafeInteger(promptTokens) || !Number.isSafeInteger(completionTokens) ||
+      promptTokens < 0 || completionTokens < 0 || promptTokens > INT32_MAX || completionTokens > INT32_MAX) {
     return undefined;
   }
   return Object.freeze({ text, model, promptTokens, completionTokens });
@@ -415,7 +436,14 @@ async function canonicalComplete(
   dependencies: AnswerQuestionDependencies,
   input: AnswerCompletionInput,
 ): Promise<CompletionOutput> {
-  const output = canonicalCompletionOutput(await dependencies.complete!(input), input.model);
+  const requestedModel = input.model;
+  const messages = input.messages.map((message) => Object.freeze({ role: message.role, content: message.content }));
+  const request = Object.freeze({
+    model: requestedModel,
+    messages: Object.freeze(messages),
+    temperature: 0 as const,
+  }) as unknown as AnswerCompletionInput;
+  const output = canonicalCompletionOutput(await dependencies.complete!(request), requestedModel);
   if (!output) throw new Error("Completion output is invalid");
   return output;
 }
@@ -427,7 +455,7 @@ async function recordUsage(value: AnswerQuestionDependencies, output: Completion
     model: output.model,
     promptTokens: output.promptTokens,
     completionTokens: output.completionTokens,
-    latencyMs: Math.max(0, Date.now() - startedAt),
+    latencyMs: Math.min(INT32_MAX, Math.max(0, Date.now() - startedAt)),
   });
   try {
     await value.recordUsage(usage);
@@ -470,10 +498,17 @@ export async function answerQuestion(
     if (questionContainsWalletSecret(question)) return MESSAGES[language].secret;
     if (!validDependencies(dependencies)) return MESSAGES[language].dependency;
 
-    const persistenceResult = await dependencies.persist(question);
-    firstInteraction = firstInteractionFrom(persistenceResult);
+    const persistenceResult = persistenceStateFrom(await dependencies.persist(question));
+    firstInteraction = persistenceResult.firstInteraction;
     persisted = true;
     if (questionContainsWalletSecret(question)) return withNotice(MESSAGES[language].secret, firstInteraction);
+
+    if (persistenceResult.retryBlocked) return withNotice(MESSAGES[language].insufficient, firstInteraction);
+
+    if (persistenceResult.existingAnswer !== undefined) {
+      if (findWalletSecret(persistenceResult.existingAnswer)) return withNotice(MESSAGES[language].secret, firstInteraction);
+      return withNotice(persistenceResult.existingAnswer, firstInteraction);
+    }
 
     if (isGreeting(question.text, language)) {
       return withNotice(MESSAGES[language].greeting, firstInteraction);

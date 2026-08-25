@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 import { answerQuestion, RETENTION_NOTICE } from "@vennek/cardano-agent";
 
 const input = (text: string) => ({ telegramUserId: "1", telegramChatId: "2", text });
+const groundedEvidence = {
+  id: "chunk-1",
+  sourceId: "docs",
+  owner: "Cardano Foundation",
+  trustTier: "official" as const,
+  title: "Cardano documentation",
+  url: "https://docs.cardano.org/guide",
+  excerpt: "Cardano uses proof of stake.",
+  retrievedAt: "2026-08-25T00:00:00.000Z",
+  versionHash: "a".repeat(64),
+  stale: false,
+};
+const groundedModels = Object.freeze({ fast: "fast", quality: "quality", verifier: "verifier" });
 
 describe("natural-language question service", () => {
   it("blocks wallet secrets before persistence, retrieval, or model access", async () => {
@@ -247,6 +260,77 @@ describe("natural-language question service", () => {
       retrieve: async () => [],
     });
     expect(answer).not.toContain(RETENTION_NOTICE);
+  });
+
+  it("returns an existing persisted answer before greeting, retrieval, or completion without duplicating its notice", async () => {
+    const retrieve = vi.fn();
+    const complete = vi.fn();
+    const existingAnswer = `${RETENTION_NOTICE}\n\nCached grounded answer.`;
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: async () => ({ firstInteraction: true, existingAnswer }),
+      retrieve,
+      complete,
+      models: groundedModels,
+    });
+
+    expect(answer).toBe(existingAnswer);
+    expect(answer.match(/Vennek lưu lịch sử hội thoại vô thời hạn/g)).toHaveLength(1);
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for provider token counts outside PostgreSQL integer range", async () => {
+    const complete = vi.fn().mockResolvedValue({
+      text: JSON.stringify({ language: "en", claims: [{ text: "Cardano uses proof of stake.", citationIds: ["E1"], kind: "fact" }] }),
+      model: "fast",
+      promptTokens: 2_147_483_648,
+      completionTokens: 1,
+    });
+    const recordUsage = vi.fn(async () => undefined);
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: async () => undefined,
+      retrieve: async () => [groundedEvidence],
+      complete,
+      models: groundedModels,
+      recordUsage,
+    });
+
+    expect(answer).toMatch(/reliable sources/i);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the configured completion request immutable when a provider tries to mutate it", async () => {
+    const observedModels: string[] = [];
+    let observedSystemPrompt = "";
+    const complete = vi.fn().mockImplementation(async (request: { model: string; messages: Array<{ content: string }> }) => {
+      try { (request as { model: string }).model = "physical-model"; } catch { /* frozen request */ }
+      try { request.messages[0]!.content = "mutated"; } catch { /* frozen message */ }
+      observedModels.push(request.model);
+      observedSystemPrompt = request.messages[0]!.content;
+      if (request.model === "verifier") {
+        return { text: '{"supported":[true]}', model: "verifier", promptTokens: 2, completionTokens: 1 };
+      }
+      return {
+        text: JSON.stringify({ language: "en", claims: [{ text: "Cardano uses proof of stake.", citationIds: ["E1"], kind: "fact" }] }),
+        model: "fast",
+        promptTokens: 2,
+        completionTokens: 1,
+      };
+    });
+    const recordUsage = vi.fn(async () => undefined);
+    const answer = await answerQuestion(input("What is Cardano?"), {
+      persist: async () => undefined,
+      retrieve: async () => [groundedEvidence],
+      complete,
+      models: groundedModels,
+      recordUsage,
+    });
+
+    expect(answer).toContain("Cardano uses proof of stake.");
+    expect(observedModels).toEqual(["fast", "verifier"]);
+    expect(observedSystemPrompt).toContain("untrusted data");
+    expect(recordUsage).toHaveBeenCalledTimes(2);
   });
 
   it("persists only canonical input fields and scans all three own strings", async () => {

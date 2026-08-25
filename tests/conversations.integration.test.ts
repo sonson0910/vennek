@@ -92,6 +92,36 @@ describe.skipIf(!databaseUrl)("conversation repository", () => {
     }
   });
 
+  it("recovers the exact encrypted assistant message for an update and rejects mismatched identity", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new ConversationRepository(db, Buffer.alloc(32, 3));
+    const telegramUserId = `recover-${process.pid}-${Date.now()}`;
+    const telegramChatId = "recover-chat";
+    const telegramUpdateId = 8_250_000_000_000_000 + randomInt(0, 100_000);
+
+    try {
+      await repository.append({ telegramUserId, telegramChatId, role: "user", text: "question", telegramUpdateId });
+      await repository.append({ telegramUserId, telegramChatId, role: "assistant", text: "Answer A", telegramUpdateId });
+
+      await expect(repository.findForUpdate({ telegramUpdateId, telegramUserId, telegramChatId, role: "assistant" }))
+        .resolves.toEqual({ role: "assistant", text: "Answer A" });
+      await expect(repository.findForUpdate({ telegramUpdateId, telegramUserId: "other-user", telegramChatId, role: "assistant" }))
+        .resolves.toBeUndefined();
+      await expect(repository.findForUpdate({ telegramUpdateId, telegramUserId, telegramChatId: "other-chat", role: "assistant" }))
+        .resolves.toBeUndefined();
+      await db.query(
+        "UPDATE conversation_message_idempotency SET message_id = NULL WHERE telegram_update_id = $1 AND role = 'assistant'",
+        [telegramUpdateId],
+      );
+      await expect(repository.findForUpdate({ telegramUpdateId, telegramUserId, telegramChatId, role: "assistant" }))
+        .resolves.toBeNull();
+    } finally {
+      await db.query("DELETE FROM conversation_message_idempotency WHERE telegram_update_id = $1", [telegramUpdateId]).catch(() => undefined);
+      await db.query("DELETE FROM telegram_users WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
   it("inserts one message for concurrent duplicate update-role appends", async () => {
     const db = createDatabase(databaseUrl!);
     const repository = new ConversationRepository(db, Buffer.alloc(32, 3));

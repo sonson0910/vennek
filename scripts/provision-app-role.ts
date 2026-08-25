@@ -117,12 +117,23 @@ export async function provisionAppRole(
         public.conversation_summaries,
         public.telegram_updates,
         public.telegram_admission_windows,
-        public.conversation_message_idempotency,
-        public.usage_ledger
+        public.conversation_message_idempotency
       TO ${roleIdentifier}
     `);
     await client.query(`
-      GRANT USAGE, SELECT, UPDATE ON SEQUENCE
+      REVOKE SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+      ON TABLE public.usage_ledger
+      FROM ${roleIdentifier}
+    `);
+    await client.query(`GRANT INSERT ON TABLE public.usage_ledger TO ${roleIdentifier}`);
+    await client.query(`
+      REVOKE SELECT, UPDATE ON SEQUENCE
+        public.conversation_messages_id_seq,
+        public.usage_ledger_id_seq
+      FROM ${roleIdentifier}
+    `);
+    await client.query(`
+      GRANT USAGE ON SEQUENCE
         public.conversation_messages_id_seq,
         public.usage_ledger_id_seq
       TO ${roleIdentifier}

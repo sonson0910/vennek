@@ -456,6 +456,47 @@ git add packages/cardano-agent/src tests/answerQuestion.test.ts tests/groundedAn
 git commit -m "feat: answer Cardano questions with verified citations"
 ```
 
+### Task 7b: Compose the Grounded Agent Runtime
+
+**Files:**
+- Modify: `apps/telegram-bot/src/agentWorker.ts`
+- Modify: `apps/telegram-bot/src/main.ts`
+- Modify: `packages/cardano-agent/src/agent/answerQuestion.ts`
+- Modify: `packages/cardano-agent/src/conversations.ts`
+- Modify: `packages/cardano-agent/src/llm/embeddingClient.ts`
+- Modify: `scripts/provision-app-role.ts`
+- Modify: `deploy/vennek.env.example`
+- Add: `packages/cardano-agent/migrations/005_conversation_idempotency_message.sql`
+- Test: `tests/answerQuestion.test.ts`
+- Test: `tests/agentWorker.test.ts`
+- Test: `tests/conversations.integration.test.ts`
+- Test: `tests/embeddingClient.test.ts`
+- Test: `tests/runtimeComposition.test.ts`
+- Test: `tests/provisionAppRole.integration.test.ts`
+
+- [x] **Step 1: Write failing runtime-composition tests**
+
+Assert that the worker passes the canonical question and language to real retrieval, uses the configured embedding/generation/verifier model aliases, records only user ID/model/token counts/latency, and still appends the final assistant message exactly once with the Telegram update ID. Greetings and rejected wallet secrets must call neither retrieval, providers, nor usage recording.
+
+The retry path must recover a linked assistant message without new model work, while a legacy null message link fails closed for operator repair/requeue.
+
+- [x] **Step 2: Compose existing clients at the worker seam**
+
+Construct one `EmbeddingClient` and one `LiteLlmClient` from the validated agent config. Inject `retrieveEvidence`, model aliases, completion, and a parameterized `usage_ledger` insert through `createAgentAnswer`; do not add another agent service layer or persist prompt, answer, evidence, URL, or provider errors.
+
+- [x] **Step 3: Preserve the ingestion trust boundary**
+
+The Telegram application role keeps read-only access to knowledge tables. Do not call `promoteDiscoveredLink` from the chat worker and do not grant knowledge DML. Task 8 owns a separate bounded ingestion worker/queue; live discovery promotion is wired there before release. Add an integration assertion that the app role can insert usage metadata while knowledge writes remain denied.
+
+- [x] **Step 4: Verify and commit**
+
+Run: `npm test -- --run tests/answerQuestion.test.ts tests/groundedAnswer.test.ts tests/agentWorker.test.ts tests/runtimeComposition.test.ts tests/conversations.integration.test.ts tests/embeddingClient.test.ts tests/provisionAppRole.integration.test.ts && npm test && npm run typecheck && npm run build && git diff --check`
+
+```bash
+git add apps/telegram-bot/src/agentWorker.ts apps/telegram-bot/src/main.ts deploy/vennek.env.example packages/cardano-agent/migrations/005_conversation_idempotency_message.sql packages/cardano-agent/src/agent/answerQuestion.ts packages/cardano-agent/src/conversations.ts packages/cardano-agent/src/llm/embeddingClient.ts scripts/provision-app-role.ts tests/agentWorker.test.ts tests/answerQuestion.test.ts tests/conversations.integration.test.ts tests/embeddingClient.test.ts tests/runtimeComposition.test.ts tests/provisionAppRole.integration.test.ts docs/superpowers/plans/2026-08-24-cardano-knowledge-rag.md
+git commit -m "feat: compose the grounded Cardano agent runtime"
+```
+
 ### Task 8: Schedule Incremental Source Synchronization
 
 **Files:**

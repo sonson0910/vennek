@@ -4,11 +4,17 @@ import { PgBoss } from "pg-boss";
 import {
   ConversationRepository,
   createDatabase,
+  EmbeddingClient,
   ensureConversationPartitions,
+  LiteLlmClient,
   parseAgentConfig,
+  retrieveEvidence,
   type AgentConfig,
+  type AnswerCompletionInput,
+  type CompletionOutput,
+  type EmbeddingProvider,
 } from "@vennek/cardano-agent";
-import { createAgentAnswer, processAgentJob } from "./agentWorker.js";
+import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
 import { createTelegramApi, deliverMessage, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js";
@@ -48,7 +54,7 @@ async function runPoll(): Promise<void> {
   process.once("SIGINT", stop);
   try {
     await ensureConversationPartitions(db);
-    const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
+    const agentAnswer = createRuntimeAgentAnswer(db, config);
     await runPolling({
       api: createTelegramApi(token, controller.signal),
       answer: agentAnswer,
@@ -67,14 +73,13 @@ async function runWorker(): Promise<void> {
   const { config, token } = agentRuntimeConfig();
   const db = createDatabase(config.databaseUrl);
   const boss = createRuntimePgBoss(db);
-  const repository = new ConversationRepository(db, config.encryptionKey);
   const api = createTelegramApi(token);
   try {
     await ensureConversationPartitions(db);
     await boss.start();
     await boss.schedule(PARTITION_QUEUE, "0 0 * * *");
     await boss.work(PARTITION_QUEUE, async () => ensureConversationPartitions(db));
-    const answer = createAgentAnswer(repository);
+    const answer = createRuntimeAgentAnswer(db, config);
     await boss.work<TelegramAnswerJob>(TELEGRAM_QUEUE, async ([job]) => {
       if (!job) return;
       const outcome = await processAgentJob(job.data, {
@@ -184,7 +189,7 @@ async function createConfiguredAgentAnswer(config: AgentConfig): Promise<{
   const db = createDatabase(config.databaseUrl);
   try {
     await ensureConversationPartitions(db);
-    const agentAnswer = createAgentAnswer(new ConversationRepository(db, config.encryptionKey));
+    const agentAnswer = createRuntimeAgentAnswer(db, config);
     return {
       answer: (input) => agentAnswer({ telegramUserId: "1", telegramChatId: "1", text: input }),
       close: () => db.end(),
@@ -193,6 +198,67 @@ async function createConfiguredAgentAnswer(config: AgentConfig): Promise<{
     await db.end().catch(() => undefined);
     throw error;
   }
+}
+
+function createRuntimeAgentAnswer(
+  db: ReturnType<typeof createDatabase>,
+  config: AgentConfig,
+): AgentAnswer {
+  const dependencies = createRuntimeAgentDependencies(db, config);
+  return createAgentAnswer(new ConversationRepository(db, config.encryptionKey), dependencies);
+}
+
+export type RuntimeAgentClients = {
+  embedder?: EmbeddingProvider;
+  complete?: (input: AnswerCompletionInput) => Promise<CompletionOutput>;
+  retrieve?: typeof retrieveEvidence;
+};
+
+export function createRuntimeAgentDependencies(
+  db: ReturnType<typeof createDatabase>,
+  config: AgentConfig,
+  clients: RuntimeAgentClients = {},
+): AgentAnswerDependencies {
+  const embedder = clients.embedder ?? new EmbeddingClient(config.liteLlmBaseUrl, config.liteLlmApiKey, config.models.embedding);
+  const llm = clients.complete ? undefined : new LiteLlmClient(config.liteLlmBaseUrl, config.liteLlmApiKey);
+  const complete = clients.complete ?? ((input: AnswerCompletionInput) => llm!.complete(input));
+  const retrieve = clients.retrieve ?? retrieveEvidence;
+  const models = Object.freeze({
+    fast: config.models.fast,
+    quality: config.models.quality,
+    verifier: config.models.verifier,
+  });
+  return {
+    retrieve: ({ question, language }) => retrieve(
+      { query: question, language, embeddingModel: config.models.embedding, cachePolicy: "stable" },
+      { db, embedder },
+    ),
+    complete: async (input) => {
+      const requestedModel = input.model;
+      const messages = input.messages.map((message) => Object.freeze({ role: message.role, content: message.content }));
+      const request = Object.freeze({
+        model: requestedModel,
+        messages: Object.freeze(messages),
+        temperature: 0 as const,
+      }) as unknown as AnswerCompletionInput;
+      const output = await complete(request);
+      return Object.freeze({
+        text: output.text,
+        model: requestedModel,
+        promptTokens: output.promptTokens,
+        completionTokens: output.completionTokens,
+      });
+    },
+    models,
+    recordUsage: async (telegramUserId, usage) => {
+      await db.query(
+        `INSERT INTO usage_ledger
+         (telegram_user_id, model, prompt_tokens, completion_tokens, latency_ms)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [telegramUserId, usage.model, usage.promptTokens, usage.completionTokens, usage.latencyMs],
+      );
+    },
+  };
 }
 
 function agentRuntimeConfig(): { config: AgentConfig; token: string } {

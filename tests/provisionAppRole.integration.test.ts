@@ -39,6 +39,7 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
     const canonicalUrl = `https://${sourceId}.example.com/docs`;
     const query = `role retrieval ${suffix}`;
     const model = "test-retrieval-model";
+    const telegramUserId = `role-user-${process.pid}-${Date.now()}`;
     const owner = createDatabase(ownerUrl!);
     const appUrl = new URL(ownerUrl!);
     appUrl.username = roleName;
@@ -81,6 +82,23 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       }]);
 
       await provisionAppRole(ownerUrl!, roleName, password);
+      await owner.query("INSERT INTO telegram_users (telegram_user_id) VALUES ($1)", [telegramUserId]);
+      await app.query(
+        `INSERT INTO usage_ledger
+         (telegram_user_id, model, prompt_tokens, completion_tokens, latency_ms)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [telegramUserId, "cardano-fast", 4, 2, 17],
+      );
+      const ownerUsage = await owner.query<{ telegram_user_id: string; model: string; prompt_tokens: number; completion_tokens: number; latency_ms: number }>(
+        "SELECT telegram_user_id, model, prompt_tokens, completion_tokens, latency_ms FROM usage_ledger WHERE telegram_user_id = $1",
+        [telegramUserId],
+      );
+      expect(ownerUsage.rows[0]).toMatchObject({ telegram_user_id: telegramUserId, model: "cardano-fast", prompt_tokens: 4, completion_tokens: 2, latency_ms: 17 });
+      await expect(app.query("SELECT model FROM usage_ledger WHERE telegram_user_id = $1", [telegramUserId])).rejects.toThrow(/permission denied/i);
+      await expect(app.query("UPDATE usage_ledger SET model = 'forbidden' WHERE telegram_user_id = $1", [telegramUserId])).rejects.toThrow(/permission denied/i);
+      await expect(app.query("DELETE FROM usage_ledger WHERE telegram_user_id = $1", [telegramUserId])).rejects.toThrow(/permission denied/i);
+      await expect(app.query("SELECT setval('public.usage_ledger_id_seq'::regclass, 1)")).rejects.toThrow(/permission denied/i);
+      await expect(app.query("SELECT setval('public.conversation_messages_id_seq'::regclass, 1)")).rejects.toThrow(/permission denied/i);
       const request = {
         query,
         language: "en",
@@ -107,6 +125,8 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       )).rejects.toThrow(/permission denied/i);
     } finally {
       await app.end().catch(() => undefined);
+      await owner.query("DELETE FROM usage_ledger WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
+      await owner.query("DELETE FROM telegram_users WHERE telegram_user_id = $1", [telegramUserId]).catch(() => undefined);
       await owner.query("DELETE FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(query)]).catch(() => undefined);
       await owner.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
       await owner.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);

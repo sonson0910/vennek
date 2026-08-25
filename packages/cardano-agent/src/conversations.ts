@@ -4,6 +4,18 @@ import { findWalletSecret } from "./security/walletSecrets.js";
 
 export type ConversationRole = "user" | "assistant";
 
+export type ConversationMessage = {
+  role: ConversationRole;
+  text: string;
+};
+
+export type FindConversationMessageInput = {
+  telegramUpdateId: number;
+  telegramUserId: string;
+  telegramChatId: string;
+  role: ConversationRole;
+};
+
 const CONVERSATION_AAD_VERSION = "vennek-conversation-aad:v1";
 
 function conversationAad(
@@ -109,6 +121,15 @@ export class ConversationRepository {
           createdAt,
         ],
       );
+      if (input.telegramUpdateId !== undefined) {
+        const linked = await client.query(
+          `UPDATE conversation_message_idempotency
+           SET message_id = $1
+           WHERE telegram_update_id = $2 AND role = $3 AND message_id IS NULL`,
+          [id, input.telegramUpdateId, input.role],
+        );
+        if (linked.rowCount !== 1) throw new Error("Could not link conversation message idempotency record.");
+      }
       await client.query("COMMIT");
       inTransaction = false;
       return { firstInteraction };
@@ -124,6 +145,84 @@ export class ConversationRepository {
     } finally {
       client.release();
     }
+  }
+
+  async findForUpdate(input: FindConversationMessageInput): Promise<ConversationMessage | null | undefined> {
+    if (!input || typeof input !== "object") {
+      throw new Error("Conversation lookup input is invalid.");
+    }
+    if (!Number.isSafeInteger(input.telegramUpdateId) || input.telegramUpdateId <= 0) {
+      throw new Error("Telegram update id is invalid.");
+    }
+    if (
+      typeof input.telegramUserId !== "string" || !input.telegramUserId.trim() ||
+      typeof input.telegramChatId !== "string" || !input.telegramChatId.trim()
+    ) {
+      throw new Error("Conversation identity is invalid.");
+    }
+    if (input.role !== "user" && input.role !== "assistant") {
+      throw new Error("Conversation role is invalid.");
+    }
+
+    const reservation = await this.db.query<{ message_id: string | null }>(
+      `SELECT message_id
+       FROM conversation_message_idempotency
+       WHERE telegram_update_id = $1 AND role = $2
+       FOR UPDATE`,
+      [input.telegramUpdateId, input.role],
+    );
+    const reservationRow = reservation.rows[0];
+    if (!reservationRow) return undefined;
+
+    const result = await this.db.query<{
+      id: string;
+      created_at: Date;
+      telegram_user_id: string;
+      telegram_chat_id: string;
+      role: ConversationRole;
+      ciphertext: string;
+      iv: string;
+      auth_tag: string;
+    }>(
+      `SELECT cm.id, cm.created_at, cm.telegram_user_id, cm.telegram_chat_id,
+              cm.role, cm.ciphertext, cm.iv, cm.auth_tag
+       FROM conversation_messages AS cm
+       WHERE cm.telegram_user_id = $2
+         AND cm.telegram_chat_id = $3
+         AND cm.role = $4
+         AND cm.id = $1
+       FOR UPDATE`,
+      [reservationRow.message_id, input.telegramUserId, input.telegramChatId, input.role],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      if (reservationRow.message_id === null) {
+        const legacy = await this.db.query(
+          `SELECT cm.id
+           FROM conversation_messages AS cm
+           WHERE cm.telegram_user_id = $1 AND cm.telegram_chat_id = $2 AND cm.role = $3
+           LIMIT 1
+           FOR UPDATE`,
+          [input.telegramUserId, input.telegramChatId, input.role],
+        );
+        return legacy.rows.length > 0 ? null : undefined;
+      }
+      return undefined;
+    }
+    return {
+      role: row.role,
+      text: decryptText(
+        { ciphertext: row.ciphertext, iv: row.iv, tag: row.auth_tag },
+        this.key,
+        conversationAad(
+          row.telegram_user_id,
+          row.telegram_chat_id,
+          row.role,
+          row.id,
+          row.created_at.toISOString(),
+        ),
+      ),
+    };
   }
 
   async recent(

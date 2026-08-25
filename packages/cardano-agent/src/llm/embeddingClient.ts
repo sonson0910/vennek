@@ -1,3 +1,5 @@
+import { findWalletSecret } from "../security/walletSecrets.js";
+
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_INPUTS_PER_REQUEST = 64;
 const MAX_INPUT_CHARS_PER_REQUEST = 100_000;
@@ -27,12 +29,20 @@ export class EmbeddingClient {
       throw new Error("Embedding base URL must not include credentials");
     }
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("Embedding API key is required");
-    if (typeof model !== "string" || !model.trim()) throw new Error("Embedding model is required");
+    if (
+      typeof model !== "string" ||
+      !model ||
+      model.trim() !== model ||
+      Array.from(model).length > 128 ||
+      Buffer.byteLength(model, "utf8") > 128 ||
+      /[\p{Cc}\p{Cf}]/u.test(model) ||
+      findWalletSecret(model)
+    ) throw new Error("Embedding model is invalid");
     const normalizedBaseUrl = new URL(baseUrl.toString());
     if (!normalizedBaseUrl.pathname.endsWith("/")) normalizedBaseUrl.pathname += "/";
     this.endpoint = new URL("v1/embeddings", normalizedBaseUrl).toString();
     this.apiKey = apiKey.trim();
-    this.model = model.trim();
+    this.model = model;
   }
 
   async embed(input: string[], signal?: AbortSignal): Promise<EmbeddingResult[]> {

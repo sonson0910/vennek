@@ -33,6 +33,15 @@ describe("EmbeddingClient", () => {
     expect(() => new EmbeddingClient(endpoint, apiKey, " ")).toThrow(/model/i);
   });
 
+  it("rejects a wallet signing-key embedding alias before any request", () => {
+    const fetch = validFetch();
+    vi.stubGlobal("fetch", fetch);
+    const signingKey = "addr_xsk1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+
+    expect(() => new EmbeddingClient(endpoint, apiKey, signingKey)).toThrow(/model/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects empty input arrays and items before fetch", async () => {
     const fetch = validFetch();
     vi.stubGlobal("fetch", fetch);
