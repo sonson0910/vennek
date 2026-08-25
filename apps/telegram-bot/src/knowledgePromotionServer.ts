@@ -67,7 +67,7 @@ export function createKnowledgePromotionServer(
     }
     const declaredLength = contentLength(request.headers["content-length"]);
     if (declaredLength !== undefined && declaredLength > KNOWLEDGE_PROMOTION_MAX_BODY_BYTES) {
-      rejectAndDrain(request, response, 413);
+      rejectOversized(request, response);
       return;
     }
 
@@ -219,8 +219,7 @@ async function readBody(request: IncomingMessage, response: ServerResponse): Pro
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       total += bytes.byteLength;
       if (total > KNOWLEDGE_PROMOTION_MAX_BODY_BYTES) {
-        sendStatus(response, 413);
-        request.resume();
+        rejectOversized(request, response);
         done(undefined);
         return;
       }
@@ -258,6 +257,12 @@ function toHeaders(rawHeaders: readonly string[]): Headers {
 function rejectAndDrain(request: IncomingMessage, response: ServerResponse, status: number): void {
   sendStatus(response, status);
   request.resume();
+}
+
+function rejectOversized(request: IncomingMessage, response: ServerResponse): void {
+  request.pause();
+  response.once("finish", () => request.destroy());
+  sendStatus(response, 413);
 }
 
 function sendStatus(response: ServerResponse, status: number): void {

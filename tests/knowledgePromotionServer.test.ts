@@ -167,6 +167,50 @@ async function streamingOverflow(origin: URL, headers: Record<string, string>): 
   });
 }
 
+async function incompleteStreamingOverflow(origin: URL, headers: Record<string, string>): Promise<{
+  status: number;
+  body: string;
+  elapsedMs: number;
+}> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const socket = connectSocket(Number(origin.port), origin.hostname);
+    let received = "";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { received += chunk; });
+    socket.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+    });
+    socket.on("close", () => {
+      if (timer) clearTimeout(timer);
+      const separator = received.indexOf("\r\n\r\n");
+      const match = /^HTTP\/1\.1 (\d+)/u.exec(received);
+      resolve({
+        status: Number(match?.[1] ?? 0),
+        body: separator < 0 ? "" : received.slice(separator + 4),
+        elapsedMs: Date.now() - startedAt,
+      });
+    });
+    timer = setTimeout(() => socket.destroy(), 1_000);
+    socket.on("connect", () => {
+      const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}`);
+      socket.write([
+        `POST ${KNOWLEDGE_PROMOTION_PATH} HTTP/1.1`,
+        `Host: ${origin.host}`,
+        "Transfer-Encoding: chunked",
+        ...lines,
+        "",
+        "",
+      ].join("\r\n"));
+      const bytes = Buffer.alloc(KNOWLEDGE_PROMOTION_MAX_BODY_BYTES + 1, 65);
+      socket.write(`${bytes.byteLength.toString(16)}\r\n`);
+      socket.write(bytes);
+      // Deliberately hold the request open without the terminating chunk.
+    });
+  });
+}
+
 describe("knowledge promotion server", () => {
   it("authenticates, claims, promotes once, and returns no content", async () => {
     const { server, audit, promote } = serverWith();
@@ -240,6 +284,20 @@ describe("knowledge promotion server", () => {
     expect(streamed.status).toBe(413);
     expect(streamed.body).toBe("");
     expect(audit.claim).not.toHaveBeenCalled();
+  });
+
+  it("closes an incomplete overflowing upload after flushing empty 413", async () => {
+    const audit = fakeAudit();
+    const { server, promote } = serverWith({ audit: audit as never });
+    const origin = await listenForTest(server);
+    const result = await incompleteStreamingOverflow(origin, signedRawBody(Buffer.alloc(KNOWLEDGE_PROMOTION_MAX_BODY_BYTES + 1)));
+
+    expect(result.status).toBe(413);
+    expect(result.body).toBe("");
+    expect(result.elapsedMs).toBeLessThan(500);
+    expect(audit.claim).not.toHaveBeenCalled();
+    expect(audit.complete).not.toHaveBeenCalled();
+    expect(promote).not.toHaveBeenCalled();
   });
 
   it("audits authenticated invalid JSON and returns an empty 400", async () => {
