@@ -28,6 +28,20 @@ export type {
 } from "./privateComparison/privateDocumentProtocol.js";
 export { extractPrivateDocument } from "./privateComparison/privateDocumentWorker.js";
 export type { PrivateDocumentMetadata } from "./privateComparison/privateDocumentWorker.js";
+export {
+  createPrivateDocumentServer,
+  runPrivateDocumentWorker,
+  PRIVATE_DOCUMENT_FILE_NAME_HEADER,
+  PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES,
+  PRIVATE_DOCUMENT_MIME_HEADER,
+} from "./privateComparison/privateDocumentServer.js";
+export type {
+  PrivateDocumentServer,
+  PrivateDocumentServerOptions,
+  PrivateDocumentWorkerLike,
+} from "./privateComparison/privateDocumentServer.js";
+export { PrivateDocumentClient, createPrivateDocumentClient } from "./privateComparison/privateDocumentClient.js";
+export type { PrivateDocumentClientConfig } from "./privateComparison/privateDocumentClient.js";
 
 export { LiteLlmClient } from "./llm/liteLlmClient.js";
 export type {

@@ -1,0 +1,86 @@
+import * as http from "node:http";
+import { describe, expect, it } from "vitest";
+import {
+  PrivateDocumentClient,
+  createPrivateDocumentClient,
+} from "../packages/cardano-agent/src/privateComparison/privateDocumentClient.js";
+
+const token = Buffer.alloc(32, 8).toString("base64url");
+const metadata = { fileName: "claim 😀.txt", mime: "text/plain" };
+
+async function withServer(handler: http.RequestListener, callback: (url: string) => Promise<void>): Promise<void> {
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  try {
+    await callback(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
+
+describe("private document client", () => {
+  it("posts bounded binary data with encoded metadata and validates JSON", async () => {
+    await withServer((request, response) => {
+      expect(request.method).toBe("POST");
+      expect(request.url).toBe("/v1/extract/private-document");
+      expect(request.headers.authorization).toBe(`Bearer ${token}`);
+      expect(request.headers["content-type"]).toBe("application/octet-stream");
+      expect(request.headers["transfer-encoding"]).toBeUndefined();
+      expect(request.headers["x-private-document-file-name"]).toBe(Buffer.from(metadata.fileName).toString("base64url"));
+      expect(request.headers["x-private-document-mime"]).toBe(Buffer.from(metadata.mime).toString("base64url"));
+      request.resume();
+      request.on("end", () => {
+        const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
+        response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+        response.end(payload);
+      });
+    }, async (url) => {
+      const client = createPrivateDocumentClient({ url, token });
+      expect(client).toBeInstanceOf(PrivateDocumentClient);
+      await expect(client.extract(new Uint8Array([67, 97, 114, 100, 97, 110, 111]), metadata)).resolves.toEqual({
+        type: "text",
+        title: "claim",
+        text: "Cardano",
+      });
+    });
+  });
+
+  it("requires an exact internal HTTP origin and never follows redirects", () => {
+    expect(() => createPrivateDocumentClient({ url: "https://example.com", token })).toThrow();
+    expect(() => createPrivateDocumentClient({ url: "http://user@example.com", token })).toThrow();
+    expect(() => createPrivateDocumentClient({ url: "http://example.com/private", token })).toThrow();
+    expect(() => createPrivateDocumentClient({ url: "http://example.com/?secret=1", token })).toThrow();
+    expect(() => createPrivateDocumentClient({ url: "http://example.com/#secret", token })).toThrow();
+  });
+
+  it("fails closed on malformed, encoded, oversized, or cancelled responses", async () => {
+    await withServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain", "content-length": 1 });
+      response.end("x");
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      response.writeHead(302, { location: "http://example.com/secret" });
+      response.end();
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": 1 });
+      response.end("x");
+    }, async (url) => {
+      await expect(createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+    });
+    await withServer((_request, response) => {
+      setTimeout(() => response.end(JSON.stringify({ type: "text", title: "claim", text: "Cardano" })), 100);
+    }, async (url) => {
+      const controller = new AbortController();
+      const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata, controller.signal);
+      controller.abort();
+      await expect(extraction).rejects.toThrow(/private extractor/i);
+    });
+  });
+});
