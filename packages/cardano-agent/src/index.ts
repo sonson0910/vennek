@@ -102,6 +102,13 @@ export type {
   RepositoryOperationOptions,
   StoreVersionInput,
 } from "./knowledge/knowledgeRepository.js";
+export { PromotionAuditRepository } from "./knowledge/promotionAudit.js";
+export type {
+  PromotionClaim,
+  PromotionClaimInput,
+  PromotionCompletion,
+  PromotionOutcome,
+} from "./knowledge/promotionAudit.js";
 
 export { retrieveEvidence } from "./knowledge/retrieveEvidence.js";
 export type {
