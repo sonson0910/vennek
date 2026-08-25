@@ -19,10 +19,74 @@ describe.skipIf(!ownerUrl)("restricted knowledge role", () => {
     appUrl.password = finalPassword;
     const app = createDatabase(appUrl.toString());
     const auditRequestId = randomUUID();
+    const publicBypassTable = `vennek_knowledge_public_table_${process.pid}_${Date.now()}`;
+    const publicBypassSequence = `vennek_knowledge_public_sequence_${process.pid}_${Date.now()}`;
+    const publicBypassTableIdentifier = quoteIdentifier(publicBypassTable);
+    const publicBypassSequenceIdentifier = quoteIdentifier(publicBypassSequence);
     let knowledgeBoss: PgBoss | undefined;
     try {
+      await owner.query(`CREATE TABLE public.${publicBypassTableIdentifier} (id integer)`);
+      await owner.query(`CREATE SEQUENCE public.${publicBypassSequenceIdentifier}`);
+      await owner.query(`GRANT ALL PRIVILEGES ON TABLE public.${publicBypassTableIdentifier} TO PUBLIC`);
+      await owner.query(`GRANT ALL PRIVILEGES ON SEQUENCE public.${publicBypassSequenceIdentifier} TO PUBLIC`);
       await provisionKnowledgeRole(ownerUrl!, roleName, initialPassword);
       await provisionKnowledgeRole(ownerUrl!, roleName, finalPassword);
+      const bypassPrivileges = await owner.query<{
+        table_select: boolean;
+        table_insert: boolean;
+        table_update: boolean;
+        table_delete: boolean;
+        table_truncate: boolean;
+        table_references: boolean;
+        table_trigger: boolean;
+        sequence_usage: boolean;
+        sequence_select: boolean;
+        sequence_update: boolean;
+      }>(
+        `SELECT
+           has_table_privilege($1, $2, 'SELECT') AS table_select,
+           has_table_privilege($1, $2, 'INSERT') AS table_insert,
+           has_table_privilege($1, $2, 'UPDATE') AS table_update,
+           has_table_privilege($1, $2, 'DELETE') AS table_delete,
+           has_table_privilege($1, $2, 'TRUNCATE') AS table_truncate,
+           has_table_privilege($1, $2, 'REFERENCES') AS table_references,
+           has_table_privilege($1, $2, 'TRIGGER') AS table_trigger,
+           has_sequence_privilege($1, $3, 'USAGE') AS sequence_usage,
+           has_sequence_privilege($1, $3, 'SELECT') AS sequence_select,
+           has_sequence_privilege($1, $3, 'UPDATE') AS sequence_update`,
+        [roleName, `public.${publicBypassTableIdentifier}`, `public.${publicBypassSequenceIdentifier}`],
+      );
+      expect(bypassPrivileges.rows[0]).toEqual({
+        table_select: false,
+        table_insert: false,
+        table_update: false,
+        table_delete: false,
+        table_truncate: false,
+        table_references: false,
+        table_trigger: false,
+        sequence_usage: false,
+        sequence_select: false,
+        sequence_update: false,
+      });
+      const auditEffectivePrivileges = await owner.query<{
+        audit_select: boolean;
+        audit_insert: boolean;
+        audit_update: boolean;
+        audit_delete: boolean;
+      }>(
+        `SELECT
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'SELECT') AS audit_select,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'INSERT') AS audit_insert,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'UPDATE') AS audit_update,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'DELETE') AS audit_delete`,
+        [roleName],
+      );
+      expect(auditEffectivePrivileges.rows[0]).toEqual({
+        audit_select: true,
+        audit_insert: true,
+        audit_update: true,
+        audit_delete: true,
+      });
       const grants = await owner.query<{ table_name: string; privilege_type: string }>(
         `SELECT table_name, privilege_type FROM information_schema.role_table_grants
          WHERE grantee = $1 AND table_schema = 'public'
@@ -128,6 +192,8 @@ describe.skipIf(!ownerUrl)("restricted knowledge role", () => {
         "DELETE FROM public.knowledge_promotion_requests WHERE request_id = $1",
         [auditRequestId],
       ).catch(() => undefined);
+      await owner.query(`DROP TABLE IF EXISTS public.${publicBypassTableIdentifier}`).catch(() => undefined);
+      await owner.query(`DROP SEQUENCE IF EXISTS public.${publicBypassSequenceIdentifier}`).catch(() => undefined);
       const safe = quoteIdentifier(validateRoleName(roleName));
       await owner.query(`DROP OWNED BY ${safe}`).catch(() => undefined);
       await owner.query(`DROP ROLE ${safe}`).catch(() => undefined);

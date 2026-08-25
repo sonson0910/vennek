@@ -39,6 +39,8 @@ export async function provisionKnowledgeRole(databaseUrl: string, roleName: stri
     }
 
     await client.query("REVOKE CREATE ON SCHEMA public, knowledge_boss, pgboss FROM PUBLIC");
+    await client.query("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public, knowledge_boss, pgboss FROM PUBLIC");
+    await client.query("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public, knowledge_boss, pgboss FROM PUBLIC");
     await client.query(`REVOKE ALL PRIVILEGES ON SCHEMA public, knowledge_boss, pgboss FROM ${roleIdentifier}`);
     await client.query(`GRANT USAGE ON SCHEMA public, knowledge_boss TO ${roleIdentifier}`);
     await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ${roleIdentifier}`);

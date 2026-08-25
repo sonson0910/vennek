@@ -45,6 +45,10 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
     appUrl.username = roleName;
     appUrl.password = password;
     const app = createDatabase(appUrl.toString());
+    const publicBypassTable = `vennek_app_public_table_${process.pid}_${Date.now()}`;
+    const publicBypassSequence = `vennek_app_public_sequence_${process.pid}_${Date.now()}`;
+    const publicBypassTableIdentifier = quoteIdentifier(publicBypassTable);
+    const publicBypassSequenceIdentifier = quoteIdentifier(publicBypassSequence);
     const repository = new KnowledgeRepository(owner);
     const entry: SourceRegistryEntry = {
       id: sourceId,
@@ -63,6 +67,10 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
     };
 
     try {
+      await owner.query(`CREATE TABLE public.${publicBypassTableIdentifier} (id integer)`);
+      await owner.query(`CREATE SEQUENCE public.${publicBypassSequenceIdentifier}`);
+      await owner.query(`GRANT ALL PRIVILEGES ON TABLE public.${publicBypassTableIdentifier} TO PUBLIC`);
+      await owner.query(`GRANT ALL PRIVILEGES ON SEQUENCE public.${publicBypassSequenceIdentifier} TO PUBLIC`);
       await repository.ensureSource(entry);
       const version = await repository.storeVersion({
         sourceId,
@@ -82,6 +90,71 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       }]);
 
       await provisionAppRole(ownerUrl!, roleName, password);
+      const bypassPrivileges = await owner.query<{
+        table_select: boolean;
+        table_insert: boolean;
+        table_update: boolean;
+        table_delete: boolean;
+        table_truncate: boolean;
+        table_references: boolean;
+        table_trigger: boolean;
+        sequence_usage: boolean;
+        sequence_select: boolean;
+        sequence_update: boolean;
+      }>(
+        `SELECT
+           has_table_privilege($1, $2, 'SELECT') AS table_select,
+           has_table_privilege($1, $2, 'INSERT') AS table_insert,
+           has_table_privilege($1, $2, 'UPDATE') AS table_update,
+           has_table_privilege($1, $2, 'DELETE') AS table_delete,
+           has_table_privilege($1, $2, 'TRUNCATE') AS table_truncate,
+           has_table_privilege($1, $2, 'REFERENCES') AS table_references,
+           has_table_privilege($1, $2, 'TRIGGER') AS table_trigger,
+           has_sequence_privilege($1, $3, 'USAGE') AS sequence_usage,
+           has_sequence_privilege($1, $3, 'SELECT') AS sequence_select,
+           has_sequence_privilege($1, $3, 'UPDATE') AS sequence_update`,
+        [roleName, `public.${publicBypassTableIdentifier}`, `public.${publicBypassSequenceIdentifier}`],
+      );
+      expect(bypassPrivileges.rows[0]).toEqual({
+        table_select: false,
+        table_insert: false,
+        table_update: false,
+        table_delete: false,
+        table_truncate: false,
+        table_references: false,
+        table_trigger: false,
+        sequence_usage: false,
+        sequence_select: false,
+        sequence_update: false,
+      });
+      const allowedPrivileges = await owner.query<{
+        retrieval_select: boolean;
+        retrieval_insert: boolean;
+        retrieval_update: boolean;
+        retrieval_delete: boolean;
+        conversation_sequence_usage: boolean;
+        conversation_sequence_select: boolean;
+        conversation_sequence_update: boolean;
+      }>(
+        `SELECT
+           has_table_privilege($1, 'public.retrieval_cache', 'SELECT') AS retrieval_select,
+           has_table_privilege($1, 'public.retrieval_cache', 'INSERT') AS retrieval_insert,
+           has_table_privilege($1, 'public.retrieval_cache', 'UPDATE') AS retrieval_update,
+           has_table_privilege($1, 'public.retrieval_cache', 'DELETE') AS retrieval_delete,
+           has_sequence_privilege($1, 'public.conversation_messages_id_seq', 'USAGE') AS conversation_sequence_usage,
+           has_sequence_privilege($1, 'public.conversation_messages_id_seq', 'SELECT') AS conversation_sequence_select,
+           has_sequence_privilege($1, 'public.conversation_messages_id_seq', 'UPDATE') AS conversation_sequence_update`,
+        [roleName],
+      );
+      expect(allowedPrivileges.rows[0]).toEqual({
+        retrieval_select: true,
+        retrieval_insert: true,
+        retrieval_update: true,
+        retrieval_delete: true,
+        conversation_sequence_usage: true,
+        conversation_sequence_select: false,
+        conversation_sequence_update: false,
+      });
       await owner.query("INSERT INTO telegram_users (telegram_user_id) VALUES ($1)", [telegramUserId]);
       await app.query(
         `INSERT INTO usage_ledger
@@ -107,6 +180,25 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
         [roleName],
       );
       expect(auditGrants.rows).toEqual([]);
+      const auditEffectivePrivileges = await owner.query<{
+        audit_select: boolean;
+        audit_insert: boolean;
+        audit_update: boolean;
+        audit_delete: boolean;
+      }>(
+        `SELECT
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'SELECT') AS audit_select,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'INSERT') AS audit_insert,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'UPDATE') AS audit_update,
+           has_table_privilege($1, 'public.knowledge_promotion_requests', 'DELETE') AS audit_delete`,
+        [roleName],
+      );
+      expect(auditEffectivePrivileges.rows[0]).toEqual({
+        audit_select: false,
+        audit_insert: false,
+        audit_update: false,
+        audit_delete: false,
+      });
       const auditRequestId = randomUUID();
       const auditNonceDigest = createHash("sha256").update(auditRequestId).digest();
       await expect(app.query(
@@ -157,6 +249,8 @@ describe.skipIf(!ownerUrl)("restricted application role", () => {
       await owner.query("DELETE FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(query)]).catch(() => undefined);
       await owner.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
       await owner.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await owner.query(`DROP TABLE IF EXISTS public.${publicBypassTableIdentifier}`).catch(() => undefined);
+      await owner.query(`DROP SEQUENCE IF EXISTS public.${publicBypassSequenceIdentifier}`).catch(() => undefined);
       await cleanupRole(owner, roleName).catch(() => undefined);
       await owner.end();
     }

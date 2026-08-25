@@ -96,6 +96,8 @@ export async function provisionAppRole(
 
     await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
     await client.query("REVOKE CREATE ON SCHEMA pgboss FROM PUBLIC");
+    await client.query("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public, pgboss FROM PUBLIC");
+    await client.query("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public, pgboss FROM PUBLIC");
     await client.query(`REVOKE CREATE ON SCHEMA public, pgboss FROM ${roleIdentifier}`);
     await client.query(`GRANT USAGE ON SCHEMA public, pgboss TO ${roleIdentifier}`);
     await client.query(`
