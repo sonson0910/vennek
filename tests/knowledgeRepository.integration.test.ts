@@ -19,6 +19,36 @@ const githubEntry: SourceRegistryEntry = {
 };
 
 describe("knowledge repository validation", () => {
+  it("bounds ensureSource acquisition and releases a client that arrives after abort", async () => {
+    let resolveClient!: (client: PoolClient) => void;
+    const connect = vi.fn(() => new Promise<PoolClient>((resolve) => { resolveClient = resolve; }));
+    const db = { connect } as unknown as Pool;
+    const repository = new KnowledgeRepository(db);
+    const controller = new AbortController();
+    const pending = repository.ensureSource(githubEntry, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow(/abort|timeout/i);
+    const lateClient = { release: vi.fn(), query: vi.fn() } as unknown as PoolClient;
+    resolveClient(lateClient);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(lateClient.release).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("bounds ensureSource acquisition by a deadline and releases a late client", async () => {
+    let resolveClient!: (client: PoolClient) => void;
+    const db = {
+      connect: vi.fn(() => new Promise<PoolClient>((resolve) => { resolveClient = resolve; })),
+    } as unknown as Pool;
+    const repository = new KnowledgeRepository(db);
+    const pending = repository.ensureSource(githubEntry, { deadlineAt: Date.now() + 5 });
+    await expect(pending).rejects.toThrow(/timed out|timeout/i);
+    const lateClient = { release: vi.fn(), query: vi.fn() } as unknown as PoolClient;
+    resolveClient(lateClient);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(lateClient.release).toHaveBeenCalledOnce();
+  });
+
   it("rejects invalid versions before touching the pool", async () => {
     let connectCalls = 0;
     const db = {

@@ -3,6 +3,7 @@ export interface AgentConfig {
   encryptionKey: Buffer;
   liteLlmBaseUrl: URL;
   liteLlmApiKey: string;
+  searxngBaseUrl?: URL;
   models: {
     fast: string;
     quality: string;
@@ -52,11 +53,33 @@ export function parseAgentConfig(env: Environment): AgentConfig {
     throw new Error("LITELLM_BASE_URL must use http or https");
   }
 
+  const searxngValue = env.SEARXNG_BASE_URL;
+  let searxngBaseUrl: URL | undefined;
+  if (searxngValue !== undefined) {
+    try {
+      searxngBaseUrl = new URL(searxngValue.trim());
+    } catch {
+      throw new Error("SEARXNG_BASE_URL must be a valid URL");
+    }
+    if (
+      !["http:", "https:"].includes(searxngBaseUrl.protocol) ||
+      searxngBaseUrl.username ||
+      searxngBaseUrl.password ||
+      searxngBaseUrl.pathname !== "/" ||
+      searxngBaseUrl.search ||
+      searxngBaseUrl.hash ||
+      !searxngValue.trim()
+    ) {
+      throw new Error("SEARXNG_BASE_URL must be an HTTP(S) origin without credentials or path");
+    }
+  }
+
   return {
     databaseUrl: required("DATABASE_URL"),
     encryptionKey,
     liteLlmBaseUrl,
     liteLlmApiKey: required("LITELLM_API_KEY"),
+    ...(searxngBaseUrl ? { searxngBaseUrl } : {}),
     models: {
       fast: required("VENNEK_MODEL_FAST"),
       quality: required("VENNEK_MODEL_QUALITY"),

@@ -29,6 +29,21 @@ describe("parseAgentConfig", () => {
       },
     });
     expect(config.encryptionKey.length).toBe(32);
+    expect(config.searxngBaseUrl).toBeUndefined();
+  });
+
+  it("parses an optional SearXNG origin and rejects unsafe forms", () => {
+    const config = parseAgentConfig({ ...validEnvironment, SEARXNG_BASE_URL: "https://search.example.test/" });
+    expect(config.searxngBaseUrl).toEqual(new URL("https://search.example.test/"));
+    for (const value of [
+      "ftp://search.example.test/",
+      "https://user:secret@search.example.test/",
+      "https://search.example.test/search",
+      "https://search.example.test/?q=secret",
+      "https://search.example.test/#fragment",
+    ]) {
+      expect(() => parseAgentConfig({ ...validEnvironment, SEARXNG_BASE_URL: value })).toThrow(/SEARXNG_BASE_URL/);
+    }
   });
 
   it("rejects an encryption key that is not exactly 32 bytes", () => {

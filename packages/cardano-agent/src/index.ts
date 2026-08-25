@@ -103,3 +103,18 @@ export type {
   RetrieveEvidenceDependencies,
   RetrieveEvidenceInput,
 } from "./knowledge/retrieveEvidence.js";
+
+export { SearxngClient } from "./knowledge/searxng.js";
+export type { SearxngFetch, SearxngResult } from "./knowledge/searxng.js";
+export {
+  buildOfficialSearchQuery,
+  discoverLiveSources,
+  promoteDiscoveredLink,
+} from "./knowledge/liveDiscovery.js";
+export type {
+  DiscoveredLink,
+  DiscoverLiveSourcesInput,
+  LiveDiscoverySearch,
+  PromoteDiscoveredLinkInput,
+  PromotedDiscoveredLink,
+} from "./knowledge/liveDiscovery.js";

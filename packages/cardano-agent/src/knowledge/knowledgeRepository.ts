@@ -267,10 +267,11 @@ async function runBoundedTransaction<T>(
   options: RepositoryOperationOptions,
   operation: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await db.connect();
+  let client: PoolClient | undefined;
   let inTransaction = false;
   let releaseError: Error | undefined;
   try {
+    client = await acquireBoundedClient(db, options);
     ensureOperationActive(options);
     await client.query("BEGIN");
     inTransaction = true;
@@ -282,7 +283,7 @@ async function runBoundedTransaction<T>(
     ensureOperationActive(options);
     return result;
   } catch (error) {
-    if (inTransaction) {
+    if (inTransaction && client) {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
@@ -293,17 +294,78 @@ async function runBoundedTransaction<T>(
     }
     throw operationError(error, options);
   } finally {
-    client.release(releaseError);
+    client?.release(releaseError);
+  }
+}
+
+async function acquireBoundedClient(db: Pool, options: RepositoryOperationOptions): Promise<PoolClient> {
+  ensureOperationActive(options);
+  let connectPromise: Promise<PoolClient>;
+  try {
+    connectPromise = Promise.resolve(db.connect());
+  } catch (error) {
+    throw operationError(error, options);
+  }
+  connectPromise.catch(() => undefined);
+  const remaining = remainingOperationMs(options);
+  if (remaining === undefined && !options.signal) {
+    const client = await connectPromise;
+    try {
+      ensureOperationActive(options);
+      return client;
+    } catch (error) {
+      client.release();
+      throw operationError(error, options);
+    }
+  }
+  if (remaining !== undefined && remaining <= 0) {
+    void connectPromise.then((lateClient) => lateClient.release(), () => undefined);
+    ensureOperationActive(options);
+    throw new Error("Knowledge repository operation timed out.");
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+  let cancelled = false;
+  let acquired: PoolClient | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    if (remaining !== undefined) {
+      timer = setTimeout(() => {
+        cancelled = true;
+        reject(new Error("Knowledge repository operation timed out."));
+      }, Math.max(1, Math.floor(remaining)));
+    }
+    if (options.signal) {
+      abortHandler = () => {
+        cancelled = true;
+        reject(new Error("Knowledge repository operation aborted."));
+      };
+      options.signal.addEventListener("abort", abortHandler, { once: true });
+    }
+  });
+  try {
+    acquired = await Promise.race([connectPromise, cancellation]);
+    if (timer) clearTimeout(timer);
+    if (abortHandler && options.signal) options.signal.removeEventListener("abort", abortHandler);
+    ensureOperationActive(options);
+    return acquired;
+  } catch (error) {
+    if (timer) clearTimeout(timer);
+    if (abortHandler && options.signal) options.signal.removeEventListener("abort", abortHandler);
+    if (acquired) acquired.release();
+    else if (cancelled) void connectPromise.then((lateClient) => lateClient.release(), () => undefined);
+    throw operationError(error, options);
   }
 }
 
 export class KnowledgeRepository {
   constructor(private readonly db: Pool) {}
 
-  async ensureSource(entry: SourceRegistryEntry): Promise<void> {
+  async ensureSource(entry: SourceRegistryEntry, options?: RepositoryOperationOptions): Promise<void> {
     const [validated] = validateSourceRegistry([entry]);
     const parameters = [validated.id, validated.owner, validated.trustTier, JSON.stringify(validated)];
     if (typeof this.db.connect !== "function") {
+      ensureOperationActive(options);
       await this.db.query(
         `INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
          VALUES ($1, $2, $3, $4::jsonb)
@@ -313,13 +375,11 @@ export class KnowledgeRepository {
            registry = EXCLUDED.registry`,
         parameters,
       );
+      ensureOperationActive(options);
       return;
     }
-    const client = await this.db.connect();
-    let inTransaction = false;
-    try {
-      await client.query("BEGIN");
-      inTransaction = true;
+    await runBoundedTransaction(this.db, options ?? {}, async (client) => {
+      ensureOperationActive(options);
       await client.query(
         `WITH changed AS (
            INSERT INTO knowledge_sources (id, owner, trust_tier, registry)
@@ -341,14 +401,8 @@ export class KnowledgeRepository {
          SELECT count(*) FROM bumped`,
         parameters,
       );
-      await client.query("COMMIT");
-      inTransaction = false;
-    } catch (error) {
-      if (inTransaction) await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+      ensureOperationActive(options);
+    });
   }
 
   async getGithubEndpointState(
