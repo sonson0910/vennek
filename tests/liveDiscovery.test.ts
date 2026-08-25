@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildOfficialSearchQuery,
   discoverLiveSources,
+  promoteQuestionSources,
   promoteDiscoveredLink,
   type DiscoveredLink,
 } from "../packages/cardano-agent/src/knowledge/liveDiscovery.js";
@@ -153,7 +154,7 @@ describe("SearXNG live discovery", () => {
   });
 
   it("discards unsafe URLs and never promotes a discovery result before indexing", async () => {
-    const search = vi.fn(async () => [
+    const search = vi.fn(async (_query: string) => [
       result("http://docs.cardano.org/insecure"),
       result("https://user:pass@docs.cardano.org/credentials"),
       result("https://127.0.0.1/private"),
@@ -167,11 +168,13 @@ describe("SearXNG live discovery", () => {
       registry: [entry, communityEntry],
       search: { search },
     });
+    expect(search.mock.calls[0]?.[0]).toBe("Cardano guide (site:docs.cardano.org)");
     expect(links).toEqual(expect.arrayContaining([
       expect.objectContaining({ url: "https://docs.cardano.org/guide", trustTier: "unverified", matchedSourceId: "official-docs" }),
-      expect.objectContaining({ url: "https://community.example.org/community", trustTier: "unverified", matchedSourceId: "community-docs" }),
+      expect.objectContaining({ url: "https://community.example.org/community", trustTier: "unverified" }),
       expect.objectContaining({ url: "https://evil.example.org/off-domain", trustTier: "unverified" }),
     ]));
+    expect(links.find((link) => link.url === "https://community.example.org/community")).not.toHaveProperty("matchedSourceId");
     expect(links).toHaveLength(3);
 
     const officialLink = links.find((link) => link.matchedSourceId === entry.id)!;
@@ -223,5 +226,158 @@ describe("SearXNG live discovery", () => {
       signal: new AbortController().signal,
     })).rejects.toThrow(/index|failed/i);
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("selects one tier for domains and returns no matches without searching empty tiers", async () => {
+    const search = vi.fn(async (_query: string) => [result("https://community.example.org/community")]);
+    await expect(discoverLiveSources({
+      query: "Community guide",
+      registry: [entry, communityEntry],
+      search: { search },
+      trustTier: "community",
+    })).resolves.toEqual([
+      expect.objectContaining({ matchedSourceId: "community-docs" }),
+    ]);
+    expect(search.mock.calls[0]?.[0]).toBe("Community guide (site:community.example.org)");
+
+    const officialOnly = vi.fn(async () => [result("https://community.example.org/community")]);
+    await expect(discoverLiveSources({
+      query: "Community guide",
+      registry: [communityEntry],
+      search: { search: officialOnly },
+    })).resolves.toEqual([]);
+    expect(officialOnly).not.toHaveBeenCalled();
+  });
+
+  it("suppresses community fallback after one official match", async () => {
+    const search = vi.fn()
+      .mockResolvedValueOnce([result("https://docs.cardano.org/guide")])
+      .mockResolvedValueOnce([result("https://community.example.org/community")]);
+    const promote = vi.fn(async (link: DiscoveredLink) => link);
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry, communityEntry],
+      search: { search },
+      promote,
+      now: () => 10_000,
+    })).resolves.toEqual({ outcome: "promoted", promotedCount: 1 });
+    expect(search).toHaveBeenCalledOnce();
+    expect(promote).toHaveBeenCalledOnce();
+  });
+
+  it("runs exactly one community fallback when official has no match", async () => {
+    const search = vi.fn()
+      .mockResolvedValueOnce([result("https://unregistered.example.org/guide")])
+      .mockResolvedValueOnce([result("https://community.example.org/community")]);
+    const promote = vi.fn(async (link: DiscoveredLink) => link);
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry, communityEntry],
+      search: { search },
+      promote,
+    })).resolves.toEqual({ outcome: "promoted", promotedCount: 1 });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search.mock.calls[0]?.[0]).toBe("Cardano guide (site:docs.cardano.org)");
+    expect(search.mock.calls[1]?.[0]).toBe("Cardano guide (site:community.example.org)");
+    expect(promote).toHaveBeenCalledWith(
+      expect.objectContaining({ matchedSourceId: "community-docs" }),
+      expect.any(AbortSignal),
+      expect.any(Number),
+    );
+  });
+
+  it("deduplicates URLs and source IDs and promotes only the first three in order", async () => {
+    const officialEntries = Array.from({ length: 4 }, (_, index) => ({
+      ...entry,
+      id: `official-${index}`,
+      url: `https://docs${index}.cardano.org/`,
+      allowedDomains: [`docs${index}.cardano.org`],
+    }));
+    let searchSignal: AbortSignal | undefined;
+    const search = vi.fn(async (_query: string, signal?: AbortSignal) => {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      searchSignal = signal;
+      return [
+        result("https://docs0.cardano.org/a"),
+        result("https://docs0.cardano.org/a-duplicate"),
+        result("https://docs0.cardano.org/a"),
+        result("https://docs1.cardano.org/b"),
+        result("https://docs2.cardano.org/c"),
+        result("https://docs3.cardano.org/d"),
+      ];
+    });
+    const parent = new AbortController();
+    const seenSignals: AbortSignal[] = [];
+    const seenDeadlines: number[] = [];
+    const promote = vi.fn(async (link: DiscoveredLink, signal: AbortSignal, deadlineAt: number) => {
+      seenSignals.push(signal);
+      seenDeadlines.push(deadlineAt);
+      return link;
+    });
+    await expect(promoteQuestionSources({
+      question: "latest Cardano node",
+      registry: officialEntries,
+      search: { search },
+      promote,
+      signal: parent.signal,
+      now: () => 10_000,
+    })).resolves.toEqual({ outcome: "promoted", promotedCount: 3 });
+    expect(promote.mock.calls.map(([link]) => link.matchedSourceId)).toEqual([
+      "official-0", "official-1", "official-2",
+    ]);
+    expect(new Set(seenSignals).size).toBe(1);
+    expect(seenSignals[0]).toBe(searchSignal);
+    expect(new Set(seenDeadlines)).toEqual(new Set([55_000]));
+  });
+
+  it("returns no_match without invoking promotion when neither tier matches", async () => {
+    const search = vi.fn(async () => [result("https://unregistered.example.org/guide")]);
+    const promote = vi.fn(async (link: DiscoveredLink) => link);
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry, communityEntry],
+      search: { search },
+      promote,
+    })).resolves.toEqual({ outcome: "no_match", promotedCount: 0 });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(promote).not.toHaveBeenCalled();
+  });
+
+  it("propagates parent abort, deadline validation, and injected failures", async () => {
+    const parent = new AbortController();
+    parent.abort();
+    const abortedSearch = vi.fn(async () => [result("https://docs.cardano.org/guide")]);
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry],
+      search: { search: abortedSearch },
+      promote: vi.fn(async (link: DiscoveredLink) => link),
+      signal: parent.signal,
+    })).rejects.toThrow();
+    expect(abortedSearch).not.toHaveBeenCalled();
+
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry],
+      search: { search: vi.fn(async () => []) },
+      promote: vi.fn(async (link: DiscoveredLink) => link),
+      now: () => Number.NaN,
+    })).rejects.toThrow(/time|deadline/i);
+
+    const searchFailure = new Error("search failure");
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry],
+      search: { search: vi.fn(async () => { throw searchFailure; }) },
+      promote: vi.fn(async (link: DiscoveredLink) => link),
+    })).rejects.toBe(searchFailure);
+
+    const promoteFailure = new Error("promote failure");
+    await expect(promoteQuestionSources({
+      question: "Cardano guide",
+      registry: [entry],
+      search: { search: vi.fn(async () => [result("https://docs.cardano.org/guide")]) },
+      promote: vi.fn(async () => { throw promoteFailure; }),
+    })).rejects.toBe(promoteFailure);
   });
 });

@@ -122,12 +122,14 @@ export type { SearxngFetch, SearxngResult } from "./knowledge/searxng.js";
 export {
   buildOfficialSearchQuery,
   discoverLiveSources,
+  promoteQuestionSources,
   promoteDiscoveredLink,
 } from "./knowledge/liveDiscovery.js";
 export type {
   DiscoveredLink,
   DiscoverLiveSourcesInput,
   LiveDiscoverySearch,
+  PromoteQuestionSourcesInput,
   PromoteDiscoveredLinkInput,
   PromotedDiscoveredLink,
 } from "./knowledge/liveDiscovery.js";

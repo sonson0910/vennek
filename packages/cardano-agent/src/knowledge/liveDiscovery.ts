@@ -19,6 +19,7 @@ const MAX_URL_CHARS = 2_048;
 const MAX_RESULTS = 10;
 const MAX_TITLE_CHARS = 300;
 const MAX_CONTENT_CHARS = 1_000;
+const QUESTION_PROMOTION_DEADLINE_MS = 45_000;
 const PROMOTION_DEADLINE_MS = 120_000;
 
 export type DiscoveredLink = {
@@ -35,7 +36,17 @@ export type DiscoverLiveSourcesInput = {
   query: string;
   registry: unknown;
   search: LiveDiscoverySearch;
+  trustTier?: "official" | "community";
   signal?: AbortSignal;
+};
+
+export type PromoteQuestionSourcesInput = {
+  question: string;
+  registry: unknown;
+  search: LiveDiscoverySearch;
+  promote: (link: DiscoveredLink, signal: AbortSignal, deadlineAt: number) => Promise<unknown>;
+  signal?: AbortSignal;
+  now?: () => number;
 };
 
 export type PromoteDiscoveredLinkInput = {
@@ -71,12 +82,14 @@ export function buildOfficialSearchQuery(query: string, domains: string[]): stri
 export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Promise<DiscoveredLink[]> {
   const entries = validateRegistry(input.registry);
   if (!input.search || typeof input.search.search !== "function") throw new Error("Live discovery search client is required");
-  const officialDomains = normalizeSearchDomains(
-    entries.filter((entry) => entry.trustTier === "official").flatMap((entry) => entry.allowedDomains),
+  const trustTier = input.trustTier ?? "official";
+  if (trustTier !== "official" && trustTier !== "community") throw new Error("Live discovery trust tier is invalid");
+  const selectedDomains = normalizeSearchDomains(
+    entries.filter((entry) => entry.trustTier === trustTier).flatMap((entry) => entry.allowedDomains),
   );
-  if (officialDomains.length === 0) return [];
+  if (selectedDomains.length === 0) return [];
   input.signal?.throwIfAborted();
-  const results = await input.search.search(buildOfficialSearchQuery(input.query, officialDomains), input.signal);
+  const results = await input.search.search(buildOfficialSearchQuery(input.query, selectedDomains), input.signal);
   const links: DiscoveredLink[] = [];
   const seen = new Set<string>();
   for (const result of results.slice(0, MAX_RESULTS)) {
@@ -86,7 +99,7 @@ export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Prom
     const content = boundedContent(result.content, MAX_CONTENT_CHARS);
     if (!title || content === undefined) continue;
     seen.add(url);
-    const matches = entries.filter((entry) => urlMatchesSourceScope(url, entry));
+    const matches = entries.filter((entry) => entry.trustTier === trustTier && urlMatchesSourceScope(url, entry));
     links.push({
       url,
       title,
@@ -96,6 +109,56 @@ export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Prom
     });
   }
   return links;
+}
+
+export async function promoteQuestionSources(input: PromoteQuestionSourcesInput): Promise<{
+  outcome: "promoted" | "no_match";
+  promotedCount: number;
+}> {
+  const startedAt = (input.now ?? Date.now)();
+  if (!Number.isFinite(startedAt)) throw new Error("Live discovery time is invalid");
+  const deadlineAt = startedAt + QUESTION_PROMOTION_DEADLINE_MS;
+  if (!Number.isFinite(deadlineAt)) throw new Error("Live discovery deadline is invalid");
+  const timeoutSignal = AbortSignal.timeout(QUESTION_PROMOTION_DEADLINE_MS);
+  const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
+
+  signal.throwIfAborted();
+  let links = await discoverLiveSources({
+    query: input.question,
+    registry: input.registry,
+    search: input.search,
+    trustTier: "official",
+    signal,
+  });
+  if (!links.some((link) => link.matchedSourceId)) {
+    signal.throwIfAborted();
+    links = await discoverLiveSources({
+      query: input.question,
+      registry: input.registry,
+      search: input.search,
+      trustTier: "community",
+      signal,
+    });
+  }
+
+  const selected = uniqueMatchedSources(links).slice(0, 3);
+  let promotedCount = 0;
+  for (const link of selected) {
+    signal.throwIfAborted();
+    await input.promote(link, signal, deadlineAt);
+    promotedCount += 1;
+  }
+  return { outcome: promotedCount > 0 ? "promoted" : "no_match", promotedCount };
+}
+
+function uniqueMatchedSources(links: DiscoveredLink[]): DiscoveredLink[] {
+  const sourceIds = new Set<string>();
+  return links.filter((link) => {
+    const sourceId = link.matchedSourceId;
+    if (!sourceId || sourceIds.has(sourceId)) return false;
+    sourceIds.add(sourceId);
+    return true;
+  });
 }
 
 export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): Promise<DiscoveredLink | PromotedDiscoveredLink> {
