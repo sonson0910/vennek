@@ -26,6 +26,7 @@ import {
 } from "@vennek/cardano-agent";
 import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
+import { parsePrivateComparisonEncryptionKey } from "./privateComparisonQueue.js";
 import { createTelegramApi, deliverMessage, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js";
 import {
@@ -329,11 +330,11 @@ async function runWorker(): Promise<void> {
 }
 
 async function runWebhook(): Promise<void> {
-  const { databaseUrl, webhookSecret } = webhookRuntimeConfig();
+  const { databaseUrl, webhookSecret, encryptionKey } = webhookRuntimeConfig();
   const db = createDatabase(databaseUrl);
   const boss = createRuntimePgBoss(db);
-  const queue = new PgBossAgentQueue(boss, db);
-  const options = createWebhookOptions(webhookSecret, queue.enqueue.bind(queue));
+  const queue = new PgBossAgentQueue(boss, db, encryptionKey);
+  const options = createWebhookOptions(webhookSecret, queue.enqueue.bind(queue), encryptionKey);
   const server = createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
     const requestAbort = new AbortController();
     const abort = (): void => {
@@ -506,8 +507,29 @@ function agentRuntimeConfig(): { config: AgentConfig; token: string } {
   return { config: parseAgentConfig(process.env), token: requiredEnv("TELEGRAM_BOT_TOKEN") };
 }
 
-function webhookRuntimeConfig(): { databaseUrl: string; webhookSecret: string } {
-  return { databaseUrl: requiredEnv("DATABASE_URL"), webhookSecret: requiredEnv("TELEGRAM_WEBHOOK_SECRET") };
+export type WebhookRuntimeConfig = {
+  databaseUrl: string;
+  webhookSecret: string;
+  encryptionKey: Buffer;
+};
+
+export function parseWebhookRuntimeConfig(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): WebhookRuntimeConfig {
+  const required = (name: string): string => {
+    const value = env[name]?.trim();
+    if (!value) throw new Error(`${name} is required`);
+    return value;
+  };
+  return {
+    databaseUrl: required("DATABASE_URL"),
+    webhookSecret: required("TELEGRAM_WEBHOOK_SECRET"),
+    encryptionKey: parsePrivateComparisonEncryptionKey(env),
+  };
+}
+
+function webhookRuntimeConfig(): WebhookRuntimeConfig {
+  return parseWebhookRuntimeConfig();
 }
 
 function requiredEnv(name: string): string {

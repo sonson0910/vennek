@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { protectWalletSecret, type AgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
+import { encryptPrivateComparisonJob, validatePrivateComparisonMetadata, type PrivateComparisonIngressJob } from "./privateComparisonQueue.js";
+import { protectWalletSecret, type AgentQueue, type TelegramAnswerJob, type TelegramIngressJob } from "./agentQueue.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_EMPTY_READS = 8;
@@ -7,19 +8,28 @@ export const TELEGRAM_TEXT_MAX_BYTES = 16_384;
 const MIN_WEBHOOK_SECRET_LENGTH = 32;
 const MAX_WEBHOOK_SECRET_LENGTH = 256;
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
+const COMPETING_MEDIA_FIELDS = [
+  "text", "audio", "animation", "photo", "sticker", "video", "video_note", "voice",
+  "contact", "location", "venue", "poll", "dice", "game",
+] as const;
 
 export type WebhookOptions = {
   secret: string;
   enqueue: AgentQueue["enqueue"];
+  encryptionKey?: Uint8Array;
 };
+
+export type TelegramParsedIngressJob =
+  | ({ kind: "answer" } & TelegramAnswerJob)
+  | PrivateComparisonIngressJob;
 
 class PayloadTooLargeError extends Error {}
 class InvalidPayloadError extends Error {}
 class RequestAbortedError extends Error {}
 
-export function createWebhookOptions(secret: string, enqueue: AgentQueue["enqueue"]): WebhookOptions {
+export function createWebhookOptions(secret: string, enqueue: AgentQueue["enqueue"], encryptionKey?: Uint8Array): WebhookOptions {
   assertWebhookSecret(secret);
-  return Object.freeze({ secret, enqueue });
+  return Object.freeze({ secret, enqueue, ...(encryptionKey === undefined ? {} : { encryptionKey }) });
 }
 
 export function assertWebhookSecret(secret: unknown): asserts secret is string {
@@ -73,7 +83,7 @@ export async function handleTelegramWebhook(request: Request, options: WebhookOp
 
   if (request.signal.aborted) return genericResponse(400, "Bad request");
 
-  let parsed: TelegramAnswerJob | undefined;
+  let parsed: TelegramParsedIngressJob | undefined;
   try {
     parsed = parseTelegramJob(body);
   } catch {
@@ -81,7 +91,23 @@ export async function handleTelegramWebhook(request: Request, options: WebhookOp
   }
 
   if (!parsed) return new Response(null, { status: 202 });
-  const job = protectWalletSecret(parsed);
+  if (parsed.kind === "private-compare" && options.encryptionKey === undefined) {
+    return genericResponse(500, "Internal server error");
+  }
+  let job: TelegramIngressJob;
+  try {
+    job = parsed.kind === "private-compare"
+      ? encryptPrivateComparisonJob(parsed, options.encryptionKey!)
+      : protectWalletSecret({
+        updateId: parsed.updateId,
+        telegramUserId: parsed.telegramUserId,
+        telegramChatId: parsed.telegramChatId,
+        text: parsed.text,
+        ...(parsed.walletSecretDetected ? { walletSecretDetected: true } : {}),
+      });
+  } catch {
+    return genericResponse(500, "Internal server error");
+  }
 
   try {
     await options.enqueue(job);
@@ -156,7 +182,7 @@ async function readChunk(
   });
 }
 
-function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
+export function parseTelegramJob(bytes: Uint8Array): TelegramParsedIngressJob | undefined {
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
@@ -176,6 +202,9 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
   const chat = message.chat;
   const userId = isPlainObject(from) ? from.id : undefined;
   const chatId = isPlainObject(chat) ? chat.id : undefined;
+  if (Object.prototype.hasOwnProperty.call(message, "document")) {
+    return parsePrivateComparisonJob(value.update_id, message, userId, chatId);
+  }
   const hasText = Object.prototype.hasOwnProperty.call(message, "text");
   if (!hasText) return undefined;
   if (typeof message.text !== "string") throw new InvalidPayloadError("Invalid text");
@@ -190,10 +219,69 @@ function parseTelegramJob(bytes: Uint8Array): TelegramAnswerJob | undefined {
   }
 
   return {
+    kind: "answer",
     updateId: value.update_id,
     telegramUserId: String(userId),
     telegramChatId: String(chatId),
     text: message.text,
+  };
+}
+
+function parsePrivateComparisonJob(
+  updateId: number,
+  message: Record<string, unknown>,
+  userId: unknown,
+  chatId: unknown,
+): PrivateComparisonIngressJob {
+  if (
+    !isPositiveSafeInteger(userId) ||
+    !isPositiveSafeInteger(chatId) ||
+    userId !== chatId ||
+    !isPlainObject(message.chat) ||
+    message.chat.type !== "private"
+  ) {
+    throw new InvalidPayloadError("Invalid private message");
+  }
+  if (COMPETING_MEDIA_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(message, field))) {
+    throw new InvalidPayloadError("Competing media fields are not accepted");
+  }
+  if (Object.prototype.hasOwnProperty.call(message, "media_group_id")) {
+    throw new InvalidPayloadError("Document albums are not accepted");
+  }
+  if (!Object.prototype.hasOwnProperty.call(message, "caption") || typeof message.caption !== "string") {
+    throw new InvalidPayloadError("Private comparison caption is required");
+  }
+  if (!isPlainObject(message.document)) throw new InvalidPayloadError("Invalid document");
+  const document = message.document;
+  const fileId = document.file_id;
+  const fileUniqueId = document.file_unique_id;
+  if (typeof fileId !== "string" || typeof fileUniqueId !== "string") {
+    throw new InvalidPayloadError("Invalid document identifiers");
+  }
+  const metadata: Record<string, unknown> = {
+    caption: message.caption,
+    fileId,
+    fileUniqueId,
+  };
+  if (Object.prototype.hasOwnProperty.call(document, "file_name")) {
+    if (typeof document.file_name !== "string") throw new InvalidPayloadError("Invalid document name");
+    metadata.fileName = document.file_name;
+  }
+  if (Object.prototype.hasOwnProperty.call(document, "mime_type")) {
+    if (typeof document.mime_type !== "string") throw new InvalidPayloadError("Invalid document MIME");
+    metadata.mime = document.mime_type;
+  }
+  if (Object.prototype.hasOwnProperty.call(document, "file_size")) {
+    if (typeof document.file_size !== "number") throw new InvalidPayloadError("Invalid document size");
+    metadata.fileSize = document.file_size;
+  }
+  const validated = validatePrivateComparisonMetadata(metadata);
+  return {
+    kind: "private-compare",
+    updateId,
+    telegramUserId: String(userId),
+    telegramChatId: String(chatId),
+    metadata: validated,
   };
 }
 

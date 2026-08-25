@@ -74,6 +74,9 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(webhookEnvironment?.TELEGRAM_WEBHOOK_SECRET).toBe(
       "replace-with-at-least-32-url-safe-characters",
     );
+    expect(webhookEnvironment?.VENNEK_ENCRYPTION_KEY).toBe(
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    );
     expect(workerEnvironment?.DATABASE_URL).toBe(
       "postgresql://vennek_app:replace-with-a-long-app-password@postgres:5432/vennek",
     );
@@ -96,7 +99,6 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
       expect(workerEnvironment?.[name]).toBeUndefined();
     }
     for (const name of [
-      "VENNEK_ENCRYPTION_KEY",
       "LITELLM_BASE_URL",
       "LITELLM_API_KEY",
       "VENNEK_MODEL_FAST",
@@ -181,6 +183,17 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     }
     expect(config.services["agent-worker"]?.networks).toEqual({ default: null });
     expect(config.services["knowledge-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
+  });
+});
+
+describe("webhook private intake deployment contract", () => {
+  it("requires only the encryption key for private intake and no model or extractor settings", () => {
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const webhookBlock = compose.slice(compose.indexOf("  telegram-webhook:"), compose.indexOf("  agent-worker:"));
+    expect(webhookBlock).toContain("VENNEK_ENCRYPTION_KEY: ${VENNEK_ENCRYPTION_KEY:?VENNEK_ENCRYPTION_KEY is required}");
+    for (const name of ["LITELLM_BASE_URL", "LITELLM_API_KEY", "VENNEK_MODEL_FAST", "VENNEK_PRIVATE_MODEL_QUALITY", "PRIVATE_DOCUMENT_EXTRACTOR_URL", "PRIVATE_DOCUMENT_EXTRACTOR_TOKEN"]) {
+      expect(webhookBlock).not.toContain(name);
+    }
   });
 });
 

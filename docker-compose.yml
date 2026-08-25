@@ -79,6 +79,7 @@ services:
     image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
     environment:
       DATABASE_URL: ${DATABASE_APP_URL:?DATABASE_APP_URL is required}
+      VENNEK_ENCRYPTION_KEY: ${VENNEK_ENCRYPTION_KEY:?VENNEK_ENCRYPTION_KEY is required}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET is required}
       PORT: "8080"
     command: ["node", "apps/telegram-bot/dist/main.js", "--webhook"]
