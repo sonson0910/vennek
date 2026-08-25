@@ -5,7 +5,7 @@ import type {
   CompletionOutput,
   EmbeddingProvider,
 } from "@vennek/cardano-agent";
-import { createRuntimeAgentDependencies } from "../apps/telegram-bot/src/main.js";
+import { createRuntimeAgentDependencies, parseAgentWorkerConfig } from "../apps/telegram-bot/src/main.js";
 
 function config(): AgentConfig {
   return {
@@ -77,5 +77,42 @@ describe("runtime agent composition", () => {
 
     expect(discover).toHaveBeenCalledOnce();
     expect(discover).toHaveBeenCalledWith({ question: "What is Cardano?", language: "en" });
+  });
+
+  it("requires private extractor and dedicated model aliases only for the agent worker", () => {
+    const key = Buffer.alloc(32, 7).toString("base64");
+    const environment = {
+      DATABASE_URL: "postgresql://vennek.test/vennek",
+      VENNEK_ENCRYPTION_KEY: key,
+      LITELLM_BASE_URL: "http://litellm.test/",
+      LITELLM_API_KEY: "test-key",
+      VENNEK_MODEL_FAST: "cardano-fast",
+      VENNEK_MODEL_QUALITY: "cardano-quality",
+      VENNEK_MODEL_VERIFIER: "cardano-verifier",
+      VENNEK_EMBEDDING_MODEL: "cardano-embedding",
+      PRIVATE_DOCUMENT_EXTRACTOR_URL: "http://private-document-extractor/",
+      PRIVATE_DOCUMENT_EXTRACTOR_TOKEN: Buffer.alloc(32, 8).toString("base64url"),
+      VENNEK_PRIVATE_MODEL_QUALITY: "cardano-private-quality",
+      VENNEK_PRIVATE_MODEL_VERIFIER: "cardano-private-verifier",
+    };
+
+    expect(parseAgentWorkerConfig(environment)).toMatchObject({
+      privateDocumentExtractorUrl: new URL(environment.PRIVATE_DOCUMENT_EXTRACTOR_URL),
+      privateDocumentExtractorToken: environment.PRIVATE_DOCUMENT_EXTRACTOR_TOKEN,
+      privateModels: { quality: environment.VENNEK_PRIVATE_MODEL_QUALITY, verifier: environment.VENNEK_PRIVATE_MODEL_VERIFIER },
+    });
+    for (const url of [
+      "https://private-document-extractor/",
+      "http://user:secret@private-document-extractor/",
+      "http://private-document-extractor/path",
+      "http://private-document-extractor/?query=secret",
+      "http://private-document-extractor/#fragment",
+    ]) {
+      expect(() => parseAgentWorkerConfig({ ...environment, PRIVATE_DOCUMENT_EXTRACTOR_URL: url })).toThrow();
+    }
+    expect(() => parseAgentWorkerConfig({ ...environment, PRIVATE_DOCUMENT_EXTRACTOR_TOKEN: `${environment.PRIVATE_DOCUMENT_EXTRACTOR_TOKEN}=`, })).toThrow();
+    expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_QUALITY: "cardano-quality" })).toThrow();
+    expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_VERIFIER: environment.VENNEK_PRIVATE_MODEL_QUALITY })).toThrow();
+    expect(() => parseAgentWorkerConfig({ ...environment, VENNEK_PRIVATE_MODEL_VERIFIER: `cardano-private-${"a".repeat(128)}` })).toThrow();
   });
 });

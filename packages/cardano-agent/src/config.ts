@@ -1,3 +1,5 @@
+import { validatePrivateDocumentToken } from "./privateComparison/privateDocumentProtocol.js";
+
 export interface AgentConfig {
   databaseUrl: string;
   encryptionKey: Buffer;
@@ -10,11 +12,21 @@ export interface AgentConfig {
     verifier: string;
     embedding: string;
   };
+  privateDocumentExtractorUrl?: URL;
+  privateDocumentExtractorToken?: string;
+  privateModels?: {
+    quality: string;
+    verifier: string;
+  };
 }
 
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
+export type AgentConfigOptions = Readonly<{
+  mode?: "text" | "worker";
+  requirePrivateComparison?: boolean;
+}>;
 
-export function parseAgentConfig(env: Environment): AgentConfig {
+export function parseAgentConfig(env: Environment, options: AgentConfigOptions = {}): AgentConfig {
   const required = (name: string): string => {
     const value = env[name]?.trim();
     if (!value) {
@@ -74,7 +86,7 @@ export function parseAgentConfig(env: Environment): AgentConfig {
     }
   }
 
-  return {
+  const config: AgentConfig = {
     databaseUrl: required("DATABASE_URL"),
     encryptionKey,
     liteLlmBaseUrl,
@@ -87,4 +99,52 @@ export function parseAgentConfig(env: Environment): AgentConfig {
       embedding: required("VENNEK_EMBEDDING_MODEL"),
     },
   };
+  if (options.mode === "worker" || options.requirePrivateComparison === true) {
+    const extractorUrl = parsePrivateExtractorUrl(required("PRIVATE_DOCUMENT_EXTRACTOR_URL"));
+    const extractorToken = required("PRIVATE_DOCUMENT_EXTRACTOR_TOKEN");
+    validatePrivateDocumentToken(extractorToken);
+    const privateQuality = parsePrivateModel(required("VENNEK_PRIVATE_MODEL_QUALITY"));
+    const privateVerifier = parsePrivateModel(required("VENNEK_PRIVATE_MODEL_VERIFIER"));
+    if (privateQuality === privateVerifier) throw new Error("Private model aliases must be distinct");
+    config.privateDocumentExtractorUrl = extractorUrl;
+    config.privateDocumentExtractorToken = extractorToken;
+    config.privateModels = { quality: privateQuality, verifier: privateVerifier };
+  }
+  return config;
+}
+
+export function parseAgentWorkerConfig(env: Environment): AgentConfig {
+  return parseAgentConfig(env, { mode: "worker" });
+}
+
+function parsePrivateExtractorUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("PRIVATE_DOCUMENT_EXTRACTOR_URL must be a valid URL");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("PRIVATE_DOCUMENT_EXTRACTOR_URL must be an internal HTTP origin without credentials or path");
+  }
+  return url;
+}
+
+function parsePrivateModel(value: string): string {
+  if (
+    Buffer.byteLength(value, "utf8") > 128 ||
+    Array.from(value).length > 128 ||
+    !/^cardano-private-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value)
+  ) {
+    throw new Error("Private model aliases must be bounded cardano-private-* aliases");
+  }
+  return value;
 }

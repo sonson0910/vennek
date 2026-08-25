@@ -8,6 +8,7 @@ import {
   ensureConversationPartitions,
   LiteLlmClient,
   KnowledgeRepository,
+  PrivateDocumentClient,
   PdfExtractorClient,
   PromotionAuditRepository,
   SearxngClient,
@@ -23,10 +24,15 @@ import {
   type PdfExtractor,
   type PromoteDiscoveredLinkInput,
   type QuestionRetrievalInput,
+  type PrivateComparisonCompletion,
 } from "@vennek/cardano-agent";
 import { createAgentAnswer, processAgentJob, type AgentAnswer, type AgentAnswerDependencies } from "./agentWorker.js";
 import { PgBossAgentQueue, type TelegramAnswerJob } from "./agentQueue.js";
-import { parsePrivateComparisonEncryptionKey } from "./privateComparisonQueue.js";
+import { PRIVATE_COMPARISON_QUEUE, parsePrivateComparisonEncryptionKey } from "./privateComparisonQueue.js";
+import {
+  processPrivateComparisonJob,
+  type PrivateComparisonFailureCategory,
+} from "./privateComparisonRuntime.js";
 import { createTelegramApi, deliverMessage, runPolling, type RuntimeLogLevel } from "./pollingRuntime.js";
 import { createWebhookOptions, handleTelegramWebhook } from "./webhookRuntime.js";
 import {
@@ -40,6 +46,10 @@ import { createKnowledgePromotionServer, type KnowledgePromotionServerDependenci
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { KnowledgePromotionClient } from "./knowledgePromotionClient.js";
 import { parsePromotionIdentity, parsePromotionOrigin, type PromotionIdentity } from "./knowledgePromotionProtocol.js";
+
+export function parseAgentWorkerConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AgentConfig {
+  return parseAgentConfig(env, { mode: "worker" });
+}
 
 const TELEGRAM_QUEUE = "telegram-answer";
 const PARTITION_QUEUE = "conversation-partition-maintenance";
@@ -289,11 +299,17 @@ async function runPoll(): Promise<void> {
 }
 
 async function runWorker(): Promise<void> {
-  const { config, token } = agentRuntimeConfig();
+  const { config, token } = agentRuntimeConfig(true);
   const promotionClient = new KnowledgePromotionClient(parseKnowledgePromotionClientConfig());
   const db = createDatabase(config.databaseUrl);
   const boss = createRuntimePgBoss(db);
   const api = createTelegramApi(token);
+  const extractor = new PrivateDocumentClient({
+    url: config.privateDocumentExtractorUrl!.toString(),
+    token: config.privateDocumentExtractorToken!,
+  });
+  const privateEmbedder = new EmbeddingClient(config.liteLlmBaseUrl, config.liteLlmApiKey, config.models.embedding);
+  const privateLlm = new LiteLlmClient(config.liteLlmBaseUrl, config.liteLlmApiKey);
   try {
     await ensureConversationPartitions(db);
     await boss.start();
@@ -321,6 +337,48 @@ async function runWorker(): Promise<void> {
         "UPDATE telegram_updates SET status = $1, processed_at = CASE WHEN $1 = 'processed' THEN now() ELSE processed_at END WHERE update_id = $2",
         [outcome.delivered ? "processed" : "failed", job.data.updateId],
       ).catch((error) => logJson("error", "telegram_update_status_failed", { updateId: job.data.updateId, error: sanitizeError(error) }));
+    });
+    await boss.work(PRIVATE_COMPARISON_QUEUE, async ([job]) => {
+      if (!job) return;
+      const data = job.data;
+      const updateId = typeof data === "object" && data !== null && typeof (data as { updateId?: unknown }).updateId === "number"
+        ? (data as { updateId: number }).updateId
+        : undefined;
+      try {
+        if (updateId === undefined) throw new Error("invalid private comparison job");
+        const outcome = await processPrivateComparisonJob(data, {
+          api,
+          encryptionKey: config.encryptionKey,
+          extractor,
+          retrieve: retrieveEvidence,
+          db,
+          embedder: privateEmbedder,
+          embeddingModel: config.models.embedding,
+          generationModel: config.privateModels!.quality,
+          verifierModel: config.privateModels!.verifier,
+          complete: privateCompletion(privateLlm),
+          recordUsage: (telegramUserId, usage) => recordPrivateUsage(db, telegramUserId, usage),
+          send: async (chatId, text) => {
+            const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000);
+            if (!delivery.delivered) {
+              logJson("warn", "telegram_delivery_abandoned", {
+                updateId,
+                chatHash: `chat-${hashChat(chatId)}`,
+                attempts: delivery.attempts,
+                ...(delivery.status === undefined ? {} : { status: delivery.status }),
+              });
+            }
+            return delivery;
+          },
+          signal: job.signal,
+          markStatus: (id, status) => markTelegramUpdate(db, id, status),
+          log: (category) => logPrivateComparisonFailure(category),
+        });
+        if (!outcome.delivered) throw new Error("private comparison delivery failed");
+      } catch (error) {
+        if (updateId === undefined) logPrivateComparisonFailure(privateFailureCategory(error));
+        throw error;
+      }
     });
     await waitForSignal();
   } finally {
@@ -503,8 +561,54 @@ export function createRuntimeAgentDependencies(
   };
 }
 
-function agentRuntimeConfig(): { config: AgentConfig; token: string } {
-  return { config: parseAgentConfig(process.env), token: requiredEnv("TELEGRAM_BOT_TOKEN") };
+function agentRuntimeConfig(requirePrivateComparison = false): { config: AgentConfig; token: string } {
+  return {
+    config: requirePrivateComparison ? parseAgentWorkerConfig(process.env) : parseAgentConfig(process.env),
+    token: requiredEnv("TELEGRAM_BOT_TOKEN"),
+  };
+}
+
+function privateCompletion(client: LiteLlmClient): PrivateComparisonCompletion {
+  return async (input) => {
+    const output = await client.complete(input);
+    return { ...output, model: input.model };
+  };
+}
+
+async function recordPrivateUsage(
+  db: ReturnType<typeof createDatabase>,
+  telegramUserId: string,
+  usage: { model: string; promptTokens: number; completionTokens: number; latencyMs: number },
+): Promise<void> {
+  await db.query(
+    `INSERT INTO usage_ledger
+     (telegram_user_id, model, prompt_tokens, completion_tokens, latency_ms)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [telegramUserId, usage.model, usage.promptTokens, usage.completionTokens, usage.latencyMs],
+  );
+}
+
+async function markTelegramUpdate(
+  db: ReturnType<typeof createDatabase>,
+  updateId: number,
+  status: "processed" | "failed",
+): Promise<void> {
+  await db.query(
+    "UPDATE telegram_updates SET status = $1, processed_at = CASE WHEN $1 = 'processed' THEN now() ELSE processed_at END WHERE update_id = $2",
+    [status, updateId],
+  );
+}
+
+function logPrivateComparisonFailure(category: PrivateComparisonFailureCategory): void {
+  logJson("error", "private_comparison_failed", { category });
+}
+
+function privateFailureCategory(error: unknown): PrivateComparisonFailureCategory {
+  if (error && typeof error === "object" && "category" in error) {
+    const category = (error as { category?: unknown }).category;
+    if (category === "validation" || category === "telegram" || category === "extraction" || category === "retrieval" || category === "comparison" || category === "delivery" || category === "processing") return category;
+  }
+  return "processing";
 }
 
 export type WebhookRuntimeConfig = {
