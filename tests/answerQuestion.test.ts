@@ -215,6 +215,23 @@ describe("natural-language question service", () => {
     expect(persist).toHaveBeenCalledWith(question);
   });
 
+  it("blocks a wallet secret after the first long-question scan window", async () => {
+    const persist = vi.fn();
+    const mnemonic = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
+    const question = input(`${"😀".repeat(8_192)} ${mnemonic}`);
+
+    expect(Array.from(question.text).length).toBeLessThanOrEqual(16_384);
+    expect(Buffer.byteLength(question.text, "utf8")).toBeLessThanOrEqual(64 * 1024);
+
+    const answer = await answerQuestion(question, {
+      persist,
+      retrieve: async () => [],
+    });
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(answer).toMatch(/wallet secret|seed phrase|private key/i);
+  });
+
   it("rejects a question over 16,384 code points before persistence", async () => {
     const persist = vi.fn();
     const question = input("😀".repeat(16_385));
