@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { deflateRawSync } from "node:zlib";
 import { extractPrivateDocument } from "../packages/cardano-agent/src/privateComparison/privateDocumentWorker.js";
 import { PRIVATE_DOCUMENT_MAX_BYTES, PRIVATE_DOCUMENT_MAX_CODE_POINTS } from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
@@ -77,14 +78,19 @@ function docx(extra: ZipEntry[] = [], contentTypes = DOCX_CONTENT_TYPES, rootRel
   ]);
 }
 
-function pdf(options: { text?: string; catalog?: string; page?: string; extraObjects?: string[]; objectStream?: boolean } = {}): Uint8Array {
+function pdf(options: { text?: string; pages?: string[]; catalog?: string; page?: string; extraObjects?: string[]; objectStream?: boolean; indirectLength?: boolean } = {}): Uint8Array {
   const content = options.text === undefined ? "BT /F1 18 Tf 72 720 Td (Cardano PDF) Tj ET" : options.text;
+  const pageContents = options.pages?.map((text) => `BT /F1 18 Tf 72 720 Td (${text}) Tj ET`) ?? [content];
+  const pageCount = pageContents.length;
+  const fontObject = pageCount + 3;
+  const contentObject = fontObject + 1;
   const objects = [
     `<< /Type /Catalog /Pages 2 0 R ${options.catalog ?? ""}>>`,
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R ${options.page ?? ""}>>`,
-    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, index) => `${index + 3} 0 R`).join(" ")}] /Count ${pageCount} >>`,
+    ...pageContents.map((_, index) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObject} 0 R >> >> /Contents ${contentObject + index} 0 R ${options.page ?? ""}>>`),
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ...pageContents.map((pageContent) => `<< /Length ${options.indirectLength ? `${contentObject + pageContents.length} 0 R` : Buffer.byteLength(pageContent)} >>\nstream\n${pageContent}\nendstream`),
+    ...(options.indirectLength ? [`${Buffer.byteLength(pageContents[0]!)}\n`] : []),
     ...(options.extraObjects ?? []),
   ];
   if (options.objectStream) {
@@ -168,6 +174,12 @@ describe("private document worker", () => {
 
     const wrongRoot = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"urn:not-a-word-document\" Target=\"word/document.xml\"/></Relationships>";
     await expect(extractPrivateDocument(docx([], DOCX_CONTENT_TYPES, wrongRoot), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
+
+    const duplicateRoot = DOCX_ROOT_RELS.replace("</Relationships>", "<Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"./word/document.xml\"/></Relationships>");
+    await expect(extractPrivateDocument(docx([], DOCX_CONTENT_TYPES, duplicateRoot), {
       fileName: "claim.docx",
       mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     })).rejects.toThrow(/Unsafe document/);
@@ -261,6 +273,30 @@ describe("private document worker", () => {
     await expect(extractPrivateDocument(pdf({ text: "" }), { fileName: "scan.pdf", mime: "application/pdf" })).rejects.toThrow(/Text unavailable/);
   }, 15_000);
 
+  it("separates text-bearing PDF pages and resolves safe indirect stream lengths", async () => {
+    await expect(extractPrivateDocument(pdf({ pages: ["Cardano page one", "Cardano page two"] }), {
+      fileName: "pages.pdf",
+      mime: "application/pdf",
+    })).resolves.toMatchObject({ type: "pdf", text: "Cardano page one\nCardano page two" });
+    await expect(extractPrivateDocument(pdf({ indirectLength: true }), {
+      fileName: "indirect-length.pdf",
+      mime: "application/pdf",
+    })).resolves.toMatchObject({ type: "pdf", text: "Cardano PDF" });
+    const indirectSource = Buffer.from(pdf({ indirectLength: true })).toString("latin1");
+    const lengthObject = /\n6 0 obj\n\d+\n\nendobj\n/u;
+    for (const [name, source] of [
+      ["missing", indirectSource.replace(lengthObject, "\n")],
+      ["non-integer", indirectSource.replace(lengthObject, "\n6 0 obj\n(42)\n\nendobj\n")],
+      ["cyclic", indirectSource.replace(lengthObject, "\n6 0 obj\n6 0 R\n\nendobj\n")],
+      ["duplicate", `${indirectSource}\n6 0 obj\n42\nendobj\n`],
+    ] as const) {
+      await expect(extractPrivateDocument(Buffer.from(source, "latin1"), {
+        fileName: `${name}-length.pdf`,
+        mime: "application/pdf",
+      })).rejects.toThrow(/Unsafe document/);
+    }
+  }, 15_000);
+
   it("rejects escaped catalog AA and semantic page/annotation actions", async () => {
     await expect(extractPrivateDocument(pdf({ catalog: "/#41A << /O << /S /GoTo /D [3 0 R /Fit] >> >> " }), {
       fileName: "catalog-aa.pdf",
@@ -302,7 +338,19 @@ describe("private document worker", () => {
       fileName: "hex-name.pdf",
       mime: "application/pdf",
     })).resolves.toMatchObject({ type: "pdf" });
+    const nameHeavy = `<< ${Array.from({ length: 50_000 }, (_, index) => `/Name${index} 0`).join(" ")} >>`;
+    await expect(extractPrivateDocument(pdf({ extraObjects: [nameHeavy] }), {
+      fileName: "name-heavy.pdf",
+      mime: "application/pdf",
+    })).resolves.toMatchObject({ type: "pdf" });
   }, 15_000);
+
+  it("keeps the pure extractor free of worker-thread listeners", () => {
+    const pureSource = readFileSync("packages/cardano-agent/src/privateComparison/privateDocumentWorker.ts", "utf8");
+    const threadSource = readFileSync("packages/cardano-agent/src/privateComparison/privateDocumentWorkerThread.ts", "utf8");
+    expect(pureSource).not.toContain("parentPort");
+    expect(threadSource).toContain("parentPort");
+  });
 
   it("keeps exact astral code-point bounds in the protocol validator", async () => {
     const text = "😀".repeat(PRIVATE_DOCUMENT_MAX_CODE_POINTS);

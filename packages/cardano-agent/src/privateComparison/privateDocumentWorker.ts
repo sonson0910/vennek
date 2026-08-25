@@ -1,7 +1,6 @@
 import { fileTypeFromBuffer } from "file-type";
 import * as yauzl from "yauzl";
 import { Readable } from "node:stream";
-import { parentPort } from "node:worker_threads";
 import {
   PRIVATE_DOCUMENT_MAX_BYTES,
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
@@ -17,6 +16,8 @@ const DOCX_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const DOCX_MAX_XML_BYTES = 1024 * 1024;
 const DOCX_MAX_COMPRESSION_RATIO = 100;
 const MAX_TEXT_CODE_UNITS = PRIVATE_DOCUMENT_MAX_TEXT_BYTES;
+const PDF_MAX_INTEGER_OBJECTS = 4_096;
+const PDF_MAX_NAME_TOKEN_BYTES = 128;
 
 const MIME_BY_TYPE: Record<PrivateDocumentType, string> = {
   pdf: "application/pdf",
@@ -134,10 +135,11 @@ function inspectDocxStructure(preflight: ZipPreflight): void {
   const rootRelationships = parseXml(preflight.relationships.get("_rels/.rels") ?? "", "Relationships")
     .filter((tag) => localXmlName(tag.name) === "Relationship");
   const officeDocumentType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-  if (!rootRelationships.some((tag) =>
-    tag.attributes.get("Type") === officeDocumentType &&
-    normalizePartName(tag.attributes.get("Target")) === "word/document.xml"
-  )) {
+  const officeDocumentRelationships = rootRelationships.filter((tag) => tag.attributes.get("Type") === officeDocumentType);
+  if (
+    officeDocumentRelationships.length !== 1 ||
+    normalizePartName(officeDocumentRelationships[0]?.attributes.get("Target")) !== "word/document.xml"
+  ) {
     throw new Error("Unsafe document");
   }
 
@@ -253,11 +255,13 @@ function preflightDocx(buffer: Buffer): Promise<ZipPreflight> {
         fail();
         return;
       }
-      settled = true;
-      resolve({
+      const result = {
         contentTypes: xmlParts.get("[Content_Types].xml") ?? "",
         relationships: new Map([...xmlParts.entries()].filter(([name]) => name.endsWith(".rels"))),
-      });
+      };
+      settled = true;
+      zip?.close();
+      resolve(result);
     };
 
     yauzl.fromBuffer(buffer, {
@@ -389,6 +393,7 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
     const parts: string[] = [];
     let total = 0;
     let hasText = false;
+    let pageBreakPending = false;
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       try {
@@ -402,6 +407,13 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
           str: "str" in item && typeof item.str === "string" ? item.str : "",
           hasEOL: "hasEOL" in item && item.hasEOL === true,
         }));
+        const hasPageContent = items.some((item) => item.str.length > 0 || item.hasEOL === true);
+        if (pageBreakPending && hasPageContent) {
+          total += 1;
+          if (total > MAX_TEXT_CODE_UNITS) throw new Error("Text unavailable");
+          parts.push("\n");
+          pageBreakPending = false;
+        }
         const follows = new Array<boolean>(items.length);
         let following = false;
         for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -422,6 +434,7 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
             parts.push(item.hasEOL ? "\n" : " ");
           }
         }
+        if (hasPageContent && pageNumber < document.numPages) pageBreakPending = true;
       } finally {
         page.cleanup();
       }
@@ -443,52 +456,66 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
 }
 
 function hasUnsafePdfSyntax(buffer: Buffer): boolean {
-  const names = pdfNameTokens(buffer);
-  return [
-    "__UnsafeSyntax", "__ObjStm", "ObjStm", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
-    "FileAttachment", "Launch", "SubmitForm", "ImportData", "GoToR", "GoToE", "GoTo", "Rendition", "Movie",
-    "Sound", "ResetForm",
-  ].some((name) => names.has(name));
+  return pdfNameTokens(buffer);
 }
 
-function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
+function collectPdfIntegerObjects(source: string): ReadonlyMap<number, number> | undefined {
+  const objects = new Map<number, number>();
+  const objectPattern = /(?:^|[\r\n])(\d+)[ \t]+0[ \t]+obj[ \t\r\n]+(-?\d+)[ \t\r\n]+endobj(?=[ \t\r\n]|$)/gu;
+  for (const match of source.matchAll(objectPattern)) {
+    const objectNumber = Number(match[1]);
+    const value = Number(match[2]);
+    if (
+      !Number.isSafeInteger(objectNumber) || !Number.isSafeInteger(value) ||
+      objectNumber < 0 || objectNumber > 0x7fffffff || objects.has(objectNumber) || objects.size >= PDF_MAX_INTEGER_OBJECTS
+    ) return undefined;
+    objects.set(objectNumber, value);
+  }
+  return objects;
+}
+
+function pdfNameTokens(buffer: Buffer): boolean {
   const source = buffer.toString("latin1");
-  const names = new Set<string>();
-  type PdfValue = Readonly<{ kind: "number" | "name" | "container" | "other"; value?: string | number }>;
+  const integerObjects = collectPdfIntegerObjects(source);
+  if (!integerObjects) return true;
+  type PdfValue = Readonly<{ kind: "number" | "name" | "container" | "other"; value?: number }>;
   type PdfDictionary = {
     pendingKey?: string;
-    values: Map<string, PdfValue>;
+    lengthValue?: number;
+    lengthSeen: boolean;
     malformed: boolean;
     topLevel: boolean;
     endOffset: number;
-    lastAssigned?: { key: string; kind: PdfValue["kind"] };
+    lastAssigned?: { key: string; kind: PdfValue["kind"]; value?: number };
     referencePending: boolean;
+    referenceGeneration?: number;
   };
   type PdfContainer = { kind: "dict"; dictionary: PdfDictionary } | { kind: "array" };
   const containers: PdfContainer[] = [];
   let streamCandidate: PdfDictionary | undefined;
   let index = 0;
 
-  const unsafe = () => {
-    names.add("__UnsafeSyntax");
-    return names;
-  };
+  const unsafe = () => true;
   const current = (): PdfContainer | undefined => containers[containers.length - 1];
   const assign = (value: PdfValue) => {
     const container = current();
     if (container?.kind !== "dict") return;
     if (container.dictionary.pendingKey === undefined) {
       if (value.kind === "number" && container.dictionary.lastAssigned?.kind === "number") {
-        if (container.dictionary.lastAssigned.key === "Length") container.dictionary.malformed = true;
-        else container.dictionary.referencePending = true;
+        container.dictionary.referencePending = true;
+        container.dictionary.referenceGeneration = value.value;
       }
       return;
     }
     const key = container.dictionary.pendingKey;
-    if (container.dictionary.values.has(key)) container.dictionary.malformed = true;
-    container.dictionary.values.set(key, value);
-    container.dictionary.lastAssigned = { key, kind: value.kind };
+    if (key === "Length") {
+      if (container.dictionary.lengthSeen) container.dictionary.malformed = true;
+      container.dictionary.lengthSeen = true;
+      if (value.kind === "number") container.dictionary.lengthValue = value.value;
+    }
+    container.dictionary.lastAssigned = { key, kind: value.kind, value: value.value };
     container.dictionary.referencePending = false;
+    container.dictionary.referenceGeneration = undefined;
     container.dictionary.pendingKey = undefined;
   };
   const inspectName = (name: string): boolean => {
@@ -496,6 +523,7 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
     if (name === "A" || name === "AA") {
       if (container?.kind === "dict") return true;
     }
+    if (name === "ObjStm") return true;
     if (name === "OpenAction" && container?.kind === "dict" && container.dictionary.pendingKey === undefined) return true;
     if (container?.kind === "dict" && container.dictionary.pendingKey === "Type" && name === "ObjStm") return true;
     if (container?.kind === "dict" && container.dictionary.pendingKey === "S" && ACTION_TYPES.has(name)) return true;
@@ -526,7 +554,7 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
       continue;
     }
     if (source.startsWith("<<", index)) {
-      containers.push({ kind: "dict", dictionary: { values: new Map(), malformed: false, topLevel: containers.length === 0, endOffset: 0, referencePending: false } });
+      containers.push({ kind: "dict", dictionary: { malformed: false, topLevel: containers.length === 0, endOffset: 0, lengthSeen: false, referencePending: false } });
       index += 2;
       streamCandidate = undefined;
       continue;
@@ -563,8 +591,12 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
         streamCandidate = undefined;
         continue;
       }
+      if (end - index - 1 > PDF_MAX_NAME_TOKEN_BYTES) {
+        streamCandidate = undefined;
+        index = end;
+        continue;
+      }
       const name = decodePdfName(source.slice(index + 1, end));
-      names.add(name);
       if (inspectName(name)) return unsafe();
       const container = current();
       if (container?.kind === "dict") {
@@ -573,7 +605,7 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
           container.dictionary.referencePending = false;
           container.dictionary.pendingKey = name;
         }
-        else assign({ kind: "name", value: name });
+        else assign({ kind: "name" });
       }
       streamCandidate = undefined;
       index = end;
@@ -591,11 +623,11 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
       if (!streamCandidate || !streamCandidate.topLevel || streamCandidate.malformed) return unsafe();
       const gap = source.slice(streamCandidate.endOffset ?? 0, wordStart);
       if (!/^[ \t]*(?:\r\n|\r|\n)$/u.test(gap)) return unsafe();
-      const lengthValue = streamCandidate.values.get("Length");
-      if (!lengthValue || lengthValue.kind !== "number" || !Number.isSafeInteger(lengthValue.value) || (lengthValue.value as number) < 0 || (lengthValue.value as number) > PRIVATE_DOCUMENT_MAX_BYTES) return unsafe();
+      const lengthValue = streamCandidate.lengthValue;
+      if (lengthValue === undefined || !Number.isSafeInteger(lengthValue) || lengthValue < 0 || lengthValue > PRIVATE_DOCUMENT_MAX_BYTES) return unsafe();
       const streamStart = skipPdfLineEnding(source, index);
       if (streamStart === index) return unsafe();
-      const contentEnd = streamStart + (lengthValue.value as number);
+      const contentEnd = streamStart + lengthValue;
       if (contentEnd > source.length) return unsafe();
       let endStream = contentEnd;
       if (source.startsWith("\r\n", endStream)) endStream += 2;
@@ -607,14 +639,24 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
     }
     const unrecognizedContainer = current();
     if (unrecognizedContainer?.kind === "dict" && word === "R" && unrecognizedContainer.dictionary.referencePending) {
+      if (unrecognizedContainer.dictionary.lastAssigned?.key === "Length") {
+        if (unrecognizedContainer.dictionary.referenceGeneration !== 0 || unrecognizedContainer.dictionary.lastAssigned.value === undefined) {
+          unrecognizedContainer.dictionary.malformed = true;
+        } else {
+          const resolvedLength = integerObjects.get(unrecognizedContainer.dictionary.lastAssigned.value);
+          if (resolvedLength === undefined) unrecognizedContainer.dictionary.malformed = true;
+          else unrecognizedContainer.dictionary.lengthValue = resolvedLength;
+        }
+      }
       unrecognizedContainer.dictionary.referencePending = false;
+      unrecognizedContainer.dictionary.referenceGeneration = undefined;
     } else if (unrecognizedContainer?.kind === "dict") {
       unrecognizedContainer.dictionary.malformed = true;
     }
     streamCandidate = undefined;
   }
   if (containers.length > 0) return unsafe();
-  return names;
+  return false;
 }
 
 const ACTION_TYPES = new Set([
@@ -722,12 +764,4 @@ function finalize(type: PrivateDocumentType, title: string, text: string): Priva
     }
     throw new Error("Text unavailable");
   }
-}
-
-if (parentPort) {
-  parentPort.on("message", (message: { bytes: ArrayBuffer; metadata: PrivateDocumentMetadata }) => {
-    void extractPrivateDocument(new Uint8Array(message.bytes), message.metadata)
-      .then((result) => parentPort!.postMessage({ ok: true, result }))
-      .catch(() => parentPort!.postMessage({ ok: false, error: "Private document extraction failed" }));
-  });
 }
