@@ -11,6 +11,7 @@ import {
   createKnowledgePromotionServer,
   type KnowledgePromotionServerDependencies,
 } from "../apps/telegram-bot/src/knowledgePromotionServer.js";
+import { promoteQuestionSources, type SourceRegistryEntry } from "@vennek/cardano-agent";
 
 const identity = { keyId: "agent-worker-v1", key: Buffer.alloc(32, 7) } as const;
 const fixed = {
@@ -211,6 +212,41 @@ async function incompleteStreamingOverflow(origin: URL, headers: Record<string, 
   });
 }
 
+async function incompleteUnderLimitUpload(origin: URL): Promise<{ elapsedMs: number; received: string }> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const socket = connectSocket(Number(origin.port), origin.hostname);
+    let received = "";
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Incomplete upload was not closed."));
+    }, 2_000);
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { received += chunk; });
+    socket.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve({ elapsedMs: Date.now() - startedAt, received });
+    });
+    socket.on("connect", () => {
+      socket.write([
+        `POST ${KNOWLEDGE_PROMOTION_PATH} HTTP/1.1`,
+        `Host: ${origin.host}`,
+        "Transfer-Encoding: chunked",
+        "Content-Type: application/json",
+        "",
+        "",
+        "1",
+        "{",
+        "",
+      ].join("\r\n"));
+      // Deliberately omit the terminating chunk and every authentication header.
+    });
+  });
+}
+
 describe("knowledge promotion server", () => {
   it("authenticates, claims, promotes once, and returns no content", async () => {
     const { server, audit, promote } = serverWith();
@@ -229,6 +265,59 @@ describe("knowledge promotion server", () => {
       outcome: "promoted",
       promotedCount: 1,
     }));
+  });
+
+  it.each([
+    ["ASCII", "a".repeat(4_096)],
+    ["four-byte Unicode", "😀".repeat(4_096)],
+  ])("accepts a signed maximum-size %s question through discovery", async (_label, question) => {
+    const registry: SourceRegistryEntry[] = [{
+      id: "official-docs",
+      owner: "Cardano",
+      trustTier: "official",
+      kind: "page",
+      url: "https://docs.cardano.org/",
+      allowedDomains: ["docs.cardano.org"],
+      topics: ["developer"],
+      networks: ["mainnet"],
+      refresh: "daily",
+    }];
+    const search = { search: vi.fn(async () => []) };
+    const { server, audit } = serverWith({
+      promote: (value, signal) => promoteQuestionSources({
+        question: value,
+        registry,
+        search,
+        signal,
+        promote: async () => undefined,
+      }),
+    });
+    const origin = await listenForTest(server);
+
+    const response = await request(origin, question);
+
+    expect(response.status).toBe(204);
+    expect(search.search).toHaveBeenCalledOnce();
+    expect(audit.complete).toHaveBeenCalledWith(fixed.requestId, expect.objectContaining({
+      outcome: "no_match",
+    }));
+  });
+
+  it("bounds incomplete unauthenticated uploads before auth or audit", async () => {
+    const audit = fakeAudit();
+    const { server, promote } = serverWith({ audit: audit as never });
+    expect(server.requestTimeout).toBe(10_000);
+    expect(server.headersTimeout).toBe(5_000);
+    server.requestTimeout = 50;
+    server.headersTimeout = 50;
+    const origin = await listenForTest(server);
+
+    const result = await incompleteUnderLimitUpload(origin);
+
+    expect(result.elapsedMs).toBeLessThan(1_500);
+    expect(audit.claim).not.toHaveBeenCalled();
+    expect(audit.complete).not.toHaveBeenCalled();
+    expect(promote).not.toHaveBeenCalled();
   });
 
   it("authenticates before parsing or touching the audit repository", async () => {

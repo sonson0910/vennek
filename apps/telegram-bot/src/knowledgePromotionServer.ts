@@ -14,6 +14,9 @@ import {
 } from "./knowledgePromotionProtocol.js";
 
 const MAX_HEADER_SIZE = 8 * 1024;
+const REQUEST_RECEIVE_TIMEOUT_MS = 10_000;
+const HEADER_RECEIVE_TIMEOUT_MS = 5_000;
+const CONNECTIONS_CHECKING_INTERVAL_MS = 1_000;
 const PROMOTION_TIMEOUT_MS = 45_000;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1_000;
 const MAX_LATENCY_MS = 3_600_000;
@@ -36,7 +39,12 @@ export function createKnowledgePromotionServer(
   let active = false;
   let nextPruneAt = 0;
   const now = dependencies.now ?? (() => new Date());
-  const server = createHttpServer({ maxHeaderSize: MAX_HEADER_SIZE }, (request, response) => {
+  const server = createHttpServer({
+    maxHeaderSize: MAX_HEADER_SIZE,
+    requestTimeout: REQUEST_RECEIVE_TIMEOUT_MS,
+    headersTimeout: HEADER_RECEIVE_TIMEOUT_MS,
+    connectionsCheckingInterval: CONNECTIONS_CHECKING_INTERVAL_MS,
+  }, (request, response) => {
     void handleRequest(request, response).catch(() => sendStatus(response, 503));
   });
 

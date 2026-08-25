@@ -67,6 +67,20 @@ describe("SearXNG live discovery", () => {
       .toBe("latest Cardano node (site:docs.cardano.org OR site:github.com)");
   });
 
+  it.each([
+    ["ASCII", "a".repeat(4_096)],
+    ["four-byte Unicode", "😀".repeat(4_096)],
+  ])("accepts the inclusive promotion boundary through SearXNG for %s", async (_label, query) => {
+    const fetch = vi.fn<SearxngFetch>(async () => jsonResponse({ results: [] }));
+    const client = new SearxngClient(new URL("https://search.example.test/"), fetch);
+
+    await expect(discoverLiveSources({ query, registry: [entry], search: client })).resolves.toEqual([]);
+
+    expect(fetch).toHaveBeenCalledOnce();
+    const searchQuery = new URL(String(fetch.mock.calls[0]?.[0])).searchParams.get("q");
+    expect(searchQuery).toBe(`${query} (site:docs.cardano.org)`);
+  });
+
   it("uses only the configured search origin and bounded search parameters", async () => {
     const fetch = vi.fn<SearxngFetch>(async (url, init) => {
       expect(String(url)).toBe("https://search.example.test/search?q=Cardano+node&format=json&safesearch=1");

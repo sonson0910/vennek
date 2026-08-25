@@ -7,13 +7,19 @@ import { extractContent, type PdfExtractor } from "./extractContent.js";
 import type { EmbeddingProvider } from "./indexDocument.js";
 import { indexDocument } from "./indexDocument.js";
 import type { KnowledgeRepository } from "./knowledgeRepository.js";
-import { SearxngClient } from "./searxng.js";
+import {
+  SEARXNG_MAX_QUERY_BYTES,
+  SEARXNG_MAX_QUERY_CODE_POINTS,
+  SearxngClient,
+} from "./searxng.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry } from "./sourceRegistry.js";
 import type { PublicHttpsLookup, PublicHttpsRequest } from "@vennek/cardano-governance-skills";
 import { findWalletSecret } from "../security/walletSecrets.js";
 import type { RepositoryOperationOptions } from "./knowledgeRepository.js";
 
-const MAX_QUERY_CHARS = 4_096;
+const MAX_QUESTION_CODE_POINTS = 4_096;
+const MAX_QUESTION_BYTES = 16 * 1_024;
+const MAX_QUESTION_UTF16_UNITS = MAX_QUESTION_CODE_POINTS * 2;
 const MAX_DOMAIN_CHARS = 253;
 const MAX_URL_CHARS = 2_048;
 const MAX_RESULTS = 10;
@@ -75,7 +81,13 @@ export function buildOfficialSearchQuery(query: string, domains: string[]): stri
   const normalizedDomains = normalizeSearchDomains(domains);
   if (normalizedDomains.length === 0) throw new Error("Official search domains are required");
   const result = `${normalizedQuery} (${normalizedDomains.map((domain) => `site:${domain}`).join(" OR ")})`;
-  if (result.length > MAX_QUERY_CHARS) throw new Error("Official search query is too large");
+  if (
+    result.length > SEARXNG_MAX_QUERY_CODE_POINTS * 2 ||
+    Array.from(result).length > SEARXNG_MAX_QUERY_CODE_POINTS ||
+    Buffer.byteLength(result, "utf8") > SEARXNG_MAX_QUERY_BYTES
+  ) {
+    throw new Error("Official search query is too large");
+  }
   return result;
 }
 
@@ -267,7 +279,14 @@ function validateRegistry(input: unknown): SourceRegistryEntry[] {
 function validateQuery(value: string): string {
   if (typeof value !== "string") throw new Error("Live discovery query is required");
   const query = value.normalize("NFC").trim();
-  if (!query || query.length > MAX_QUERY_CHARS || /[\u0000-\u001f\u007f]/.test(query) || /\bsite\s*:/iu.test(query)) {
+  if (
+    !query ||
+    query.length > MAX_QUESTION_UTF16_UNITS ||
+    Array.from(query).length > MAX_QUESTION_CODE_POINTS ||
+    Buffer.byteLength(query, "utf8") > MAX_QUESTION_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(query) ||
+    /\bsite\s*:/iu.test(query)
+  ) {
     throw new Error("Live discovery query is invalid");
   }
   if (findWalletSecret(query)) throw new Error("Live discovery queries must not contain wallet secrets.");

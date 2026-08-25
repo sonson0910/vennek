@@ -1,7 +1,9 @@
 import { readResponseBytesLimited } from "@vennek/cardano-governance-skills";
 
 const SEARCH_TIMEOUT_MS = 5_000;
-const MAX_QUERY_CHARS = 4_096;
+export const SEARXNG_MAX_QUERY_CODE_POINTS = 8_192;
+export const SEARXNG_MAX_QUERY_BYTES = 32 * 1_024;
+const MAX_QUERY_UTF16_UNITS = SEARXNG_MAX_QUERY_CODE_POINTS * 2;
 const MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_RESULTS = 10;
 const MAX_TITLE_CHARS = 300;
@@ -80,7 +82,13 @@ export class SearxngClient {
 function normalizeQuery(value: string): string {
   if (typeof value !== "string") throw new Error("SearXNG query is required");
   const query = value.normalize("NFC").trim();
-  if (!query || query.length > MAX_QUERY_CHARS || /[\u0000-\u001f\u007f]/.test(query)) {
+  if (
+    !query ||
+    query.length > MAX_QUERY_UTF16_UNITS ||
+    Array.from(query).length > SEARXNG_MAX_QUERY_CODE_POINTS ||
+    Buffer.byteLength(query, "utf8") > SEARXNG_MAX_QUERY_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(query)
+  ) {
     throw new Error("SearXNG query is invalid");
   }
   return query;
