@@ -422,19 +422,9 @@ function canonicalQuestionInput(value: unknown): QuestionInput | undefined {
   return Object.freeze({ telegramUserId: userId, telegramChatId: chatId, text: questionText }) as QuestionInput;
 }
 
-const SECRET_SCAN_OVERLAP = 1_024;
-
-function containsWalletSecret(value: string): boolean {
-  const step = MAX_TEXT_LENGTH - SECRET_SCAN_OVERLAP;
-  for (let start = 0; start < value.length; start += step) {
-    if (findWalletSecret(value.slice(start, start + MAX_TEXT_LENGTH))) return true;
-  }
-  return false;
-}
-
 function questionContainsWalletSecret(question: QuestionInput): boolean {
   const fields = [question.telegramUserId, question.telegramChatId, question.text];
-  return fields.some((field) => containsWalletSecret(field));
+  return fields.some((field) => findWalletSecret(field) !== undefined);
 }
 
 function canonicalCompletionOutput(value: unknown, requestedModel: string): CompletionOutput | undefined {

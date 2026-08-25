@@ -12,13 +12,13 @@ import { wordlist as traditionalChinese } from "@scure/bip39/wordlists/tradition
 
 export type WalletSecretKind = "signing-key" | "recovery-phrase";
 
-const MAX_WALLET_SCAN_CHARS = 16_384;
+const MAX_WALLET_SCAN_CHARS = 65_536;
 // JSON parser limits fail closed because skipped structure may contain a secret.
-const MAX_JSON_CANDIDATE_CHARS = 16_384;
+const MAX_JSON_CANDIDATE_CHARS = 65_536;
 const MAX_JSON_CANDIDATES = 32;
 const MAX_JSON_DEPTH = 8;
 const MAX_JSON_NODES = 256;
-const MAX_JSON_FALLBACK_WORK = 16_384;
+const MAX_JSON_FALLBACK_WORK = 65_536;
 // Global per-message checksum cap; exhaustion is classified as recovery-like.
 const MAX_MNEMONIC_VALIDATIONS = 64;
 const signingKeyTypeField = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;

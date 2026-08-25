@@ -215,7 +215,7 @@ describe("natural-language question service", () => {
     expect(persist).toHaveBeenCalledWith(question);
   });
 
-  it("blocks a wallet secret after the first long-question scan window", async () => {
+  it("blocks a long wallet secret before persistence", async () => {
     const persist = vi.fn();
     const mnemonic = Array.from({ length: 11 }, () => "abandon").concat("about").join(" ");
     const question = input(`${"😀".repeat(8_192)} ${mnemonic}`);
@@ -230,6 +230,37 @@ describe("natural-language question service", () => {
 
     expect(persist).not.toHaveBeenCalled();
     expect(answer).toMatch(/wallet secret|seed phrase|private key/i);
+  });
+
+  it("does not persist a long signing-key JSON question", async () => {
+    const persist = vi.fn();
+    const signingKey = JSON.stringify({
+      type: "PaymentSigningKeyShelley_ed25519",
+      description: "😀".repeat(8_192),
+      cborHex: "5820abcdef",
+    });
+    const question = input(signingKey);
+
+    const answer = await answerQuestion(question, {
+      persist,
+      retrieve: async () => [],
+    });
+
+    expect(answer).toMatch(/wallet secret|seed phrase|private key/i);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("persists a long harmless structured JSON question", async () => {
+    const persist = vi.fn(async () => undefined);
+    const question = input(JSON.stringify({ description: "😀".repeat(8_192), safe: true }));
+
+    const answer = await answerQuestion(question, {
+      persist,
+      retrieve: async () => [],
+    });
+
+    expect(persist).toHaveBeenCalledWith(question);
+    expect(answer).toMatch(/reliable sources/i);
   });
 
   it("rejects a question over 16,384 code points before persistence", async () => {

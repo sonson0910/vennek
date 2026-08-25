@@ -74,13 +74,36 @@ describe("wallet secret detection", () => {
   });
 
   it("bounds oversized repeated mnemonic scans and fails closed", () => {
-    const oversizedInput = "abandon ".repeat(4096);
+    const oversizedInput = "abandon ".repeat(8193);
     const startedAt = performance.now();
     const result = findWalletSecret(oversizedInput);
     const elapsedMs = performance.now() - startedAt;
 
     expect(result).toBe("recovery-phrase");
     expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it("detects signing-key JSON when key material is far beyond the old scan bound", () => {
+    const signingKey = JSON.stringify({
+      type: "PaymentSigningKeyShelley_ed25519",
+      description: "😀".repeat(8_192),
+      cborHex: "5820abcdef",
+    });
+
+    expect(Array.from(signingKey).length).toBeLessThanOrEqual(16_384);
+    expect(Buffer.byteLength(signingKey, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(signingKey.length).toBeGreaterThan(16_384);
+    expect(signingKey.indexOf("cborHex") - signingKey.indexOf("type")).toBeGreaterThan(1_024);
+    expect(findWalletSecret(signingKey)).toBe("signing-key");
+  });
+
+  it("does not classify a long harmless structured JSON question as a wallet secret", () => {
+    const harmlessJson = JSON.stringify({ description: "😀".repeat(8_192), safe: true });
+
+    expect(Array.from(harmlessJson).length).toBeLessThanOrEqual(16_384);
+    expect(Buffer.byteLength(harmlessJson, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(harmlessJson.length).toBeGreaterThan(16_384);
+    expect(findWalletSecret(harmlessJson)).toBeUndefined();
   });
 
   it("uses a global checksum budget across overlapping wordlists and runs", () => {
