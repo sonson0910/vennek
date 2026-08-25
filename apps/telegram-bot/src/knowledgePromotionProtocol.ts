@@ -62,7 +62,7 @@ export function validatePromotionQuestion(value: unknown): string {
     question.length === 0 ||
     Array.from(question).length > KNOWLEDGE_PROMOTION_MAX_QUERY_CODE_POINTS ||
     Buffer.byteLength(question, "utf8") > KNOWLEDGE_PROMOTION_MAX_QUERY_BYTES ||
-    /[\u0000-\u001f\u007f]/u.test(question) ||
+    /[\p{Cc}\p{Cs}]/u.test(question) ||
     /\bsite\s*:/iu.test(question) ||
     findWalletSecret(question) !== undefined
   ) {

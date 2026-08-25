@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { QuestionRetrievalInput } from "@vennek/cardano-agent";
 import {
@@ -223,6 +224,8 @@ describe("knowledge promotion protocol", () => {
       Buffer.from('{"question":"bad\\u0000"}'),
       Buffer.from('{"question":"site:cardano"}'),
       Buffer.from('{"question":"addr_xsk1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"}'),
+      Buffer.from('{"question":"\\u0085"}'),
+      Buffer.from('{"question":"\\ud800"}'),
     ]) {
       expect(() => validatePromotionBody(body)).toThrow();
     }
@@ -231,6 +234,8 @@ describe("knowledge promotion protocol", () => {
     expect(() => validatePromotionBody(Buffer.from(JSON.stringify({ question: "a".repeat(KNOWLEDGE_PROMOTION_MAX_BODY_BYTES) })))).toThrow();
     const maxBytesQuestion = "😀".repeat(KNOWLEDGE_PROMOTION_MAX_QUERY_CODE_POINTS);
     expect(Buffer.byteLength(validatePromotionQuestion(maxBytesQuestion), "utf8")).toBe(KNOWLEDGE_PROMOTION_MAX_QUERY_BYTES);
+    expect(() => validatePromotionQuestion("\u0085")).toThrow();
+    expect(() => validatePromotionQuestion("\ud800")).toThrow();
   });
 
   it("serializes only the question, forbids redirects, accepts only 204, and sanitizes failures", async () => {
@@ -276,5 +281,56 @@ describe("knowledge promotion protocol", () => {
       })),
     });
     await expect(timeout.promote({ question: "Cardano?", language: "en" })).rejects.toThrow("Knowledge promotion request failed.");
+  });
+
+  it("does not expose the copied key through JSON or inspection", () => {
+    const key = Buffer.alloc(32, 0xa5);
+    const client = new KnowledgePromotionClient({
+      origin: new URL("https://example.test/"),
+      identity: { keyId: "agent-worker-v1", key },
+    });
+    expect(JSON.stringify(client)).not.toContain('"identity"');
+    expect(JSON.stringify(client)).not.toContain(key.toString("hex"));
+    expect(inspect(client)).not.toContain("identity");
+    expect(inspect(client)).not.toContain(key.toString("hex"));
+  });
+
+  it("cancels a non-204 response body before returning the generic failure", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        cancelled = true;
+      },
+    });
+    const client = new KnowledgePromotionClient({
+      origin: new URL("https://example.test/"),
+      identity,
+      fetch: vi.fn(async (): Promise<Response> => ({ status: 500, body } as Response)),
+    });
+    await expect(client.promote({ question: "Cardano?", language: "en" })).rejects.toThrow("Knowledge promotion request failed.");
+    expect(cancelled).toBe(true);
+  });
+
+  it("retains the original key when the caller mutates its config buffer", async () => {
+    const key = Buffer.alloc(32, 7);
+    let captured: { body: string; headers: Record<string, string> } | undefined;
+    const client = new KnowledgePromotionClient({
+      origin: new URL("https://example.test/"),
+      identity: { keyId: "agent-worker-v1", key },
+      fetch: vi.fn(async (_url: URL | RequestInfo, init: RequestInit = {}): Promise<Response> => {
+        captured = { body: String(init.body), headers: Object.fromEntries(new Headers(init.headers).entries()) };
+        return new Response(null, { status: 204 });
+      }),
+    });
+    key.fill(8);
+    await client.promote({ question: "Cardano?", language: "en" });
+    expect(captured).toBeDefined();
+    expect(() => authenticatePromotionRequest({
+      method: "POST",
+      path: KNOWLEDGE_PROMOTION_PATH,
+      headers: new Headers(captured!.headers),
+      body: Buffer.from(captured!.body),
+      identity: { keyId: "agent-worker-v1", key: Buffer.alloc(32, 7) },
+    })).not.toThrow();
   });
 });
