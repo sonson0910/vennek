@@ -1,0 +1,97 @@
+import { findWalletSecret } from "../security/walletSecrets.js";
+
+export const PRIVATE_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
+export const PRIVATE_DOCUMENT_MAX_CODE_POINTS = 2_000_000;
+export const PRIVATE_DOCUMENT_MAX_TEXT_BYTES = 8_000_000;
+export const PRIVATE_DOCUMENT_PATH = "/v1/extract/private-document";
+export const PRIVATE_DOCUMENT_TIMEOUT_MS = 30_000;
+const PRIVATE_DOCUMENT_MAX_TITLE_CODE_POINTS = 300;
+
+export type PrivateDocumentType = "pdf" | "docx" | "text" | "markdown";
+export type PrivateExtractionResult = Readonly<{
+  type: PrivateDocumentType;
+  title: string;
+  text: string;
+}>;
+
+const PRIVATE_DOCUMENT_TYPES = new Set<PrivateDocumentType>(["pdf", "docx", "text", "markdown"]);
+const PRIVATE_DOCUMENT_RESULT_KEYS = ["type", "title", "text"];
+const WALLET_SCAN_WINDOW = 32_768;
+const WALLET_SCAN_STEP = WALLET_SCAN_WINDOW / 2;
+
+export function validatePrivateDocumentToken(value: unknown): Buffer {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(value)) {
+    throw new Error("Private extractor token is invalid");
+  }
+  const token = Buffer.from(value, "base64url");
+  if (token.byteLength !== 32 || token.toString("base64url") !== value) {
+    throw new Error("Private extractor token is invalid");
+  }
+  return token;
+}
+
+export function validatePrivateExtractionResult(value: unknown): PrivateExtractionResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Private extractor output is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Reflect.ownKeys(record).length !== PRIVATE_DOCUMENT_RESULT_KEYS.length ||
+    PRIVATE_DOCUMENT_RESULT_KEYS.some((key) => !Object.hasOwn(record, key))
+  ) {
+    throw new Error("Private extractor output is invalid");
+  }
+
+  const { type, title, text } = record;
+  if (
+    typeof type !== "string" || !PRIVATE_DOCUMENT_TYPES.has(type as PrivateDocumentType) ||
+    typeof title !== "string" || !isSafeTitle(title) ||
+    typeof text !== "string" || !isSafeText(text)
+  ) {
+    throw new Error("Private extractor output is invalid");
+  }
+
+  return Object.freeze({
+    type: type as PrivateDocumentType,
+    title,
+    text,
+  });
+}
+
+function isSafeTitle(value: string): boolean {
+  return (
+    value.trim().length > 0 &&
+    Array.from(value).length <= PRIVATE_DOCUMENT_MAX_TITLE_CODE_POINTS &&
+    !hasInvalidUnicode(value) &&
+    !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) &&
+    !hasWalletSecret(value)
+  );
+}
+
+function isSafeText(value: string): boolean {
+  if (
+    value.trim().length === 0 ||
+    hasInvalidUnicode(value) ||
+    Array.from(value).length > PRIVATE_DOCUMENT_MAX_CODE_POINTS ||
+    Buffer.byteLength(value, "utf8") > PRIVATE_DOCUMENT_MAX_TEXT_BYTES
+  ) {
+    return false;
+  }
+  return !hasWalletSecret(value);
+}
+
+function hasInvalidUnicode(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true;
+  }
+  return false;
+}
+
+function hasWalletSecret(value: string): boolean {
+  if (value.length <= WALLET_SCAN_WINDOW) return findWalletSecret(value) !== undefined;
+  for (let start = 0; start < value.length; start += WALLET_SCAN_STEP) {
+    if (findWalletSecret(value.slice(start, start + WALLET_SCAN_WINDOW)) !== undefined) return true;
+  }
+  return false;
+}

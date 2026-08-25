@@ -13,6 +13,20 @@ export { ConversationRepository } from "./conversations.js";
 export type { ConversationRole } from "./conversations.js";
 export { ensureConversationPartitions } from "./conversationPartitions.js";
 
+export {
+  PRIVATE_DOCUMENT_MAX_BYTES,
+  PRIVATE_DOCUMENT_MAX_CODE_POINTS,
+  PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
+  PRIVATE_DOCUMENT_PATH,
+  PRIVATE_DOCUMENT_TIMEOUT_MS,
+  validatePrivateDocumentToken,
+  validatePrivateExtractionResult,
+} from "./privateComparison/privateDocumentProtocol.js";
+export type {
+  PrivateDocumentType,
+  PrivateExtractionResult,
+} from "./privateComparison/privateDocumentProtocol.js";
+
 export { LiteLlmClient } from "./llm/liteLlmClient.js";
 export type {
   ChatMessage,
