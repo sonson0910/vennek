@@ -42,6 +42,22 @@ export type {
 } from "./privateComparison/privateDocumentServer.js";
 export { PrivateDocumentClient, createPrivateDocumentClient } from "./privateComparison/privateDocumentClient.js";
 export type { PrivateDocumentClientConfig } from "./privateComparison/privateDocumentClient.js";
+export {
+  comparePrivateDocument,
+  buildPrivateComparisonMessages,
+  buildPrivateVerificationMessages,
+  selectPrivateChunks,
+  boundPrivateChunk,
+  MAX_ANSWER_CHARS as PRIVATE_COMPARISON_MAX_ANSWER_CHARS,
+  MAX_PRIVATE_CHUNKS,
+  MAX_PUBLIC_EVIDENCE,
+} from "./privateComparison/comparePrivateDocument.js";
+export type {
+  PrivateComparisonCompletion,
+  PrivateComparisonCompletionInput,
+  PrivateComparisonInput,
+  PrivateComparisonUsage,
+} from "./privateComparison/comparePrivateDocument.js";
 
 export { LiteLlmClient } from "./llm/liteLlmClient.js";
 export type {
