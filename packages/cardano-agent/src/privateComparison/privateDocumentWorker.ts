@@ -515,6 +515,7 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
     }
     if (character === "(") {
       index = skipPdfLiteralString(source, index);
+      assign({ kind: "other" });
       streamCandidate = undefined;
       continue;
     }
@@ -616,7 +617,10 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
   return names;
 }
 
-const ACTION_TYPES = new Set(["JavaScript", "Launch", "SubmitForm", "ImportData", "GoTo", "GoToR", "GoToE", "Rendition", "Movie", "Sound", "ResetForm"]);
+const ACTION_TYPES = new Set([
+  "JavaScript", "Launch", "SubmitForm", "ImportData", "GoTo", "GoToR", "GoToE", "Rendition", "Movie", "Sound", "ResetForm",
+  "Thread", "URI", "Hide", "Named", "Trans", "GoTo3DView", "RichMediaExecute",
+]);
 const GLOBAL_ACTIVE_NAMES = new Set(["JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia", "FileAttachment"]);
 
 function isPdfDelimiter(value: string | undefined): boolean {

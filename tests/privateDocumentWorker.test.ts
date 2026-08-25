@@ -274,6 +274,10 @@ describe("private document worker", () => {
       fileName: "page-aa.pdf",
       mime: "application/pdf",
     })).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(pdf({ extraObjects: ["<< /S /URI /URI (https://example.test) >>"] }), {
+      fileName: "uri-action.pdf",
+      mime: "application/pdf",
+    })).rejects.toThrow(/Unsafe document/);
     await expect(extractPrivateDocument(pdf({ objectStream: true }), {
       fileName: "object-stream-action.pdf",
       mime: "application/pdf",
