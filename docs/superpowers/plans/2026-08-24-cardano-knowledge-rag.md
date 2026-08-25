@@ -545,6 +545,12 @@ git commit -m "feat: synchronize Cardano knowledge incrementally"
 
 Keep live discovery promotion out of the public Telegram path. Before release, add a separately authenticated, question-only internal endpoint owned by the ingestion boundary; it must validate the requesting service identity, bounded question, and source registry before calling `promoteDiscoveredLink`. Add authorization, audit, replay, and integration tests before enabling it in production.
 
+- [x] **R8b complete (2026-08-25)**
+
+Implementation commits: `0c86270`, `f15e4c6`, `3cab4aa`, `0b61a42`, `6193469`, `31a61a6`, `f8230c9`, `36c324c`, `760e5fe`, `e096951`, `f2b57f7`, `8625e19`, `9d72fc2`, `7793720`, `1420d28`, `67a48b4`, `1394f79`, `6ae5765`, `85b9ee0`, `d3eae53`, `5bd1687`, `571aad2`, `5c813b8`, `369453f`, and `81563a5`.
+
+Verified with the full test suite (`606` passed, `1` credential-gated Blockfrost live test skipped), typecheck, build, import-boundary check, registry validation (`20/20`), production dependency audit (`0` vulnerabilities), Compose validation, fresh PostgreSQL migrations and role provisioning, and a compiled-process signed-request/replay/tamper smoke test. Independent correctness and security reviews passed.
+
 ### Task 9: Add the Cardano RAG Evaluation Harness
 
 **Files:**
