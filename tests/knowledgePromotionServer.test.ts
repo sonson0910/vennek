@@ -368,6 +368,43 @@ describe("knowledge promotion server", () => {
     expect((await first).status).toBe(204);
   });
 
+  it("does not start promotion after a client disconnects during audit claim", async () => {
+    let releaseClaim!: () => void;
+    let claimStarted!: () => void;
+    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const claimSeen = new Promise<void>((resolve) => { claimStarted = resolve; });
+    const audit = fakeAudit();
+    audit.claim.mockImplementation(async () => {
+      claimStarted();
+      await claimGate;
+      return { kind: "claimed" };
+    });
+    const promote = vi.fn(async () => ({ outcome: "promoted" as const, promotedCount: 1 }));
+    const { server } = serverWith({ audit: audit as never, promote });
+    const origin = await listenForTest(server);
+    const signed = signPromotionQuestion("latest Cardano node", identity, fixed);
+    const client = httpRequest(origin, {
+      method: "POST",
+      path: KNOWLEDGE_PROMOTION_PATH,
+      headers: signed.headers,
+    });
+    client.once("error", () => undefined);
+    const clientClosed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+    client.end(signed.body);
+    await claimSeen;
+    client.destroy();
+    await clientClosed;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    releaseClaim();
+
+    await vi.waitFor(() => expect(audit.complete).toHaveBeenCalled());
+    expect(promote).not.toHaveBeenCalled();
+    expect(audit.complete).toHaveBeenCalledWith(fixed.requestId, expect.objectContaining({
+      outcome: "timeout",
+      promotedCount: 0,
+    }));
+  });
+
   it("sanitizes upstream failures and abort timeouts", async () => {
     const upstreamAudit = fakeAudit();
     const upstream = vi.fn(async () => {

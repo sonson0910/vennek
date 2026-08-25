@@ -89,6 +89,7 @@ export function createKnowledgePromotionServer(
       return;
     }
 
+    const requestSignal = createRequestSignal(request, response);
     let claim: Awaited<ReturnType<KnowledgePromotionServerDependencies["audit"]["claim"]>>;
     try {
       claim = await dependencies.audit.claim({
@@ -97,14 +98,17 @@ export function createKnowledgePromotionServer(
         nonceDigest: authenticated.nonceDigest,
       });
     } catch {
+      requestSignal.cleanup();
       sendStatus(response, 503);
       return;
     }
     if (claim.kind === "completed") {
+      requestSignal.cleanup();
       sendStatus(response, statusForOutcome(claim.outcome));
       return;
     }
     if (claim.kind === "running" || claim.kind === "conflict") {
+      requestSignal.cleanup();
       sendStatus(response, 409);
       return;
     }
@@ -121,6 +125,7 @@ export function createKnowledgePromotionServer(
       } catch {
         sendStatus(response, 503);
       }
+      requestSignal.cleanup();
       return;
     }
 
@@ -130,13 +135,14 @@ export function createKnowledgePromotionServer(
       } catch {
         // Keep the response generic even when audit completion fails.
       }
+      requestSignal.cleanup();
       sendStatus(response, 503);
       return;
     }
 
     active = true;
-    const requestSignal = createRequestSignal(request, response);
     try {
+      requestSignal.signal.throwIfAborted();
       const result = await dependencies.promote(body.question, requestSignal.signal);
       requestSignal.signal.throwIfAborted();
       await finish(authenticated.requestId, result.outcome, result.promotedCount, startedAt);
@@ -284,16 +290,27 @@ function createRequestSignal(request: IncomingMessage, response: ServerResponse)
   const onResponseClose = (): void => {
     if (!response.writableEnded) abort();
   };
+  const socket = request.socket;
+  const onSocketClose = (): void => abort();
   request.once("aborted", abort);
   request.once("close", onRequestClose);
   response.once("close", onResponseClose);
+  socket?.once("close", onSocketClose);
   const signal = AbortSignal.any([client.signal, AbortSignal.timeout(PROMOTION_TIMEOUT_MS)]);
+  if (
+    request.aborted ||
+    response.destroyed ||
+    request.socket?.destroyed
+  ) {
+    client.abort();
+  }
   return {
     signal,
     cleanup: () => {
       request.off("aborted", abort);
       request.off("close", onRequestClose);
       response.off("close", onResponseClose);
+      socket?.off("close", onSocketClose);
     },
   };
 }
