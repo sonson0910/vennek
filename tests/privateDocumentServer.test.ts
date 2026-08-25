@@ -1,13 +1,15 @@
 import { EventEmitter } from "node:events";
 import * as http from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createPrivateDocumentServer,
+  runPrivateDocumentWorker,
   type PrivateDocumentWorkerLike,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js";
 import {
   PRIVATE_DOCUMENT_MAX_BYTES,
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
+  PRIVATE_DOCUMENT_TIMEOUT_MS,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
 
 const token = Buffer.alloc(32, 9).toString("base64url");
@@ -42,8 +44,9 @@ async function withServer(
   workerFactory: () => PrivateDocumentWorkerLike,
   callback: (port: number) => Promise<void>,
   timeoutMs = 100,
+  state?: { state: "available" | "busy" | "poisoned" },
 ): Promise<void> {
-  const service = createPrivateDocumentServer({ token, workerFactory, timeoutMs });
+  const service = createPrivateDocumentServer({ token, workerFactory, timeoutMs, state });
   await service.listen(0);
   const address = service.server.address();
   if (!address || typeof address === "string") throw new Error("server did not bind");
@@ -83,14 +86,20 @@ function request(port: number, options: { token?: string; path?: string; method?
 describe("private document server", () => {
   it("authenticates, decodes bounded metadata, transfers bytes, and validates output", async () => {
     let worker!: FakeWorker;
-    await withServer(() => (worker = new FakeWorker()), async (port) => {
-      const response = await request(port);
-      expect(response.status).toBe(200);
-      expect(JSON.parse(response.body)).toEqual({ type: "text", title: "claim", text: "Cardano" });
-      expect(worker.received).toEqual(metadata);
-      expect(worker.transferred).toBeInstanceOf(ArrayBuffer);
-      expect(worker.transferred?.byteLength).toBe(body.byteLength);
-    });
+    const fill = vi.spyOn(Buffer.prototype, "fill");
+    try {
+      await withServer(() => (worker = new FakeWorker()), async (port) => {
+        const response = await request(port);
+        expect(response.status).toBe(200);
+        expect(JSON.parse(response.body)).toEqual({ type: "text", title: "claim", text: "Cardano" });
+        expect(worker.received).toEqual(metadata);
+        expect(worker.transferred).toBeInstanceOf(ArrayBuffer);
+        expect(worker.transferred?.byteLength).toBe(body.byteLength);
+      });
+      expect(fill.mock.calls.some(([value]) => value === 0)).toBe(true);
+    } finally {
+      fill.mockRestore();
+    }
   });
 
   it("rejects the wrong endpoint, token, content type, transfer encoding, and length", async () => {
@@ -185,10 +194,17 @@ describe("private document server", () => {
       }
     }
     let workers = 0;
+    const state = { state: "available" as const };
     await withServer(() => workers++ === 0 ? new NeverTerminatingWorker() : new FakeWorker(), async (port) => {
       expect((await request(port)).status).toBe(504);
-      expect((await request(port)).status).toBe(200);
-    }, 25);
+      expect((await request(port)).status).toBe(503);
+      expect(state.state).toBe("poisoned");
+    }, 25, state);
+  });
+
+  it("rejects timeout overrides outside the bounded service deadline", async () => {
+    expect(() => createPrivateDocumentServer({ token, timeoutMs: PRIVATE_DOCUMENT_TIMEOUT_MS + 1 })).toThrow(/timeout/i);
+    await expect(runPrivateDocumentWorker(new Uint8Array([1]), metadata, () => new FakeWorker(), PRIVATE_DOCUMENT_TIMEOUT_MS + 1)).rejects.toThrow(/timeout/i);
   });
 
   it("terminates the worker and releases the global slot when the caller cancels", async () => {

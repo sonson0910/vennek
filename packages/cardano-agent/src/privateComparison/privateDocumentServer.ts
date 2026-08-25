@@ -28,6 +28,11 @@ export type PrivateDocumentServerOptions = {
   token: string;
   timeoutMs?: number;
   workerFactory?: () => PrivateDocumentWorkerLike;
+  state?: PrivateDocumentServerState;
+};
+
+export type PrivateDocumentServerState = {
+  state: "available" | "busy" | "poisoned";
 };
 
 export type PrivateDocumentServer = {
@@ -41,10 +46,10 @@ const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 const MAX_HEADER_SIZE = 16 * 1024;
 const MAX_HEADERS_COUNT = 64;
-let activePrivateDocumentExtraction = false;
+const processPrivateDocumentState: PrivateDocumentServerState = { state: "available" };
 
 class PrivateDocumentServiceError extends Error {
-  constructor(readonly statusCode: number, message: string) {
+  constructor(readonly statusCode: number, message: string, readonly poisonSlot = false) {
     super(message);
     this.name = "PrivateDocumentServiceError";
   }
@@ -63,10 +68,11 @@ function defaultWorkerFactory(): PrivateDocumentWorkerLike {
 export function createPrivateDocumentServer(options: PrivateDocumentServerOptions): PrivateDocumentServer {
   const expectedToken = validatePrivateDocumentToken(options.token);
   const timeoutMs = options.timeoutMs ?? PRIVATE_DOCUMENT_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PRIVATE_DOCUMENT_TIMEOUT_MS) {
     throw new Error("Private extractor timeout is invalid");
   }
   const workerFactory = options.workerFactory ?? defaultWorkerFactory;
+  const state = options.state ?? processPrivateDocumentState;
 
   const server = http.createServer({
     headersTimeout: 10_000,
@@ -116,12 +122,16 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       sendError(response, 413, "Private document request rejected");
       return;
     }
-    if (activePrivateDocumentExtraction) {
+    if (state.state === "poisoned") {
+      sendError(response, 503, "Private document extraction unavailable");
+      return;
+    }
+    if (state.state === "busy") {
       sendError(response, 429, "Private document extraction unavailable");
       return;
     }
 
-    activePrivateDocumentExtraction = true;
+    state.state = "busy";
     const abortController = new AbortController();
     const deadlineAt = Date.now() + timeoutMs;
     const deadlineTimer = setTimeout(() => abortController.abort(new PrivateDocumentServiceError(504, "Private document extraction timed out")), timeoutMs);
@@ -133,18 +143,20 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
     response.once("close", abortResponse);
 
     let input: Buffer | undefined;
+    let payload: Buffer | undefined;
     try {
       input = await readRequestBody(request, contentLength, abortController.signal);
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) throw new PrivateDocumentServiceError(504, "Private document extraction timed out");
       const result = await runPrivateDocumentWorker(input, metadata, workerFactory, remainingMs, abortController.signal);
       const validated = validatePrivateExtractionResult(result);
-      const payload = Buffer.from(JSON.stringify(validated));
+      payload = Buffer.from(JSON.stringify(validated));
       if (payload.byteLength > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES) {
         throw new PrivateDocumentServiceError(503, "Private document extraction unavailable");
       }
       sendJson(response, 200, payload);
     } catch (error) {
+      if (error instanceof PrivateDocumentServiceError && error.poisonSlot) state.state = "poisoned";
       if (response.destroyed) return;
       if (response.headersSent) {
         response.destroy();
@@ -155,10 +167,11 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       }
     } finally {
       input?.fill(0);
+      payload?.fill(0);
       request.off("aborted", abortRequest);
       response.off("close", abortResponse);
       clearTimeout(deadlineTimer);
-      activePrivateDocumentExtraction = false;
+      if (state.state === "busy") state.state = "available";
     }
   }
 
@@ -197,8 +210,8 @@ export async function runPrivateDocumentWorker(
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > PRIVATE_DOCUMENT_MAX_BYTES) {
     throw new PrivateDocumentServiceError(413, "Private document request rejected");
   }
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
-    throw new PrivateDocumentServiceError(504, "Private document extraction timed out");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PRIVATE_DOCUMENT_TIMEOUT_MS) {
+    throw new Error("Private extractor timeout is invalid");
   }
 
   const transferred = Uint8Array.from(bytes).buffer;
@@ -236,10 +249,14 @@ export async function runPrivateDocumentWorker(
         if (settled) return;
         settled = true;
         if (terminationTimer !== undefined) clearTimeout(terminationTimer);
-        if (terminationTimedOut || Date.now() >= deadlineAt) {
-          reject(new PrivateDocumentServiceError(504, "Private document extraction timed out"));
-        } else if (terminationFailed && !error) {
-          reject(new PrivateDocumentServiceError(503, "Private document extraction unavailable"));
+        if (terminationTimedOut) {
+          reject(new PrivateDocumentServiceError(504, "Private document extraction timed out", true));
+        } else if (terminationFailed) {
+          reject(new PrivateDocumentServiceError(
+            error instanceof PrivateDocumentServiceError ? error.statusCode : 503,
+            error?.message ?? "Private document extraction unavailable",
+            true,
+          ));
         } else if (error) {
           reject(error);
         } else if (result !== undefined) {
@@ -250,9 +267,16 @@ export async function runPrivateDocumentWorker(
       };
 
       const remainingMs = deadlineAt - Date.now();
-      if (remainingMs <= 0 || termination === undefined) {
-        settle(remainingMs <= 0);
-        if (termination !== undefined) void termination.catch(() => undefined);
+      if (termination === undefined) {
+        settle(true);
+        return;
+      }
+      if (remainingMs <= 0) {
+        terminationTimer = setTimeout(() => settle(true), 0);
+        void termination.then(() => settle(false), () => {
+          terminationFailed = true;
+          settle(false);
+        });
         return;
       }
       terminationTimer = setTimeout(() => settle(true), remainingMs);
@@ -399,13 +423,17 @@ function sendError(response: http.ServerResponse, statusCode: number, message: s
 }
 
 function sendJson(response: http.ServerResponse, statusCode: number, body: Buffer): void {
-  response.writeHead(statusCode, {
-    "content-type": "application/json",
-    "content-length": body.byteLength,
-    connection: "close",
-    "cache-control": "no-store",
-  });
-  response.end(body);
+  try {
+    response.writeHead(statusCode, {
+      "content-type": "application/json",
+      "content-length": body.byteLength,
+      connection: "close",
+      "cache-control": "no-store",
+    });
+    response.end(body);
+  } finally {
+    body.fill(0);
+  }
 }
 
 async function main(): Promise<void> {

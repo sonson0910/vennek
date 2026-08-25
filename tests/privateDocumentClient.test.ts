@@ -27,29 +27,35 @@ async function withServer(handler: http.RequestListener, callback: (url: string)
 
 describe("private document client", () => {
   it("posts bounded binary data with encoded metadata and validates JSON", async () => {
-    await withServer((request, response) => {
-      expect(request.method).toBe("POST");
-      expect(request.url).toBe("/v1/extract/private-document");
-      expect(request.headers.authorization).toBe(`Bearer ${token}`);
-      expect(request.headers["content-type"]).toBe("application/octet-stream");
-      expect(request.headers["transfer-encoding"]).toBeUndefined();
-      expect(request.headers["x-private-document-file-name"]).toBe(Buffer.from(metadata.fileName).toString("base64url"));
-      expect(request.headers["x-private-document-mime"]).toBe(Buffer.from(metadata.mime).toString("base64url"));
-      request.resume();
-      request.on("end", () => {
-        const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
-        response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
-        response.end(payload);
+    const fill = vi.spyOn(Buffer.prototype, "fill");
+    try {
+      await withServer((request, response) => {
+        expect(request.method).toBe("POST");
+        expect(request.url).toBe("/v1/extract/private-document");
+        expect(request.headers.authorization).toBe(`Bearer ${token}`);
+        expect(request.headers["content-type"]).toBe("application/octet-stream");
+        expect(request.headers["transfer-encoding"]).toBeUndefined();
+        expect(request.headers["x-private-document-file-name"]).toBe(Buffer.from(metadata.fileName).toString("base64url"));
+        expect(request.headers["x-private-document-mime"]).toBe(Buffer.from(metadata.mime).toString("base64url"));
+        request.resume();
+        request.on("end", () => {
+          const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
+          response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+          response.end(payload);
+        });
+      }, async (url) => {
+        const client = createPrivateDocumentClient({ url, token });
+        expect(client).toBeInstanceOf(PrivateDocumentClient);
+        await expect(client.extract(new Uint8Array([67, 97, 114, 100, 97, 110, 111]), metadata)).resolves.toEqual({
+          type: "text",
+          title: "claim",
+          text: "Cardano",
+        });
       });
-    }, async (url) => {
-      const client = createPrivateDocumentClient({ url, token });
-      expect(client).toBeInstanceOf(PrivateDocumentClient);
-      await expect(client.extract(new Uint8Array([67, 97, 114, 100, 97, 110, 111]), metadata)).resolves.toEqual({
-        type: "text",
-        title: "claim",
-        text: "Cardano",
-      });
-    });
+      expect(fill.mock.calls.some(([value]) => value === 0)).toBe(true);
+    } finally {
+      fill.mockRestore();
+    }
   });
 
   it("requires an exact internal HTTP origin and never follows redirects", () => {
@@ -165,6 +171,22 @@ describe("private document client", () => {
       const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata);
       await expect(extraction).rejects.toThrow(/private extractor/i);
       await expect(extraction).rejects.not.toThrow(token);
+    });
+  });
+
+  it("does not expose mutable URL/token fields or serialize the token", async () => {
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));
+      response.writeHead(200, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      const client = createPrivateDocumentClient({ url, token });
+      expect(JSON.stringify(client)).not.toContain(token);
+      expect(Object.keys(client)).not.toContain("token");
+      (client as unknown as { url?: string }).url = "http://127.0.0.1:1";
+      (client as unknown as { token?: string }).token = "mutated";
+      expect(JSON.stringify(client)).not.toContain(token);
+      await expect(client.extract(new Uint8Array([1]), metadata)).resolves.toEqual({ type: "text", title: "claim", text: "Cardano" });
     });
   });
 });

@@ -37,6 +37,7 @@ export {
 } from "./privateComparison/privateDocumentServer.js";
 export type {
   PrivateDocumentServer,
+  PrivateDocumentServerState,
   PrivateDocumentServerOptions,
   PrivateDocumentWorkerLike,
 } from "./privateComparison/privateDocumentServer.js";

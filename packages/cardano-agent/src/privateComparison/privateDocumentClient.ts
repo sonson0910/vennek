@@ -23,12 +23,27 @@ const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 
 export class PrivateDocumentClient {
-  readonly url: URL;
-  readonly token: string;
+  #requestOptions: Readonly<{
+    protocol: "http:";
+    hostname: string;
+    port: string | 80;
+    path: typeof PRIVATE_DOCUMENT_PATH;
+    method: "POST";
+    agent: false;
+  }>;
+  #token: string;
 
   constructor(config: PrivateDocumentClientConfig) {
-    this.url = validateConfig(config);
-    this.token = config.token;
+    const url = validateConfig(config);
+    this.#requestOptions = Object.freeze({
+      protocol: "http:",
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: PRIVATE_DOCUMENT_PATH,
+      method: "POST",
+      agent: false,
+    });
+    this.#token = config.token;
   }
 
   extract(bytes: Uint8Array, metadata: PrivateDocumentMetadata, signal?: AbortSignal): Promise<PrivateExtractionResult> {
@@ -41,6 +56,20 @@ export class PrivateDocumentClient {
 
     return new Promise<PrivateExtractionResult>((resolve, reject) => {
       let settled = false;
+      let bodyCleaned = false;
+      const cleanBody = () => {
+        if (bodyCleaned) return;
+        bodyCleaned = true;
+        body.fill(0);
+      };
+      let chunks: Buffer[] = [];
+      let payload: Buffer | undefined;
+      const cleanResponse = () => {
+        payload?.fill(0);
+        payload = undefined;
+        for (const chunk of chunks) chunk.fill(0);
+        chunks = [];
+      };
       const finish = (error?: Error, result?: PrivateExtractionResult) => {
         if (settled) return;
         settled = true;
@@ -49,13 +78,9 @@ export class PrivateDocumentClient {
         else resolve(result!);
       };
       const request = http.request({
-        protocol: this.url.protocol,
-        hostname: this.url.hostname,
-        port: this.url.port || 80,
-        path: PRIVATE_DOCUMENT_PATH,
-        method: "POST",
+        ...this.#requestOptions,
         headers: {
-          authorization: `Bearer ${this.token}`,
+          authorization: `Bearer ${this.#token}`,
           "content-type": "application/octet-stream",
           "content-length": body.byteLength,
           [PRIVATE_DOCUMENT_FILE_NAME_HEADER]: fileName,
@@ -79,11 +104,11 @@ export class PrivateDocumentClient {
         ) {
           response.resume();
           response.destroy();
+          cleanResponse();
           finish(new Error("Private extractor response rejected"));
           return;
         }
 
-        const chunks: Buffer[] = [];
         let total = 0;
         response.on("data", (chunk: Buffer | string) => {
           if (settled) return;
@@ -91,32 +116,35 @@ export class PrivateDocumentClient {
           total += value.byteLength;
           if (total > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES || total > declaredLength) {
             response.destroy();
+            cleanResponse();
             finish(new Error("Private extractor response rejected"));
             return;
           }
           chunks.push(value);
         });
-        response.on("error", () => finish(new Error("Private extractor response rejected")));
+        response.on("error", () => {
+          cleanResponse();
+          finish(new Error("Private extractor response rejected"));
+        });
         response.on("end", () => {
           if (settled) return;
-          if (total !== declaredLength) {
-            finish(new Error("Private extractor response rejected"));
-            return;
-          }
-          if (response.statusCode !== 200) {
-            finish(new Error("Private extractor request failed"));
-            return;
-          }
           try {
-            const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total)));
+            if (total !== declaredLength) throw new Error("Private extractor response rejected");
+            if (response.statusCode !== 200) throw new Error("Private extractor request failed");
+            payload = Buffer.concat(chunks, total);
+            const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
             finish(undefined, validatePrivateExtractionResult(value));
           } catch {
             finish(new Error("Private extractor response rejected"));
+          } finally {
+            cleanResponse();
           }
         });
       });
 
       const abort = () => {
+        cleanBody();
+        cleanResponse();
         request.destroy();
         finish(new Error("Private extractor request failed"));
       };
@@ -125,8 +153,18 @@ export class PrivateDocumentClient {
         abort();
         return;
       }
-      request.on("error", () => finish(new Error("Private extractor request failed")));
-      request.end(body);
+      request.once("finish", cleanBody);
+      request.once("close", cleanBody);
+      request.on("error", () => {
+        cleanBody();
+        finish(new Error("Private extractor request failed"));
+      });
+      try {
+        request.end(body);
+      } catch {
+        cleanBody();
+        finish(new Error("Private extractor request failed"));
+      }
     });
   }
 }
