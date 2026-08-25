@@ -106,6 +106,10 @@ describe("wallet secret detection", () => {
     expect(findWalletSecret(harmlessJson)).toBeUndefined();
   });
 
+  it("fails closed just above the bounded scanner limit", () => {
+    expect(findWalletSecret("a".repeat(32_769))).toBe("recovery-phrase");
+  });
+
   it("uses a global checksum budget across overlapping wordlists and runs", () => {
     const segment = `${Array.from({ length: 24 }, () => "的").join(" ")} zzzzzzzzzz `;
     const segmentedInput = segment.repeat(240);

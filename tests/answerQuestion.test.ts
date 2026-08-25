@@ -275,6 +275,28 @@ describe("natural-language question service", () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized UTF-16 input before counting code points", async () => {
+    const persist = vi.fn();
+    const arrayFrom = vi.spyOn(Array, "from");
+    const question = input("x".repeat(32_769));
+    let restored = false;
+
+    try {
+      await expect(answerQuestion(question, {
+        persist,
+        retrieve: async () => [],
+      })).resolves.toMatch(/can't process|xử lý/i);
+
+      const arrayFromCallCount = arrayFrom.mock.calls.length;
+      arrayFrom.mockRestore();
+      restored = true;
+      expect(persist).not.toHaveBeenCalled();
+      expect(arrayFromCallCount).toBe(0);
+    } finally {
+      if (!restored) arrayFrom.mockRestore();
+    }
+  });
+
   it("fails closed for dependency failures without exposing raw errors", async () => {
     const secret = "provider-internal-secret-123";
     await expect(

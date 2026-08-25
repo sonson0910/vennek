@@ -385,14 +385,11 @@ function boundedText(value: unknown, limit: number, requireContent = true): stri
 }
 
 function validQuestionText(value: unknown): string | undefined {
-  if (
-    typeof value !== "string" ||
-    Array.from(value).length > MAX_QUESTION_CODE_POINTS ||
-    Buffer.byteLength(value, "utf8") > MAX_QUESTION_BYTES ||
-    !value.trim()
-  ) {
-    return undefined;
-  }
+  if (typeof value !== "string") return undefined;
+  if (value.length > MAX_QUESTION_CODE_POINTS * 2) return undefined;
+  if (Buffer.byteLength(value, "utf8") > MAX_QUESTION_BYTES) return undefined;
+  if (Array.from(value).length > MAX_QUESTION_CODE_POINTS) return undefined;
+  if (!value.trim()) return undefined;
   return value;
 }
 
