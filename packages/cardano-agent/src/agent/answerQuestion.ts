@@ -241,9 +241,9 @@ const GREETING_LANGUAGES = (Object.entries(GREETING_PATTERNS) as Array<
 >);
 
 function languageFor(text: unknown): QuestionLanguage {
-  if (typeof text !== "string") return "en";
-  if (text.length > 16_384) return "en";
-  const normalized = text.normalize("NFC");
+  const questionText = validQuestionText(text);
+  if (!questionText) return "en";
+  const normalized = questionText.normalize("NFC");
   const greeting = normalizedGreeting(normalized);
   for (const [language, pattern] of GREETING_LANGUAGES) {
     if (pattern.test(greeting)) return language;
@@ -344,6 +344,8 @@ function withNotice(answer: string, firstInteraction: boolean): string {
 const MISSING = Symbol("missing");
 const MAX_ID_LENGTH = 20;
 const MAX_TEXT_LENGTH = 16_384;
+const MAX_QUESTION_CODE_POINTS = 16_384;
+const MAX_QUESTION_BYTES = 64 * 1024;
 const USER_ID_PATTERN = /^[1-9][0-9]*$/u;
 const CHAT_ID_PATTERN = /^-?[1-9][0-9]*$/u;
 const SIGNED_INT64_MIN = BigInt("-9223372036854775808");
@@ -382,6 +384,18 @@ function boundedText(value: unknown, limit: number, requireContent = true): stri
   return value;
 }
 
+function validQuestionText(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    Array.from(value).length > MAX_QUESTION_CODE_POINTS ||
+    Buffer.byteLength(value, "utf8") > MAX_QUESTION_BYTES ||
+    !value.trim()
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
 function validTelegramIdentifier(value: unknown, userId: boolean): string | undefined {
   const text = boundedText(value, MAX_ID_LENGTH);
   const pattern = userId ? USER_ID_PATTERN : CHAT_ID_PATTERN;
@@ -403,14 +417,24 @@ function canonicalQuestionInput(value: unknown): QuestionInput | undefined {
   const text = readOwnDataProperty(value, "text");
   const userId = validTelegramIdentifier(telegramUserId, true);
   const chatId = validTelegramIdentifier(telegramChatId, false);
-  const questionText = boundedText(text, MAX_TEXT_LENGTH);
+  const questionText = validQuestionText(text);
   if (!userId || !chatId || !questionText) return undefined;
   return Object.freeze({ telegramUserId: userId, telegramChatId: chatId, text: questionText }) as QuestionInput;
 }
 
+const SECRET_SCAN_OVERLAP = 1_024;
+
+function containsWalletSecret(value: string): boolean {
+  const step = MAX_TEXT_LENGTH - SECRET_SCAN_OVERLAP;
+  for (let start = 0; start < value.length; start += step) {
+    if (findWalletSecret(value.slice(start, start + MAX_TEXT_LENGTH))) return true;
+  }
+  return false;
+}
+
 function questionContainsWalletSecret(question: QuestionInput): boolean {
   const fields = [question.telegramUserId, question.telegramChatId, question.text];
-  return fields.some((field) => findWalletSecret(field) !== undefined);
+  return fields.some((field) => containsWalletSecret(field));
 }
 
 function canonicalCompletionOutput(value: unknown, requestedModel: string): CompletionOutput | undefined {

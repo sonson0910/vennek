@@ -204,6 +204,29 @@ describe("natural-language question service", () => {
     ).resolves.toMatch(/can't process|xử lý/i);
   });
 
+  it("persists a question at the 16,384 code-point and 64 KiB boundaries", async () => {
+    const persist = vi.fn(async () => undefined);
+    const question = input("😀".repeat(16_384));
+
+    await answerQuestion(question, { persist, retrieve: async () => [] });
+
+    expect(Array.from(question.text).length).toBe(16_384);
+    expect(Buffer.byteLength(question.text, "utf8")).toBe(64 * 1024);
+    expect(persist).toHaveBeenCalledWith(question);
+  });
+
+  it("rejects a question over 16,384 code points before persistence", async () => {
+    const persist = vi.fn();
+    const question = input("😀".repeat(16_385));
+
+    await expect(answerQuestion(question, {
+      persist,
+      retrieve: async () => [],
+    })).resolves.toMatch(/can't process|xử lý/i);
+
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it("fails closed for dependency failures without exposing raw errors", async () => {
     const secret = "provider-internal-secret-123";
     await expect(
