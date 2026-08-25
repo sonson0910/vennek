@@ -42,6 +42,11 @@ type ZipPreflight = Readonly<{
   relationships: ReadonlyMap<string, string>;
 }>;
 
+type XmlTag = Readonly<{
+  name: string;
+  attributes: ReadonlyMap<string, string>;
+}>;
+
 export async function extractPrivateDocument(
   bytes: Uint8Array,
   metadata: PrivateDocumentMetadata,
@@ -100,12 +105,7 @@ function extractText(buffer: Buffer, type: "text" | "markdown", metadata: Privat
 
 async function extractDocx(buffer: Buffer, metadata: PrivateDocumentMetadata): Promise<PrivateExtractionResult> {
   const preflight = await preflightDocx(buffer);
-  if (
-    /macroenabled|vbaproject|template\.main|application\/vnd\.ms-word|attachedtemplate|external/iu.test(preflight.contentTypes) ||
-    [...preflight.relationships.values()].some((xml) => /targetmode\s*=\s*["']external["']|attachedtemplate|external/iu.test(xml))
-  ) {
-    throw new Error("Unsafe document");
-  }
+  inspectDocxStructure(preflight);
 
   let result: { value?: unknown };
   try {
@@ -117,6 +117,112 @@ async function extractDocx(buffer: Buffer, metadata: PrivateDocumentMetadata): P
   const text = typeof result.value === "string" ? normalizeText(result.value) : "";
   if (!text) throw new Error("Text unavailable");
   return finalize("docx", titleFromMetadata(metadata, "DOCX document"), text);
+}
+
+function inspectDocxStructure(preflight: ZipPreflight): void {
+  const contentTypes = parseXml(preflight.contentTypes, "Types");
+  const mainType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
+  const mainDocument = contentTypes.find((tag) =>
+    localXmlName(tag.name) === "Override" &&
+    normalizePartName(tag.attributes.get("PartName")) === "word/document.xml" &&
+    tag.attributes.get("ContentType") === mainType
+  );
+  if (!mainDocument || contentTypes.some((tag) => /macroenabled|template|vnd\.ms-word/iu.test(tag.attributes.get("ContentType") ?? ""))) {
+    throw new Error("Unsafe document");
+  }
+
+  const rootRelationships = parseXml(preflight.relationships.get("_rels/.rels") ?? "", "Relationships")
+    .filter((tag) => localXmlName(tag.name) === "Relationship");
+  const officeDocumentType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+  if (!rootRelationships.some((tag) =>
+    tag.attributes.get("Type") === officeDocumentType &&
+    normalizePartName(tag.attributes.get("Target")) === "word/document.xml"
+  )) {
+    throw new Error("Unsafe document");
+  }
+
+  for (const xml of preflight.relationships.values()) {
+    for (const relationship of parseXml(xml, "Relationships")) {
+      if (localXmlName(relationship.name) !== "Relationship") continue;
+      const type = relationship.attributes.get("Type")?.toLowerCase() ?? "";
+      const target = relationship.attributes.get("Target")?.toLowerCase() ?? "";
+      const mode = relationship.attributes.get("TargetMode")?.toLowerCase() ?? "";
+      if (
+        mode === "external" || /^(?:https?:|file:|data:)/u.test(target) ||
+        type.endsWith("/package") || type.includes("attachedtemplate") || target.includes("attachedtemplate")
+      ) {
+        throw new Error("Unsafe document");
+      }
+    }
+  }
+}
+
+function parseXml(xml: string, expectedRoot: string): XmlTag[] {
+  if (
+    xml.length > DOCX_MAX_XML_BYTES ||
+    /<!doctype|<!entity|<!\[|\bsystem\b|\bpublic\b/iu.test(xml)
+  ) {
+    throw new Error("Unsafe document");
+  }
+  const tags: XmlTag[] = [];
+  const tagPattern = /<\s*([A-Za-z_][\w:.-]*)([^<>]*?)(?:\/\s*)?>/gu;
+  for (const match of xml.matchAll(tagPattern)) {
+    const attributes = parseXmlAttributes(match[2] ?? "");
+    tags.push({ name: match[1]!, attributes });
+  }
+  if (tags.length === 0 || localXmlName(tags[0]!.name) !== expectedRoot) throw new Error("Unsafe document");
+  return tags;
+}
+
+function parseXmlAttributes(source: string): ReadonlyMap<string, string> {
+  const attributes = new Map<string, string>();
+  let offset = 0;
+  const attributePattern = /([A-Za-z_][\w:.-]*)\s*=\s*(["'])(.*?)\2/gy;
+  while (offset < source.length) {
+    while (/\s/u.test(source[offset] ?? "")) offset += 1;
+    if (offset >= source.length) break;
+    attributePattern.lastIndex = offset;
+    const match = attributePattern.exec(source);
+    if (!match || attributes.has(match[1]!)) throw new Error("Unsafe document");
+    attributes.set(match[1]!, decodeXmlAttribute(match[3]!));
+    offset = attributePattern.lastIndex;
+  }
+  return attributes;
+}
+
+function decodeXmlAttribute(value: string): string {
+  const entityPattern = /&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/giu;
+  let output = "";
+  let offset = 0;
+  for (const match of value.matchAll(entityPattern)) {
+    if (value.slice(offset, match.index).includes("&")) throw new Error("Unsafe document");
+    output += value.slice(offset, match.index);
+    const body = match[1]!;
+    if (body === "amp") output += "&";
+    else if (body === "lt") output += "<";
+    else if (body === "gt") output += ">";
+    else if (body === "quot") output += "\"";
+    else if (body === "apos") output += "'";
+    else {
+      const codePoint = body.toLowerCase().startsWith("#x") ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+      if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) throw new Error("Unsafe document");
+      output += String.fromCodePoint(codePoint);
+    }
+    offset = (match.index ?? 0) + match[0].length;
+  }
+  if (value.slice(offset).includes("&")) throw new Error("Unsafe document");
+  return output + value.slice(offset);
+}
+
+function localXmlName(name: string): string {
+  return name.slice(name.lastIndexOf(":") + 1);
+}
+
+function normalizePartName(value: string | undefined): string {
+  if (!value) return "";
+  const parts = value.replace(/^\/+|\/+$/gu, "").split("/");
+  if (parts.some((part) => part === "..")) return "";
+  return parts.filter((part) => part !== ".").join("/");
 }
 
 function preflightDocx(buffer: Buffer): Promise<ZipPreflight> {
@@ -220,7 +326,7 @@ async function consumeZipEntry(
     if (read > DOCX_MAX_ENTRY_BYTES) throw new Error("Unsafe document");
     if (shouldScanXml) {
       const markerScan = `${markerTail}${bytes.toString("utf8")}`.toLowerCase();
-      if (markerScan.includes("altchunk") || markerScan.includes("vbaproject") || markerScan.includes("activex") || markerScan.includes("oleobject")) {
+      if (markerScan.includes("altchunk") || markerScan.includes("vbaproject") || markerScan.includes("activex") || markerScan.includes("oleobject") || markerScan.includes("attachedtemplate")) {
         throw new Error("Unsafe document");
       }
       markerTail = markerScan.slice(-64);
@@ -330,9 +436,39 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
 }
 
 function hasUnsafePdfMarker(buffer: Buffer): boolean {
+  const names = pdfNameTokens(buffer);
+  return [
+    "A", "AA", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
+    "FileAttachment", "Launch", "SubmitForm", "ImportData", "GoToR", "GoToE", "GoTo", "Rendition", "Movie",
+    "Sound", "ResetForm",
+  ].some((name) => names.has(name));
+}
+
+function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
   const source = buffer.toString("latin1");
-  return /\/(?:OpenAction|AA|JavaScript|JS|EmbeddedFiles|Filespec|EF|AF|RichMedia|FileAttachment|Launch|SubmitForm|ImportData|GoToR|GoToE)\b/iu.test(source) ||
-    /\/S\s*\/(?:JavaScript|Launch|SubmitForm|ImportData|GoToR|GoToE|Rendition|Movie|Sound)\b/iu.test(source);
+  const names = new Set<string>();
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "/" || source[index - 1] === "/") continue;
+    let end = index + 1;
+    while (end < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[end]!)) end += 1;
+    if (end === index + 1) continue;
+    names.add(decodePdfName(source.slice(index + 1, end)));
+    index = end - 1;
+  }
+  return names;
+}
+
+function decodePdfName(value: string): string {
+  let decoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "#" && /^[0-9a-f]{2}$/iu.test(value.slice(index + 1, index + 3))) {
+      decoded += String.fromCharCode(Number.parseInt(value.slice(index + 1, index + 3), 16));
+      index += 2;
+    } else {
+      decoded += value[index];
+    }
+  }
+  return decoded;
 }
 
 function hasActionValue(value: unknown): boolean {
@@ -346,7 +482,7 @@ function hasActiveAnnotation(value: unknown): boolean {
   if (value === null || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(hasActiveAnnotation);
   for (const [key, child] of Object.entries(value)) {
-    if (/^(?:action|js|javascript|unsafeurl|url|attachment|file|filename)$/iu.test(key)) return true;
+    if (/^(?:action|js|javascript|unsafeurl|url|attachment|file|filename|dest)$/iu.test(key)) return true;
     if (key === "hasJSActions" && child === true) return true;
     if (typeof child === "object" && hasActiveAnnotation(child)) return true;
   }

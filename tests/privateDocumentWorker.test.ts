@@ -5,7 +5,7 @@ import { PRIVATE_DOCUMENT_MAX_BYTES, PRIVATE_DOCUMENT_MAX_CODE_POINTS } from "..
 
 const textBytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 
-type ZipEntry = { name: string; data: Buffer; flags?: number; attributes?: number };
+type ZipEntry = { name: string; data: Buffer; flags?: number; attributes?: number; declaredSize?: number; declaredCompressedSize?: number };
 
 function crc32(data: Buffer): number {
   let crc = 0xffffffff;
@@ -24,14 +24,16 @@ function zip(entries: ZipEntry[]): Uint8Array {
     const name = Buffer.from(entry.name);
     const compressed = deflateRawSync(entry.data);
     const flags = entry.flags ?? 0;
+    const compressedSize = entry.declaredCompressedSize ?? compressed.length;
+    const uncompressedSize = entry.declaredSize ?? entry.data.length;
     const localHeader = Buffer.alloc(30 + name.length);
     localHeader.writeUInt32LE(0x04034b50, 0);
     localHeader.writeUInt16LE(20, 4);
     localHeader.writeUInt16LE(flags, 6);
     localHeader.writeUInt16LE(8, 8);
     localHeader.writeUInt32LE(crc32(entry.data), 14);
-    localHeader.writeUInt32LE(compressed.length, 18);
-    localHeader.writeUInt32LE(entry.data.length, 22);
+    localHeader.writeUInt32LE(compressedSize, 18);
+    localHeader.writeUInt32LE(uncompressedSize, 22);
     localHeader.writeUInt16LE(name.length, 26);
     name.copy(localHeader, 30);
     local.push(localHeader, compressed);
@@ -43,8 +45,8 @@ function zip(entries: ZipEntry[]): Uint8Array {
     centralHeader.writeUInt16LE(flags, 8);
     centralHeader.writeUInt16LE(8, 10);
     centralHeader.writeUInt32LE(crc32(entry.data), 16);
-    centralHeader.writeUInt32LE(compressed.length, 20);
-    centralHeader.writeUInt32LE(entry.data.length, 24);
+    centralHeader.writeUInt32LE(compressedSize, 20);
+    centralHeader.writeUInt32LE(uncompressedSize, 24);
     centralHeader.writeUInt16LE(name.length, 28);
     centralHeader.writeUInt32LE(entry.attributes ?? 0, 38);
     centralHeader.writeUInt32LE(offset, 42);
@@ -62,23 +64,28 @@ function zip(entries: ZipEntry[]): Uint8Array {
   return Buffer.concat([...local, centralBytes, end]);
 }
 
-function docx(extra: ZipEntry[] = []): Uint8Array {
+const DOCX_CONTENT_TYPES = "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>";
+const DOCX_ROOT_RELS = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>";
+const DOCX_DOCUMENT = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Cardano document</w:t></w:r></w:p></w:body></w:document>";
+
+function docx(extra: ZipEntry[] = [], contentTypes = DOCX_CONTENT_TYPES, rootRels = DOCX_ROOT_RELS): Uint8Array {
   return zip([
-    { name: "[Content_Types].xml", data: Buffer.from("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>") },
-    { name: "_rels/.rels", data: Buffer.from("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>") },
-    { name: "word/document.xml", data: Buffer.from("<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Cardano document</w:t></w:r></w:p></w:body></w:document>") },
+    { name: "[Content_Types].xml", data: Buffer.from(contentTypes) },
+    { name: "_rels/.rels", data: Buffer.from(rootRels) },
+    { name: "word/document.xml", data: Buffer.from(DOCX_DOCUMENT) },
     ...extra,
   ]);
 }
 
-function pdf(options: { text?: string; catalog?: string } = {}): Uint8Array {
+function pdf(options: { text?: string; catalog?: string; page?: string; extraObjects?: string[] } = {}): Uint8Array {
   const content = options.text === undefined ? "BT /F1 18 Tf 72 720 Td (Cardano PDF) Tj ET" : options.text;
   const objects = [
     `<< /Type /Catalog /Pages 2 0 R ${options.catalog ?? ""}>>`,
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R ${options.page ?? ""}>>`,
     `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ...(options.extraObjects ?? []),
   ];
   let source = "%PDF-1.4\n";
   const offsets = [0];
@@ -141,10 +148,76 @@ describe("private document worker", () => {
     })).rejects.toThrow(/Unsafe document/);
   }, 15_000);
 
+  it("rejects ambiguous OOXML relationships and structurally non-Word ZIPs", async () => {
+    const externalEntity = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship TargetMode=\"Ext&#x65;rnal\" Target=\"https://example.test\"/></Relationships>";
+    await expect(extractPrivateDocument(docx([{ name: "word/_rels/document.xml.rels", data: Buffer.from(externalEntity) }]), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
+
+    const packageRelationship = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/package\" Target=\"word/embedded.bin\"/></Relationships>";
+    await expect(extractPrivateDocument(docx([{ name: "word/_rels/document.xml.rels", data: Buffer.from(packageRelationship) }]), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
+
+    const wrongRoot = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"urn:not-a-word-document\" Target=\"word/document.xml\"/></Relationships>";
+    await expect(extractPrivateDocument(docx([], DOCX_CONTENT_TYPES, wrongRoot), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
+
+    const nonWordContentTypes = DOCX_CONTENT_TYPES.replace("application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml", "application/xml");
+    await expect(extractPrivateDocument(docx([], nonWordContentTypes), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
+  });
+
+  it("rejects the bounded ZIP attack matrix", async () => {
+    const metadata = {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+    for (const name of ["../escape", "/escape", "C:/escape", "word/../escape"]) {
+      await expect(extractPrivateDocument(docx([{ name, data: Buffer.from("x") }]), metadata)).rejects.toThrow(/Unsafe document/);
+    }
+    await expect(extractPrivateDocument(docx([{ name: "encrypted.bin", data: Buffer.from("x"), flags: 1 }]), metadata)).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(docx([{ name: "ratio.bin", data: Buffer.alloc(10_000, 0x41) }]), metadata)).rejects.toThrow(/Unsafe document/);
+    const expanded = 13 * 1024 * 1024;
+    await expect(extractPrivateDocument(docx(Array.from({ length: 5 }, (_, index) => ({
+      name: `word/expanded-${index}.bin`,
+      data: Buffer.from("x"),
+      declaredSize: expanded,
+      declaredCompressedSize: Math.ceil(expanded / 100),
+    }))), metadata)).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(docx([{ name: "word/link", data: Buffer.from("x"), attributes: 0xa0000000 }]), metadata)).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(docx(Array.from({ length: 2_046 }, (_, index) => ({ name: `word/extra-${index}.xml`, data: Buffer.from("x") }))), metadata)).rejects.toThrow(/Unsafe document/);
+    for (const name of ["word/activeX/active.bin", "word/embeddings/oleObject1.bin", "word/altChunk1.xml"]) {
+      await expect(extractPrivateDocument(docx([{ name, data: Buffer.from("x") }]), metadata)).rejects.toThrow(/Unsafe document/);
+    }
+    await expect(extractPrivateDocument(docx([{ name: "word/settings.xml", data: Buffer.from("<w:attachedTemplate xmlns:w=\"urn:w\"/>") }]), metadata)).rejects.toThrow(/Unsafe document/);
+  }, 15_000);
+
   it("rejects active and scanned PDFs while extracting text PDFs", async () => {
     await expect(extractPrivateDocument(pdf(), { fileName: "claim.pdf", mime: "application/pdf" })).resolves.toMatchObject({ type: "pdf", text: "Cardano PDF" });
     await expect(extractPrivateDocument(pdf({ catalog: "/OpenAction 2 0 R " }), { fileName: "claim.pdf", mime: "application/pdf" })).rejects.toThrow(/Unsafe document/);
     await expect(extractPrivateDocument(pdf({ text: "" }), { fileName: "scan.pdf", mime: "application/pdf" })).rejects.toThrow(/Text unavailable/);
+  }, 15_000);
+
+  it("rejects escaped catalog AA and semantic page/annotation actions", async () => {
+    await expect(extractPrivateDocument(pdf({ catalog: "/#41A << /O << /S /GoTo /D [3 0 R /Fit] >> >> " }), {
+      fileName: "catalog-aa.pdf",
+      mime: "application/pdf",
+    })).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(pdf({ page: "/Annots [6 0 R] ", extraObjects: ["<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /GoTo /D [3 0 R /Fit] >> >>"] }), {
+      fileName: "annotation-action.pdf",
+      mime: "application/pdf",
+    })).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(pdf({ page: "/AA << /E << /S /GoTo /D [3 0 R /Fit] >> >> " }), {
+      fileName: "page-aa.pdf",
+      mime: "application/pdf",
+    })).rejects.toThrow(/Unsafe document/);
   }, 15_000);
 
   it("keeps exact astral code-point bounds in the protocol validator", async () => {
