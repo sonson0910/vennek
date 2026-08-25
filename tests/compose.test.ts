@@ -23,6 +23,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
         image?: string;
         environment?: Record<string, string | null>;
         ports?: Array<{ host_ip?: string; target?: number; published?: string }>;
+        expose?: string[];
         healthcheck?: { test?: string[] };
         networks?: Record<string, unknown>;
         mem_limit?: string;
@@ -66,6 +67,14 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(workerEnvironment?.VENNEK_MODEL_QUALITY).toBe("cardano-quality");
     expect(workerEnvironment?.VENNEK_MODEL_VERIFIER).toBe("cardano-verifier");
     expect(workerEnvironment?.VENNEK_EMBEDDING_MODEL).toBe("cardano-embedding");
+    expect(workerEnvironment?.KNOWLEDGE_PROMOTION_URL).toBe("http://knowledge-worker:8082");
+    expect(workerEnvironment?.KNOWLEDGE_PROMOTION_KEY_ID).toBe("agent-worker-v1");
+    expect(workerEnvironment?.KNOWLEDGE_PROMOTION_KEY).toBe(
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    );
+    for (const name of ["KNOWLEDGE_PROMOTION_PORT", "SEARXNG_BASE_URL"]) {
+      expect(workerEnvironment?.[name]).toBeUndefined();
+    }
     for (const name of [
       "VENNEK_ENCRYPTION_KEY",
       "LITELLM_BASE_URL",
@@ -85,8 +94,35 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     );
     expect(knowledgeEnvironment?.PDF_EXTRACTOR_URL).toBe("http://pdf-extractor:8081");
     expect(knowledgeEnvironment?.PDF_EXTRACTOR_TOKEN).toBe("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    for (const name of ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "VENNEK_ENCRYPTION_KEY", "VENNEK_MODEL_FAST", "VENNEK_MODEL_QUALITY", "VENNEK_MODEL_VERIFIER", "DATABASE_OWNER_URL"]) {
+    expect(knowledgeEnvironment?.KNOWLEDGE_PROMOTION_PORT).toBe("8082");
+    expect(knowledgeEnvironment?.KNOWLEDGE_PROMOTION_KEY_ID).toBe("agent-worker-v1");
+    expect(knowledgeEnvironment?.KNOWLEDGE_PROMOTION_KEY).toBe(
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    );
+    expect(knowledgeEnvironment?.SEARXNG_BASE_URL).toBe("https://search.example.test/");
+    for (const name of [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_WEBHOOK_SECRET",
+      "VENNEK_ENCRYPTION_KEY",
+      "VENNEK_CONVERSATION_KEY",
+      "VENNEK_MODEL_FAST",
+      "VENNEK_MODEL_QUALITY",
+      "VENNEK_MODEL_VERIFIER",
+      "DATABASE_OWNER_URL",
+      "KNOWLEDGE_PROMOTION_URL",
+    ]) {
       expect(knowledgeEnvironment?.[name]).toBeUndefined();
+    }
+    expect(config.services["knowledge-worker"]?.ports).toBeUndefined();
+    expect(config.services["knowledge-worker"]?.expose).toEqual(["8082"]);
+    for (const name of [
+      "KNOWLEDGE_PROMOTION_URL",
+      "KNOWLEDGE_PROMOTION_KEY_ID",
+      "KNOWLEDGE_PROMOTION_KEY",
+      "KNOWLEDGE_PROMOTION_PORT",
+      "SEARXNG_BASE_URL",
+    ]) {
+      expect(webhookEnvironment?.[name]).toBeUndefined();
     }
     expect(config.services["telegram-webhook"]?.environment?.PORT).toBe("8080");
     expect(config.services["telegram-webhook"]?.ports).toHaveLength(1);
@@ -148,5 +184,23 @@ describe("LiteLLM embedding route contract", () => {
     expect(config).toContain("api_key: os.environ/OPENAI_API_KEY");
     expect(env).toContain("OPENAI_EMBEDDING_MODEL=text-embedding-3-small");
     expect(compose).toContain("OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}");
+  });
+});
+
+describe("knowledge promotion deployment examples", () => {
+  it("use the same canonical promotion settings in both env examples", () => {
+    const expected = {
+      KNOWLEDGE_PROMOTION_KEY_ID: "agent-worker-v1",
+      KNOWLEDGE_PROMOTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      KNOWLEDGE_PROMOTION_PORT: "8082",
+      KNOWLEDGE_PROMOTION_URL: "http://knowledge-worker:8082",
+      SEARXNG_BASE_URL: "https://search.example.test/",
+    };
+    const composeEnv = readFileSync(".env.example", "utf8");
+    const deployEnv = readFileSync("deploy/vennek.env.example", "utf8");
+    for (const [name, value] of Object.entries(expected)) {
+      expect(composeEnv).toContain(`${name}=${value}`);
+      expect(deployEnv).toContain(`${name}=${value}`);
+    }
   });
 });
