@@ -6,3 +6,5 @@ export * from "./accessControl.js";
 export * from "./agentQueue.js";
 export * from "./webhookRuntime.js";
 export * from "./agentWorker.js";
+export * from "./knowledgePromotionProtocol.js";
+export * from "./knowledgePromotionClient.js";
