@@ -28,11 +28,6 @@ export type PrivateDocumentServerOptions = {
   token: string;
   timeoutMs?: number;
   workerFactory?: () => PrivateDocumentWorkerLike;
-  state?: PrivateDocumentServerState;
-};
-
-export type PrivateDocumentServerState = {
-  state: "available" | "busy" | "poisoned";
 };
 
 export type PrivateDocumentServer = {
@@ -46,7 +41,7 @@ const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 const MAX_HEADER_SIZE = 16 * 1024;
 const MAX_HEADERS_COUNT = 64;
-const processPrivateDocumentState: PrivateDocumentServerState = { state: "available" };
+const processPrivateDocumentState: { state: "available" | "busy" | "poisoned" } = { state: "available" };
 
 class PrivateDocumentServiceError extends Error {
   constructor(readonly statusCode: number, message: string, readonly poisonSlot = false) {
@@ -72,7 +67,7 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
     throw new Error("Private extractor timeout is invalid");
   }
   const workerFactory = options.workerFactory ?? defaultWorkerFactory;
-  const state = options.state ?? processPrivateDocumentState;
+  const state = processPrivateDocumentState;
 
   const server = http.createServer({
     headersTimeout: 10_000,
@@ -143,15 +138,15 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
     response.once("close", abortResponse);
 
     let input: Buffer | undefined;
-    let payload: Buffer | undefined;
     try {
       input = await readRequestBody(request, contentLength, abortController.signal);
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) throw new PrivateDocumentServiceError(504, "Private document extraction timed out");
       const result = await runPrivateDocumentWorker(input, metadata, workerFactory, remainingMs, abortController.signal);
       const validated = validatePrivateExtractionResult(result);
-      payload = Buffer.from(JSON.stringify(validated));
+      const payload = Buffer.from(JSON.stringify(validated));
       if (payload.byteLength > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES) {
+        payload.fill(0);
         throw new PrivateDocumentServiceError(503, "Private document extraction unavailable");
       }
       sendJson(response, 200, payload);
@@ -167,7 +162,6 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       }
     } finally {
       input?.fill(0);
-      payload?.fill(0);
       request.off("aborted", abortRequest);
       response.off("close", abortResponse);
       clearTimeout(deadlineTimer);
@@ -423,6 +417,16 @@ function sendError(response: http.ServerResponse, statusCode: number, message: s
 }
 
 function sendJson(response: http.ServerResponse, statusCode: number, body: Buffer): void {
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    body.fill(0);
+    response.off("finish", cleanup);
+    response.off("close", cleanup);
+  };
+  response.once("finish", cleanup);
+  response.once("close", cleanup);
   try {
     response.writeHead(statusCode, {
       "content-type": "application/json",
@@ -431,8 +435,9 @@ function sendJson(response: http.ServerResponse, statusCode: number, body: Buffe
       "cache-control": "no-store",
     });
     response.end(body);
-  } finally {
-    body.fill(0);
+  } catch (error) {
+    cleanup();
+    throw error;
   }
 }
 

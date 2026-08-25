@@ -44,9 +44,8 @@ async function withServer(
   workerFactory: () => PrivateDocumentWorkerLike,
   callback: (port: number) => Promise<void>,
   timeoutMs = 100,
-  state?: { state: "available" | "busy" | "poisoned" },
 ): Promise<void> {
-  const service = createPrivateDocumentServer({ token, workerFactory, timeoutMs, state });
+  const service = createPrivateDocumentServer({ token, workerFactory, timeoutMs });
   await service.listen(0);
   const address = service.server.address();
   if (!address || typeof address === "string") throw new Error("server did not bind");
@@ -145,6 +144,48 @@ describe("private document server", () => {
     }, 2_000);
   });
 
+  it("preserves a large serialized response until it is flushed", async () => {
+    const largeText = "Cardano ".repeat(250_000);
+    await withServer(() => new FakeWorker({ type: "text", title: "claim", text: largeText }), async (port) => {
+      const response = await request(port);
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body).text).toBe(largeText);
+    }, 2_000);
+  });
+
+  it("cleans a serialized response when the client aborts", async () => {
+    const fill = vi.spyOn(Buffer.prototype, "fill");
+    const largeText = "Cardano ".repeat(250_000);
+    try {
+      await withServer(() => new FakeWorker({ type: "text", title: "claim", text: largeText }), async (port) => {
+        await new Promise<void>((resolve) => {
+          const requestToAbort = http.request({
+            host: "127.0.0.1",
+            port,
+            path: "/v1/extract/private-document",
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/octet-stream",
+              "content-length": body.byteLength,
+              "x-private-document-file-name": Buffer.from(metadata.fileName).toString("base64url"),
+              "x-private-document-mime": Buffer.from(metadata.mime).toString("base64url"),
+            },
+          }, (response) => {
+            response.once("close", resolve);
+            response.destroy();
+          });
+          requestToAbort.on("error", () => undefined);
+          requestToAbort.end(body);
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(fill.mock.calls.some(([value]) => value === 0)).toBe(true);
+      });
+    } finally {
+      fill.mockRestore();
+    }
+  });
+
   it("times out a slow upload before creating a parser worker", async () => {
     let workers = 0;
     await withServer(() => {
@@ -193,13 +234,25 @@ describe("private document server", () => {
         return new Promise<number>(() => undefined);
       }
     }
+    vi.resetModules();
+    const { createPrivateDocumentServer: createIsolatedServer } = await import(
+      "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js"
+    );
     let workers = 0;
-    const state = { state: "available" as const };
-    await withServer(() => workers++ === 0 ? new NeverTerminatingWorker() : new FakeWorker(), async (port) => {
-      expect((await request(port)).status).toBe(504);
-      expect((await request(port)).status).toBe(503);
-      expect(state.state).toBe("poisoned");
-    }, 25, state);
+    const service = createIsolatedServer({
+      token,
+      workerFactory: () => workers++ === 0 ? new NeverTerminatingWorker() : new FakeWorker(),
+      timeoutMs: 25,
+    });
+    await service.listen(0);
+    const address = service.server.address();
+    if (!address || typeof address === "string") throw new Error("server did not bind");
+    try {
+      expect((await request(address.port)).status).toBe(504);
+      expect((await request(address.port)).status).toBe(503);
+    } finally {
+      await service.close();
+    }
   });
 
   it("rejects timeout overrides outside the bounded service deadline", async () => {
