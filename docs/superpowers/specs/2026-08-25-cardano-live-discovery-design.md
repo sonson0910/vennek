@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25
 
-**Status:** Approved in conversation; awaiting review of this written spec
+**Status:** Written spec approved by the user
 
 **Immediate release slice:** R8b — authenticated live-source promotion
 
@@ -181,6 +181,8 @@ deployment secret environment only.
   invalid-signature request.
 - `409 Conflict`: the request is still running, or only one of request ID and
   nonce matches an existing claim.
+- `413 Payload Too Large`: the raw body exceeds 64 KiB and is rejected before
+  authentication or JSON parsing.
 - `503 Service Unavailable`: `busy`, `timeout`, or sanitized upstream failure.
 
 When both request ID and nonce match a completed claim, the server returns the
