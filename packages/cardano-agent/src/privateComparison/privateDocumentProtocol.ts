@@ -18,6 +18,9 @@ const PRIVATE_DOCUMENT_TYPES = new Set<PrivateDocumentType>(["pdf", "docx", "tex
 const PRIVATE_DOCUMENT_RESULT_KEYS = ["type", "title", "text"];
 const WALLET_SCAN_WINDOW = 32_768;
 const WALLET_SCAN_STEP = WALLET_SCAN_WINDOW / 2;
+const WALLET_SCAN_FIELD_CARRY = 128;
+const SIGNING_KEY_TYPE_FIELD = /["']?type["']?\s*:\s*["']([^"']+)["']/gi;
+const KEY_MATERIAL_FIELD = /["']?(?:cborhex|bytes)["']?\s*:\s*["']/i;
 
 export function validatePrivateDocumentToken(value: unknown): Buffer {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(value)) {
@@ -90,8 +93,26 @@ function hasInvalidUnicode(value: string): boolean {
 
 function hasWalletSecret(value: string): boolean {
   if (value.length <= WALLET_SCAN_WINDOW) return findWalletSecret(value) !== undefined;
+  let signingKeyTypeSeen = false;
+  let keyMaterialSeen = false;
+  let carry = "";
   for (let start = 0; start < value.length; start += WALLET_SCAN_STEP) {
-    if (findWalletSecret(value.slice(start, start + WALLET_SCAN_WINDOW)) !== undefined) return true;
+    const chunk = value.slice(start, start + WALLET_SCAN_WINDOW);
+    if (findWalletSecret(chunk) !== undefined) return true;
+
+    const fieldScan = carry + chunk;
+    signingKeyTypeSeen ||= hasSigningKeyType(fieldScan);
+    keyMaterialSeen ||= KEY_MATERIAL_FIELD.test(fieldScan);
+    if (signingKeyTypeSeen && keyMaterialSeen) return true;
+    carry = chunk.slice(-WALLET_SCAN_FIELD_CARRY);
+  }
+  return false;
+}
+
+function hasSigningKeyType(value: string): boolean {
+  for (const match of value.matchAll(SIGNING_KEY_TYPE_FIELD)) {
+    const type = match[1]!.toLowerCase();
+    if (type.includes("signingkey") && type.includes("ed25519")) return true;
   }
   return false;
 }

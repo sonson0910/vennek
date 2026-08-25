@@ -76,4 +76,9 @@ describe("private document protocol", () => {
       text: '{"type":"PaymentSigningKeyShelley_ed25519","cborHex":"5820abcdef"}',
     })).toThrow();
   });
+
+  it("rejects signing-key markers that cross wallet-scan windows", () => {
+    const text = `"type":"PaymentSigningKeyShelley_ed25519","description":"${"a".repeat(32_768)}","cborHex":"5820abcdef"`;
+    expect(() => validatePrivateExtractionResult({ type: "text", title: "safe", text })).toThrow();
+  });
 });
