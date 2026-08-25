@@ -21,7 +21,6 @@ import { KnowledgePromotionClient } from "../apps/telegram-bot/src/knowledgeProm
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const db = databaseUrl ? createDatabase(databaseUrl) : undefined;
-const embeddingModel = "task10-cardano-embedding";
 
 const identity = {
   keyId: `task10-${process.pid}-${Date.now()}`.slice(0, 63),
@@ -65,6 +64,7 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
   it("promotes a discovered official source through the signed server and retrieves fresh evidence", async () => {
     const suffix = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const sourceId = `task10-fixture-${suffix}`;
+    const embeddingModel = `task10-cardano-embedding-${suffix}`;
     const callerId = identity.keyId;
     const question = `task10 Cardano evidence ${suffix}`;
     const entry: SourceRegistryEntry = {
@@ -78,6 +78,7 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
       networks: ["mainnet"],
       refresh: "daily",
     };
+    const registry = [entry];
     const sourceUrl = `https://docs.cardano.org/task10/${suffix}`;
     const responseBody = `<html><head><title>${question}</title></head><body><h1>${question}</h1><p>Deterministic Cardano evidence fixture.</p></body></html>`;
     const searchQueries: string[] = [];
@@ -102,12 +103,12 @@ describe.skipIf(!databaseUrl)("live knowledge promotion loopback", () => {
       const audit = new PromotionAuditRepository(db!);
       const promote = (promotedQuestion: string, signal: AbortSignal) => promoteQuestionSources({
         question: promotedQuestion,
-        registry: [entry],
+        registry,
         search,
         signal,
         promote: (link, promotionSignal, deadlineAt) => promoteDiscoveredLink({
           link,
-          registry: [entry],
+          registry,
           repository,
           embedder,
           embeddingModel,
