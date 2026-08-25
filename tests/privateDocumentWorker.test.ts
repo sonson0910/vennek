@@ -202,6 +202,19 @@ describe("private document worker", () => {
       fileName: "claim.docx",
       mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     })).rejects.toThrow(/Unsafe document|Document type mismatch/);
+
+    const decoratedContentTypes = `<?xml version="1.0"?>\n<!-- SYSTEM <NotTypes/> -->${DOCX_CONTENT_TYPES}`;
+    const decoratedRootRels = `<!-- PUBLIC <NotRelationships/> --><?xml version="1.0"?>${DOCX_ROOT_RELS}`;
+    await expect(extractPrivateDocument(docx([], decoratedContentTypes, decoratedRootRels), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).resolves.toMatchObject({ type: "docx" });
+
+    const entityContentTypes = `<!DOCTYPE Types [<!ENTITY x SYSTEM "https://example.test/entity">]>${DOCX_CONTENT_TYPES}`;
+    await expect(extractPrivateDocument(docx([], entityContentTypes), {
+      fileName: "claim.docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    })).rejects.toThrow(/Unsafe document/);
   });
 
   it("rejects the bounded ZIP attack matrix", async () => {
@@ -265,6 +278,14 @@ describe("private document worker", () => {
       fileName: "object-stream-action.pdf",
       mime: "application/pdf",
     })).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(pdf({ extraObjects: ["stream\n/A /OpenAction\nendstream"] }), {
+      fileName: "ambiguous-stream.pdf",
+      mime: "application/pdf",
+    })).rejects.toThrow(/Unsafe document/);
+    await expect(extractPrivateDocument(pdf({ extraObjects: ["<< /Type /Font /Subtype /Type1 /BaseFont /Custom /Encoding << /Type /Encoding /Differences [65 /A] >> >>"] }), {
+      fileName: "font-name.pdf",
+      mime: "application/pdf",
+    })).resolves.toMatchObject({ type: "pdf" });
     await expect(extractPrivateDocument(pdf({ text: "BT /F1 18 Tf 72 720 Td (Cardano /A PDF) Tj ET" }), {
       fileName: "visible-name.pdf",
       mime: "application/pdf",

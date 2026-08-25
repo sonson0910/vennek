@@ -163,15 +163,17 @@ function hasForbiddenDocxSemanticName(value: string | undefined): boolean {
 }
 
 function parseXml(xml: string, expectedRoot: string): XmlTag[] {
-  if (
-    xml.length > DOCX_MAX_XML_BYTES ||
-    /<!doctype|<!entity|<!\[|\bsystem\b|\bpublic\b/iu.test(xml)
-  ) {
+  if (xml.length > DOCX_MAX_XML_BYTES) {
     throw new Error("Unsafe document");
   }
+  const withoutComments = xml.replace(/<!--[\s\S]*?-->/gu, "");
+  if (/<!--|-->/u.test(withoutComments)) throw new Error("Unsafe document");
+  const withoutProcessingInstructions = withoutComments.replace(/<\?[\s\S]*?\?>/gu, "");
+  if (/<\?/u.test(withoutProcessingInstructions)) throw new Error("Unsafe document");
+  if (/<!/u.test(withoutProcessingInstructions)) throw new Error("Unsafe document");
   const tags: XmlTag[] = [];
   const tagPattern = /<\s*([A-Za-z_][\w:.-]*)([^<>]*?)(?:\/\s*)?>/gu;
-  for (const match of xml.matchAll(tagPattern)) {
+  for (const match of withoutProcessingInstructions.matchAll(tagPattern)) {
     const attributes = parseXmlAttributes(match[2] ?? "");
     tags.push({ name: match[1]!, attributes });
   }
@@ -443,7 +445,7 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
 function hasUnsafePdfSyntax(buffer: Buffer): boolean {
   const names = pdfNameTokens(buffer);
   return [
-    "__ObjStm", "ObjStm", "A", "AA", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
+    "__UnsafeSyntax", "__ObjStm", "ObjStm", "OpenAction", "JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia",
     "FileAttachment", "Launch", "SubmitForm", "ImportData", "GoToR", "GoToE", "GoTo", "Rendition", "Movie",
     "Sound", "ResetForm",
   ].some((name) => names.has(name));
@@ -452,8 +454,55 @@ function hasUnsafePdfSyntax(buffer: Buffer): boolean {
 function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
   const source = buffer.toString("latin1");
   const names = new Set<string>();
+  type PdfValue = Readonly<{ kind: "number" | "name" | "container" | "other"; value?: string | number }>;
+  type PdfDictionary = {
+    pendingKey?: string;
+    values: Map<string, PdfValue>;
+    malformed: boolean;
+    topLevel: boolean;
+    endOffset: number;
+    lastAssigned?: { key: string; kind: PdfValue["kind"] };
+    referencePending: boolean;
+  };
+  type PdfContainer = { kind: "dict"; dictionary: PdfDictionary } | { kind: "array" };
+  const containers: PdfContainer[] = [];
+  let streamCandidate: PdfDictionary | undefined;
   let index = 0;
-  let previousName = "";
+
+  const unsafe = () => {
+    names.add("__UnsafeSyntax");
+    return names;
+  };
+  const current = (): PdfContainer | undefined => containers[containers.length - 1];
+  const assign = (value: PdfValue) => {
+    const container = current();
+    if (container?.kind !== "dict") return;
+    if (container.dictionary.pendingKey === undefined) {
+      if (value.kind === "number" && container.dictionary.lastAssigned?.kind === "number") {
+        if (container.dictionary.lastAssigned.key === "Length") container.dictionary.malformed = true;
+        else container.dictionary.referencePending = true;
+      }
+      return;
+    }
+    const key = container.dictionary.pendingKey;
+    if (container.dictionary.values.has(key)) container.dictionary.malformed = true;
+    container.dictionary.values.set(key, value);
+    container.dictionary.lastAssigned = { key, kind: value.kind };
+    container.dictionary.referencePending = false;
+    container.dictionary.pendingKey = undefined;
+  };
+  const inspectName = (name: string): boolean => {
+    const container = current();
+    if (name === "A" || name === "AA") {
+      if (container?.kind === "dict") return true;
+    }
+    if (name === "OpenAction" && container?.kind === "dict" && container.dictionary.pendingKey === undefined) return true;
+    if (container?.kind === "dict" && container.dictionary.pendingKey === "Type" && name === "ObjStm") return true;
+    if (container?.kind === "dict" && container.dictionary.pendingKey === "S" && ACTION_TYPES.has(name)) return true;
+    if (GLOBAL_ACTIVE_NAMES.has(name)) return true;
+    return false;
+  };
+
   while (index < source.length) {
     const character = source[index]!;
     if (/\s|\x00/u.test(character)) {
@@ -466,17 +515,43 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
     }
     if (character === "(") {
       index = skipPdfLiteralString(source, index);
-      previousName = "";
+      streamCandidate = undefined;
       continue;
     }
     if (character === "<" && source[index + 1] !== "<") {
       index = skipPdfHexString(source, index);
-      previousName = "";
+      assign({ kind: "other" });
+      streamCandidate = undefined;
       continue;
     }
-    if (character === "<" || character === ">" || character === "[" || character === "]") {
-      index += source.startsWith("<<", index) || source.startsWith(">>", index) ? 2 : 1;
-      previousName = "";
+    if (source.startsWith("<<", index)) {
+      containers.push({ kind: "dict", dictionary: { values: new Map(), malformed: false, topLevel: containers.length === 0, endOffset: 0, referencePending: false } });
+      index += 2;
+      streamCandidate = undefined;
+      continue;
+    }
+    if (source.startsWith(">>", index)) {
+      const container = containers.pop();
+      if (!container || container.kind !== "dict" || container.dictionary.pendingKey !== undefined || container.dictionary.referencePending) return unsafe();
+      const dictionary = container.dictionary;
+      dictionary.endOffset = index + 2;
+      if (containers.length > 0) assign({ kind: "container" });
+      streamCandidate = dictionary;
+      index += 2;
+      continue;
+    }
+    if (character === "[") {
+      containers.push({ kind: "array" });
+      streamCandidate = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === "]") {
+      const container = containers.pop();
+      if (!container || container.kind !== "array") return unsafe();
+      if (containers.length > 0) assign({ kind: "container" });
+      streamCandidate = undefined;
+      index += 1;
       continue;
     }
     if (character === "/") {
@@ -484,27 +559,68 @@ function pdfNameTokens(buffer: Buffer): ReadonlySet<string> {
       while (end < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[end]!)) end += 1;
       if (end === index + 1) {
         index += 1;
-        previousName = "";
+        streamCandidate = undefined;
         continue;
       }
       const name = decodePdfName(source.slice(index + 1, end));
       names.add(name);
-      if (previousName === "Type" && name === "ObjStm") names.add("__ObjStm");
-      previousName = name;
+      if (inspectName(name)) return unsafe();
+      const container = current();
+      if (container?.kind === "dict") {
+        if (container.dictionary.pendingKey === undefined) {
+          if (container.dictionary.referencePending) container.dictionary.malformed = true;
+          container.dictionary.referencePending = false;
+          container.dictionary.pendingKey = name;
+        }
+        else assign({ kind: "name", value: name });
+      }
+      streamCandidate = undefined;
       index = end;
       continue;
     }
     const wordStart = index;
     while (index < source.length && !/[\s\x00\[\]()<>/%]/u.test(source[index]!)) index += 1;
     const word = source.slice(wordStart, index);
-    if (word === "stream") {
-      index = skipPdfLineEnding(source, index);
-      const endStream = source.indexOf("endstream", index);
-      index = endStream < 0 ? source.length : endStream + "endstream".length;
+    if (/^-?\d+$/u.test(word)) {
+      assign({ kind: "number", value: Number(word) });
+      streamCandidate = undefined;
+      continue;
     }
-    previousName = "";
+    if (word === "stream") {
+      if (!streamCandidate || !streamCandidate.topLevel || streamCandidate.malformed) return unsafe();
+      const gap = source.slice(streamCandidate.endOffset ?? 0, wordStart);
+      if (!/^[ \t]*(?:\r\n|\r|\n)$/u.test(gap)) return unsafe();
+      const lengthValue = streamCandidate.values.get("Length");
+      if (!lengthValue || lengthValue.kind !== "number" || !Number.isSafeInteger(lengthValue.value) || (lengthValue.value as number) < 0 || (lengthValue.value as number) > PRIVATE_DOCUMENT_MAX_BYTES) return unsafe();
+      const streamStart = skipPdfLineEnding(source, index);
+      if (streamStart === index) return unsafe();
+      const contentEnd = streamStart + (lengthValue.value as number);
+      if (contentEnd > source.length) return unsafe();
+      let endStream = contentEnd;
+      if (source.startsWith("\r\n", endStream)) endStream += 2;
+      else if (source[endStream] === "\r" || source[endStream] === "\n") endStream += 1;
+      if (!source.startsWith("endstream", endStream) || !isPdfDelimiter(source[endStream + 9])) return unsafe();
+      index = endStream + 9;
+      streamCandidate = undefined;
+      continue;
+    }
+    const unrecognizedContainer = current();
+    if (unrecognizedContainer?.kind === "dict" && word === "R" && unrecognizedContainer.dictionary.referencePending) {
+      unrecognizedContainer.dictionary.referencePending = false;
+    } else if (unrecognizedContainer?.kind === "dict") {
+      unrecognizedContainer.dictionary.malformed = true;
+    }
+    streamCandidate = undefined;
   }
+  if (containers.length > 0) return unsafe();
   return names;
+}
+
+const ACTION_TYPES = new Set(["JavaScript", "Launch", "SubmitForm", "ImportData", "GoTo", "GoToR", "GoToE", "Rendition", "Movie", "Sound", "ResetForm"]);
+const GLOBAL_ACTIVE_NAMES = new Set(["JavaScript", "JS", "EmbeddedFiles", "Filespec", "EF", "AF", "RichMedia", "FileAttachment"]);
+
+function isPdfDelimiter(value: string | undefined): boolean {
+  return value === undefined || /[\s\x00\[\]()<>/%]/u.test(value);
 }
 
 function skipPdfComment(source: string, index: number): number {
