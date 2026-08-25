@@ -2,6 +2,7 @@ import * as http from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import {
   PrivateDocumentClient,
+  PrivateDocumentClientError,
   createPrivateDocumentClient,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentClient.js";
 import { PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES } from "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js";
@@ -100,10 +101,12 @@ describe("private document client", () => {
       await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
     });
     await withServer((_request, response) => {
-      response.writeHead(200, { "content-type": "application/json", "content-length": PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES + 1 });
+      response.writeHead(503, { "content-type": "application/json", "content-length": PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES + 1 });
       response.end();
     }, async (url) => {
-      await expect(makeClient(url, token).extract(new Uint8Array([1]), metadata)).rejects.toThrow(/private extractor/i);
+      const error = await makeClient(url, token).extract(new Uint8Array([1]), metadata).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(PrivateDocumentClientError);
+      expect((error as PrivateDocumentClientError).retryable).toBe(false);
     });
     await withServer((_request, response) => {
       const payload = Buffer.from("{bad");
@@ -186,6 +189,21 @@ describe("private document client", () => {
       await expect(extraction).rejects.toThrow(/private extractor/i);
       await expect(extraction).rejects.not.toThrow(token);
     });
+  });
+
+  it("derives retryability from extractor status without exposing response bodies", async () => {
+    for (const [status, retryable] of [[429, true], [500, true], [503, true], [400, false], [422, false]] as const) {
+      await withServer((_request, response) => {
+        const payload = Buffer.from(JSON.stringify({ error: `private response ${token}` }));
+        response.writeHead(status, { "content-type": "application/json", "content-length": payload.byteLength });
+        response.end(payload);
+      }, async (url) => {
+        const error = await makeClient(url, token).extract(new Uint8Array([1]), metadata).catch((value: unknown) => value);
+        expect(error).toBeInstanceOf(PrivateDocumentClientError);
+        expect((error as PrivateDocumentClientError).retryable).toBe(retryable);
+        expect((error as Error).message).not.toContain(token);
+      });
+    }
   });
 
   it("does not expose mutable URL/token fields or serialize the token", async () => {

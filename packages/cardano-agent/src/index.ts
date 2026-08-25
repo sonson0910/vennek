@@ -40,7 +40,7 @@ export type {
   PrivateDocumentServerOptions,
   PrivateDocumentWorkerLike,
 } from "./privateComparison/privateDocumentServer.js";
-export { PrivateDocumentClient, createPrivateDocumentClient } from "./privateComparison/privateDocumentClient.js";
+export { PrivateDocumentClient, PrivateDocumentClientError, createPrivateDocumentClient } from "./privateComparison/privateDocumentClient.js";
 export type { PrivateDocumentClientConfig } from "./privateComparison/privateDocumentClient.js";
 export {
   comparePrivateDocument,
@@ -72,7 +72,7 @@ export type { EmbeddingResult } from "./llm/embeddingClient.js";
 export { selectModelProfile } from "./llm/modelRouter.js";
 export type { ModelProfile } from "./llm/modelRouter.js";
 
-export { answerQuestion, RETENTION_NOTICE } from "./agent/answerQuestion.js";
+export { answerQuestion, detectQuestionLanguage, RETENTION_NOTICE } from "./agent/answerQuestion.js";
 export type {
   AnswerQuestionDependencies,
   AnswerCompletionInput,

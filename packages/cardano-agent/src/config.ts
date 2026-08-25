@@ -122,6 +122,10 @@ export function parseAgentWorkerConfig(env: Environment): AgentConfig {
 }
 
 function parsePrivateExtractorUrl(value: string): URL {
+  const origin = `http://${PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME}:${PRIVATE_DOCUMENT_EXTRACTOR_PORT}`;
+  if (value !== origin && value !== `${origin}/`) {
+    throw new Error("PRIVATE_DOCUMENT_EXTRACTOR_URL must be an internal HTTP origin without credentials or path");
+  }
   let url: URL;
   try {
     url = new URL(value);

@@ -24,6 +24,18 @@ export type PrivateDocumentClientConfig = {
 export const PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME = "private-document-extractor";
 export const PRIVATE_DOCUMENT_EXTRACTOR_PORT = 8083;
 
+export class PrivateDocumentClientError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly status?: number,
+    readonly aborted = false,
+  ) {
+    super(message);
+    this.name = "PrivateDocumentClientError";
+  }
+}
+
 const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 
@@ -77,6 +89,7 @@ export class PrivateDocumentClient {
         for (const chunk of chunks) chunk.fill(0);
         chunks = [];
       };
+      let abort: () => void = () => undefined;
       const finish = (error?: Error, result?: PrivateExtractionResult) => {
         if (settled) return;
         settled = true;
@@ -84,35 +97,38 @@ export class PrivateDocumentClient {
         if (error) reject(error);
         else resolve(result!);
       };
-      const request = this.#request({
-        ...this.#requestOptions,
-        headers: {
-          authorization: `Bearer ${this.#token}`,
-          "content-type": "application/octet-stream",
-          "content-length": body.byteLength,
-          [PRIVATE_DOCUMENT_FILE_NAME_HEADER]: fileName,
-          [PRIVATE_DOCUMENT_MIME_HEADER]: mime,
-          connection: "close",
-        },
-        agent: false,
-      }, (response) => {
+      let request: ReturnType<typeof http.request>;
+      try {
+        request = this.#request({
+          ...this.#requestOptions,
+          headers: {
+            authorization: `Bearer ${this.#token}`,
+            "content-type": "application/octet-stream",
+            "content-length": body.byteLength,
+            [PRIVATE_DOCUMENT_FILE_NAME_HEADER]: fileName,
+            [PRIVATE_DOCUMENT_MIME_HEADER]: mime,
+            connection: "close",
+          },
+          agent: false,
+        }, (response) => {
         const contentType = typeof response.headers["content-type"] === "string"
           ? response.headers["content-type"].split(";", 1)[0]?.trim().toLowerCase()
           : "";
         const contentEncoding = response.headers["content-encoding"];
         const transferEncoding = response.headers["transfer-encoding"];
         const declaredLength = parseResponseLength(response.headers["content-length"]);
+        const oversized = declaredLength !== undefined && declaredLength > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES;
         if (
           contentType !== "application/json" ||
           contentEncoding !== undefined ||
           transferEncoding !== undefined ||
           declaredLength === undefined ||
-          declaredLength > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES
+          oversized
         ) {
           response.resume();
           response.destroy();
           cleanResponse();
-          finish(new Error("Private extractor response rejected"));
+          finish(new PrivateDocumentClientError("Private extractor response rejected", oversized ? false : retryableStatus(response.statusCode), response.statusCode));
           return;
         }
 
@@ -124,36 +140,41 @@ export class PrivateDocumentClient {
           if (total > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES || total > declaredLength) {
             response.destroy();
             cleanResponse();
-            finish(new Error("Private extractor response rejected"));
+            finish(new PrivateDocumentClientError("Private extractor response rejected", false));
             return;
           }
           chunks.push(value);
         });
         response.on("error", () => {
           cleanResponse();
-          finish(new Error("Private extractor response rejected"));
+          finish(new PrivateDocumentClientError("Private extractor response rejected", retryableResponseError(response.statusCode), response.statusCode));
         });
         response.on("end", () => {
           if (settled) return;
           try {
             if (total !== declaredLength) throw new Error("Private extractor response rejected");
-            if (response.statusCode !== 200) throw new Error("Private extractor request failed");
+            if (response.statusCode !== 200) throw new PrivateDocumentClientError("Private extractor request failed", retryableStatus(response.statusCode), response.statusCode);
             payload = Buffer.concat(chunks, total);
             const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
             finish(undefined, validatePrivateExtractionResult(value));
-          } catch {
-            finish(new Error("Private extractor response rejected"));
+          } catch (error) {
+            finish(error instanceof PrivateDocumentClientError ? error : new PrivateDocumentClientError("Private extractor response rejected", false));
           } finally {
             cleanResponse();
           }
         });
-      });
+        });
+      } catch {
+        cleanBody();
+        finish(new PrivateDocumentClientError("Private extractor request failed", !signal?.aborted, undefined, Boolean(signal?.aborted)));
+        return;
+      }
 
-      const abort = () => {
+      abort = () => {
         cleanBody();
         cleanResponse();
         request.destroy();
-        finish(new Error("Private extractor request failed"));
+        finish(new PrivateDocumentClientError("Private extractor request failed", !signal?.aborted, undefined, Boolean(signal?.aborted)));
       };
       requestSignal.addEventListener("abort", abort, { once: true });
       if (requestSignal.aborted) {
@@ -164,13 +185,13 @@ export class PrivateDocumentClient {
       request.once("close", cleanBody);
       request.on("error", () => {
         cleanBody();
-        finish(new Error("Private extractor request failed"));
+        finish(new PrivateDocumentClientError("Private extractor request failed", !signal?.aborted, undefined, Boolean(signal?.aborted)));
       });
       try {
         request.end(body);
       } catch {
         cleanBody();
-        finish(new Error("Private extractor request failed"));
+        finish(new PrivateDocumentClientError("Private extractor request failed", !signal?.aborted, undefined, Boolean(signal?.aborted)));
       }
     });
   }
@@ -181,6 +202,10 @@ export function createPrivateDocumentClient(config: PrivateDocumentClientConfig)
 }
 
 function validateConfig(config: PrivateDocumentClientConfig): URL {
+  const origin = `http://${PRIVATE_DOCUMENT_EXTRACTOR_HOSTNAME}:${PRIVATE_DOCUMENT_EXTRACTOR_PORT}`;
+  if (typeof config.url !== "string" || (config.url !== origin && config.url !== `${origin}/`)) {
+    throw new Error("Private extractor URL is invalid");
+  }
   let url: URL;
   try {
     url = new URL(config.url);
@@ -232,4 +257,12 @@ function parseResponseLength(value: string | string[] | undefined): number | und
   if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value)) return undefined;
   const length = Number(value);
   return Number.isSafeInteger(length) && length >= 1 ? length : undefined;
+}
+
+function retryableStatus(status: number | undefined): boolean {
+  return status === 429 || (status !== undefined && status >= 500 && status <= 599);
+}
+
+function retryableResponseError(status: number | undefined): boolean {
+  return status === undefined || !(status >= 400 && status <= 499 && status !== 429);
 }

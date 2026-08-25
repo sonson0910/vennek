@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { encryptText } from "@vennek/cardano-agent";
-import { PrivateComparisonProviderError } from "@vennek/cardano-agent";
+import { PrivateComparisonProviderError, PrivateDocumentClientError } from "@vennek/cardano-agent";
 import {
   PRIVATE_COMPARISON_AAD_PREFIX,
   type EncryptedPrivateComparisonJob,
@@ -157,15 +157,14 @@ describe("private comparison worker composition", () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain(metadata.caption);
   });
 
-  it("marks a structurally invalid job failed when its own update id is safe", async () => {
+  it("does not mutate status from an unauthenticated outer update id", async () => {
     const markStatus = vi.fn(async () => undefined);
     await expect(processPrivateComparisonJob({ updateId: owner.updateId, encrypted: "invalid" }, {
       ...dependencies(),
       encryptionKey: key,
       markStatus,
     })).rejects.toThrow(/validation/i);
-    expect(markStatus).toHaveBeenCalledOnce();
-    expect(markStatus).toHaveBeenCalledWith(owner.updateId, "failed");
+    expect(markStatus).not.toHaveBeenCalled();
   });
 
   it("does not redeliver when the processed status write fails", async () => {
@@ -187,4 +186,116 @@ describe("private comparison worker composition", () => {
     expect(input.send).not.toHaveBeenCalled();
     expect(markStatus).toHaveBeenCalledWith(owner.updateId, "failed");
   });
+
+  it("reuses the shared language detector for Vietnamese captions", async () => {
+    const input = dependencies();
+    const compare = vi.fn(async (comparison) => {
+      expect(comparison.language).toBe("vi");
+      return "câu trả lời";
+    });
+    await expect(processPrivateComparisonJob(jobWithCaption("So sánh tuyên bố staking của Cardano"), {
+      ...input,
+      encryptionKey: key,
+      compare,
+    })).resolves.toMatchObject({ delivered: true });
+    expect((input.retrieve as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.language).toBe("vi");
+  });
+
+  it("sends one localized terminal message for permanent extractor failures", async () => {
+    const markStatus = vi.fn(async () => undefined);
+    const send = vi.fn(async (_chatId: string, text: string) => ({ delivered: true, attempts: 1, text }));
+    const input = dependencies({
+      markStatus,
+      send,
+      extractor: { extract: vi.fn(async () => { throw new PrivateDocumentClientError("rejected", false, 422); }) },
+    });
+    const result = await processPrivateComparisonJob(jobWithCaption("So sánh tài liệu Cardano"), { ...input, encryptionKey: key });
+
+    expect(result).toMatchObject({ delivered: true, terminal: true });
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[1]).toMatch(/Xin lỗi/);
+    expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "processed"]]);
+  });
+
+  it("retries transient extractor failures without disclosure", async () => {
+    const markStatus = vi.fn(async () => undefined);
+    const send = vi.fn(async () => ({ delivered: true, attempts: 1 }));
+    const input = dependencies({
+      markStatus,
+      send,
+      extractor: { extract: vi.fn(async () => { throw new PrivateDocumentClientError("busy", true, 503); }) },
+    });
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key })).rejects.toThrow(/extraction/i);
+    expect(send).not.toHaveBeenCalled();
+    expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "failed"]]);
+  });
+
+  it("terminates unsupported evidence without retrying the private comparison", async () => {
+    const markStatus = vi.fn(async () => undefined);
+    const compare = vi.fn(async () => "comparison answer");
+    const input = dependencies({
+      markStatus,
+      compare,
+      retrieve: vi.fn(async () => ({ unsupported: true })),
+    });
+
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key })).resolves.toMatchObject({
+      delivered: true,
+      terminal: true,
+    });
+    expect(compare).not.toHaveBeenCalled();
+    expect(input.send).toHaveBeenCalledOnce();
+  });
+
+  it("stops without delivery when the worker signal aborts during comparison", async () => {
+    const controller = new AbortController();
+    const input = dependencies({
+      signal: controller.signal,
+      compare: vi.fn(async () => {
+        controller.abort();
+        return "late answer";
+      }),
+    });
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key })).resolves.toMatchObject({ aborted: true, delivered: false });
+    expect(input.send).not.toHaveBeenCalled();
+  });
+
+  it("completes a permanent Telegram delivery failure without rerunning comparison", async () => {
+    const markStatus = vi.fn(async () => undefined);
+    const compare = vi.fn(async () => "comparison answer");
+    const input = dependencies({
+      markStatus,
+      compare,
+      send: vi.fn(async () => ({ delivered: false, attempts: 1, status: 400 })),
+    });
+
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key })).resolves.toMatchObject({
+      delivered: false,
+      terminal: true,
+      status: 400,
+    });
+    expect(compare).toHaveBeenCalledOnce();
+    expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "failed"]]);
+  });
+
+  it("stops delivery when cancellation arrives while Telegram send is in flight", async () => {
+    const controller = new AbortController();
+    const markStatus = vi.fn(async () => undefined);
+    const send = vi.fn(async () => {
+      controller.abort();
+      return { delivered: true, attempts: 1 };
+    });
+    const input = dependencies({ signal: controller.signal, markStatus, send });
+
+    await expect(processPrivateComparisonJob(job(), { ...input, encryptionKey: key })).resolves.toMatchObject({
+      delivered: false,
+      aborted: true,
+    });
+    expect(markStatus.mock.calls).toEqual([[owner.updateId, "failed"], [owner.updateId, "failed"]]);
+  });
 });
+
+function jobWithCaption(caption: string): EncryptedPrivateComparisonJob {
+  const encrypted = encryptText(JSON.stringify({ ...metadata, caption }), key, `${PRIVATE_COMPARISON_AAD_PREFIX}:7:42:42`);
+  return { kind: "private-compare", ...owner, encrypted };
+}

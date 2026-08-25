@@ -102,6 +102,9 @@ describe("runtime agent composition", () => {
       privateModels: { quality: environment.VENNEK_PRIVATE_MODEL_QUALITY, verifier: environment.VENNEK_PRIVATE_MODEL_VERIFIER },
     });
     for (const url of [
+      "http://PRIVATE-DOCUMENT-EXTRACTOR:8083/",
+      "http://127.0.0.1:8083/",
+      "http://169.254.169.254:8083/",
       "https://private-document-extractor/",
       "http://user:secret@private-document-extractor/",
       "http://private-document-extractor/path",

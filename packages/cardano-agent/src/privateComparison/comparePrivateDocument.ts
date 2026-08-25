@@ -84,6 +84,7 @@ export type PrivateComparisonProviderStage = "generation" | "verification";
 
 export class PrivateComparisonProviderError extends Error {
   readonly category = "comparison" as const;
+  readonly retryable = true as const;
 
   constructor(readonly stage: PrivateComparisonProviderStage) {
     super(`Private comparison provider unavailable during ${stage}`);

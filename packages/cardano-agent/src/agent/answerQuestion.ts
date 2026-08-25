@@ -240,7 +240,7 @@ const GREETING_LANGUAGES = (Object.entries(GREETING_PATTERNS) as Array<
   [QuestionLanguage, RegExp]
 >);
 
-function languageFor(text: unknown): QuestionLanguage {
+export function detectQuestionLanguage(text: unknown): QuestionLanguage {
   const questionText = validQuestionText(text);
   if (!questionText) return "en";
   const normalized = questionText.normalize("NFC");
@@ -502,7 +502,7 @@ export async function answerQuestion(
   let firstInteraction = false;
   try {
     const inputText = isPlainRecord(input) ? readOwnDataProperty(input, "text") : MISSING;
-    language = languageFor(inputText === MISSING ? undefined : inputText);
+    language = detectQuestionLanguage(inputText === MISSING ? undefined : inputText);
     const question = canonicalQuestionInput(input);
     if (!question) return MESSAGES[language].invalid;
 

@@ -359,7 +359,7 @@ async function runWorker(): Promise<void> {
           complete: privateCompletion(privateLlm),
           recordUsage: (telegramUserId, usage) => recordPrivateUsage(db, telegramUserId, usage),
           send: async (chatId, text) => {
-            const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000);
+            const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000, job.signal);
             if (!delivery.delivered) {
               logJson("warn", "telegram_delivery_abandoned", {
                 updateId,
@@ -374,7 +374,7 @@ async function runWorker(): Promise<void> {
           markStatus: (id, status) => markTelegramUpdate(db, id, status),
           log: (category) => logPrivateComparisonFailure(category),
         });
-        if (!outcome.delivered) throw new Error("private comparison delivery failed");
+        if (!outcome.delivered && !outcome.aborted && !outcome.terminal) throw new Error("private comparison delivery failed");
       } catch (error) {
         if (updateId === undefined) logPrivateComparisonFailure(privateFailureCategory(error));
         throw error;
