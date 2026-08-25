@@ -1,6 +1,41 @@
+import * as https from "node:https";
+import type { ClientRequest, IncomingHttpHeaders, IncomingMessage, RequestOptions } from "node:http";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { FixedWindowRateLimiter, type RateLimiter } from "./accessControl.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
+
+export const TELEGRAM_PRIVATE_FILE_MAX_BYTES = 20 * 1024 * 1024;
+export const TELEGRAM_FILE_PATH_MAX_BYTES = 4_096;
+const TELEGRAM_FILE_ID_MAX_BYTES = 512;
+const TELEGRAM_FILE_UNIQUE_ID_MAX_BYTES = 256;
+const TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS = 15_000;
+const TELEGRAM_FILE_ALLOWED_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/markdown",
+  "text/plain",
+  "text/markdown",
+]);
+
+export type TelegramFile = Readonly<{
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+}>;
+
+export type TelegramFileResponse = Pick<IncomingMessage, "statusCode" | "headers" | "on" | "removeListener" | "resume" | "destroy" | "setTimeout">;
+export type TelegramFileRequest = RequestOptions;
+export type TelegramHttpsRequest = (
+  options: RequestOptions,
+  callback: (response: TelegramFileResponse) => void,
+) => ClientRequest;
+
+export type TelegramApiOptions = Readonly<{
+  /** Test seam only; production always uses node:https against api.telegram.org. */
+  request?: TelegramHttpsRequest;
+}>;
 
 export type TelegramUpdate = {
   update_id: number;
@@ -18,7 +53,16 @@ export type TelegramUpdate = {
 export type TelegramApi = {
   getUpdates(params: { offset: number; timeout: number; allowed_updates: string[] }): Promise<TelegramUpdate[]>;
   sendMessage(params: { chat_id: number | string; text: string; disable_web_page_preview: boolean }): Promise<unknown>;
+  getFile?(params: { file_id: string }): Promise<TelegramFile>;
+  withDownloadedFile?(
+    filePath: string,
+    expectedSize: number | undefined,
+    signal: AbortSignal | undefined,
+    consumer: (bytes: Buffer) => void | Promise<void>,
+  ): Promise<void>;
 };
+
+export type TelegramPrivateApi = TelegramApi & Required<Pick<TelegramApi, "getFile" | "withDownloadedFile">>;
 
 export type RuntimeLogLevel = "info" | "warn" | "error";
 
@@ -170,11 +214,26 @@ export async function runPolling(options: PollingOptions): Promise<void> {
   }
 }
 
-export function createTelegramApi(token: string, signal?: AbortSignal): TelegramApi {
-  return {
+export function createTelegramApi(token: string, signal?: AbortSignal, options: TelegramApiOptions = {}): TelegramPrivateApi {
+  const request = options.request ?? ((requestOptions, callback) => https.request(requestOptions, callback));
+  const api: TelegramPrivateApi = {
     getUpdates: (params) => telegramCall<TelegramUpdate[]>(token, "getUpdates", params, signal),
-    sendMessage: (params) => telegramCall(token, "sendMessage", params, signal)
+    sendMessage: (params) => telegramCall(token, "sendMessage", params, signal),
+    getFile: async ({ file_id }) => {
+      const safeFileId = validateTelegramFileId(file_id);
+      let result: unknown;
+      try {
+        result = await telegramCall<unknown>(token, "getFile", { file_id: safeFileId }, signal);
+      } catch (error) {
+        const status = error instanceof TelegramApiError ? error.status : 502;
+        throw new TelegramApiError(status, "Telegram getFile failed");
+      }
+      return validateTelegramFile(result, safeFileId);
+    },
+    withDownloadedFile: (filePath, expectedSize, downloadSignal, consumer) =>
+      withTelegramFile(token, filePath, expectedSize, downloadSignal ?? signal, consumer, request),
   };
+  return api;
 }
 
 export type TelegramDeliveryResult =
@@ -238,6 +297,300 @@ export async function telegramCall<T>(token: string, method: string, params: Rec
   }
 
   return payload.result;
+}
+
+export function validateTelegramFilePath(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > TELEGRAM_FILE_PATH_MAX_BYTES) {
+    throw new Error("Telegram file path is invalid");
+  }
+  if (
+    value.startsWith("/") || value.endsWith("/") || value.includes("//") || value.includes("\\") ||
+    value.includes("?") || value.includes("#") || value.includes("%") ||
+    /[\u0000-\u001f\u007f]|\p{Cc}|\p{Cf}|\p{Zl}|\p{Zp}/u.test(value)
+  ) {
+    throw new Error("Telegram file path is invalid");
+  }
+  const segments = value.split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/u.test(segment))) {
+    throw new Error("Telegram file path is invalid");
+  }
+  return value;
+}
+
+function validateTelegramFileId(value: unknown): string {
+  if (
+    typeof value !== "string" || value.length === 0 || value.trim() !== value ||
+    Buffer.byteLength(value, "utf8") > TELEGRAM_FILE_ID_MAX_BYTES ||
+    /[\u0000-\u001f\u007f]|\p{Cc}|\p{Cf}|\p{Zl}|\p{Zp}/u.test(value)
+  ) {
+    throw new Error("Telegram file id is invalid");
+  }
+  return value;
+}
+
+function validateTelegramFile(value: unknown, expectedFileId: string): TelegramFile {
+  if (!isPlainObject(value)) throw new Error("Telegram getFile response is invalid");
+  let ownKeys: PropertyKey[];
+  try {
+    ownKeys = Reflect.ownKeys(value);
+  } catch {
+    throw new Error("Telegram getFile response is invalid");
+  }
+  const allowed = new Set(["file_id", "file_unique_id", "file_size", "file_path"]);
+  if (ownKeys.some((key) => typeof key !== "string" || !allowed.has(key))) throw new Error("Telegram getFile response is invalid");
+
+  const fileId = value.file_id;
+  const fileUniqueId = value.file_unique_id;
+  if (fileId !== expectedFileId || !boundedTelegramText(fileId, TELEGRAM_FILE_ID_MAX_BYTES) || !boundedTelegramText(fileUniqueId, TELEGRAM_FILE_UNIQUE_ID_MAX_BYTES)) {
+    throw new Error("Telegram getFile response is invalid");
+  }
+
+  const fileSize = value.file_size;
+  if (Object.hasOwn(value, "file_size") && fileSize === undefined) throw new Error("Telegram getFile response is invalid");
+  if (fileSize !== undefined && (typeof fileSize !== "number" || !Number.isSafeInteger(fileSize) || fileSize < 1 || fileSize > TELEGRAM_PRIVATE_FILE_MAX_BYTES)) {
+    throw new Error("Telegram getFile response is invalid");
+  }
+  const safeFileSize = fileSize === undefined ? undefined : fileSize as number;
+  const filePath = value.file_path;
+  if (Object.hasOwn(value, "file_path") && filePath === undefined) throw new Error("Telegram getFile response is invalid");
+  const safeFilePath = filePath === undefined ? undefined : validateTelegramFilePath(filePath);
+
+  const result: { file_id: string; file_unique_id: string; file_size?: number; file_path?: string } = {
+    file_id: fileId,
+    file_unique_id: fileUniqueId,
+  };
+  if (safeFileSize !== undefined) result.file_size = safeFileSize;
+  if (safeFilePath !== undefined) result.file_path = safeFilePath;
+  return Object.freeze(result);
+}
+
+function boundedTelegramText(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.trim() === value &&
+    Buffer.byteLength(value, "utf8") <= maxBytes &&
+    !/[\u0000-\u001f\u007f]|\p{Cc}|\p{Cf}|\p{Zl}|\p{Zp}/u.test(value);
+}
+
+function withTelegramFile(
+  token: string,
+  filePath: string,
+  expectedSize: number | undefined,
+  signal: AbortSignal | undefined,
+  consumer: (bytes: Buffer) => void | Promise<void>,
+  request: TelegramHttpsRequest,
+): Promise<void> {
+  let safePath: string;
+  try {
+    safePath = validateTelegramFilePath(filePath);
+    if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > TELEGRAM_PRIVATE_FILE_MAX_BYTES)) {
+      throw new Error("Telegram file size is invalid");
+    }
+    if (!boundedTelegramToken(token)) throw new Error("Telegram token is invalid");
+  } catch {
+    return Promise.reject(new TelegramApiError(400, "Telegram file download failed"));
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let requestClient: ClientRequest | undefined;
+    let response: TelegramFileResponse | undefined;
+    let buffer = Buffer.alloc(TELEGRAM_PRIVATE_FILE_MAX_BYTES);
+    let total = 0;
+    let settled = false;
+    let consuming = false;
+    let networkComplete = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineExpired = false;
+    let requestErrorListener: (() => void) | undefined;
+    let responseDataListener: ((chunk: Buffer | string) => void) | undefined;
+    let responseErrorListener: (() => void) | undefined;
+    let responseEndListener: (() => void) | undefined;
+
+    const cleanBuffer = (): void => {
+      buffer.fill(0);
+    };
+    const clearDeadline = (): void => {
+      if (deadlineTimer !== undefined) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = undefined;
+      }
+    };
+    const detachNetworkListeners = (): void => {
+      if (requestClient && requestErrorListener) requestClient.removeListener("error", requestErrorListener);
+      if (response && responseDataListener) response.removeListener("data", responseDataListener);
+      if (response && responseErrorListener) response.removeListener("error", responseErrorListener);
+      if (response && responseEndListener) response.removeListener("end", responseEndListener);
+      requestErrorListener = undefined;
+      responseDataListener = undefined;
+      responseErrorListener = undefined;
+      responseEndListener = undefined;
+    };
+    const fail = (status = 502): void => {
+      if (settled || networkComplete) return;
+      settled = true;
+      clearDeadline();
+      if (requestClient && requestErrorListener) requestClient.removeListener("error", requestErrorListener);
+      requestErrorListener = undefined;
+      try { response?.destroy?.(); } catch { /* best-effort cancellation */ }
+      try { requestClient?.destroy?.(); } catch { /* best-effort cancellation */ }
+      cleanBuffer();
+      signal?.removeEventListener("abort", onAbort);
+      reject(new TelegramApiError(status, "Telegram file download failed"));
+    };
+    const succeed = (): void => {
+      if (settled || consuming || networkComplete) return;
+      if (total < 1 || (expectedSize !== undefined && total !== expectedSize)) {
+        fail(502);
+        return;
+      }
+      networkComplete = true;
+      clearDeadline();
+      signal?.removeEventListener("abort", onAbort);
+      detachNetworkListeners();
+      consuming = true;
+      const view = buffer.subarray(0, total);
+      Promise.resolve()
+        .then(() => consumer(view))
+        .then(() => {
+          if (settled) return;
+          settled = true;
+          clearDeadline();
+          signal?.removeEventListener("abort", onAbort);
+          cleanBuffer();
+          resolve();
+        })
+        .catch(() => {
+          if (settled) return;
+          settled = true;
+          clearDeadline();
+          signal?.removeEventListener("abort", onAbort);
+          cleanBuffer();
+          reject(new TelegramApiError(502, "Telegram file consumer failed"));
+        })
+        .finally(() => {
+          cleanBuffer();
+        });
+    };
+    const onAbort = (): void => fail(499);
+    const onResponse = (incoming: TelegramFileResponse): void => {
+      if (settled || networkComplete) {
+        try { incoming.destroy?.(); } catch { /* best-effort cancellation */ }
+        try { incoming.resume?.(); } catch { /* best-effort cancellation */ }
+        return;
+      }
+      response = incoming;
+      const status = incoming.statusCode;
+      const contentType = headerValue(incoming.headers, "content-type");
+      const contentEncoding = incoming.headers["content-encoding"];
+      const rawLength = incoming.headers["content-length"];
+      const declaredLength = parseTelegramContentLength(rawLength);
+      if (
+        status !== 200 ||
+        contentType === undefined ||
+        !TELEGRAM_FILE_ALLOWED_CONTENT_TYPES.has(contentType.split(";", 1)[0]!.trim().toLowerCase()) ||
+        contentEncoding !== undefined ||
+        (rawLength !== undefined && declaredLength === undefined) ||
+        (declaredLength !== undefined && declaredLength > TELEGRAM_PRIVATE_FILE_MAX_BYTES) ||
+        (expectedSize !== undefined && declaredLength !== undefined && expectedSize !== declaredLength)
+      ) {
+        responseDataListener = zeroTelegramResponseChunk;
+        incoming.on("data", responseDataListener);
+        fail(status && status >= 400 ? status : 502);
+        incoming.resume?.();
+        return;
+      }
+
+      incoming.setTimeout?.(TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS, () => fail(408));
+      if (settled) {
+        try { incoming.destroy?.(); } catch { /* best-effort cancellation */ }
+        try { incoming.resume?.(); } catch { /* best-effort cancellation */ }
+        return;
+      }
+      responseDataListener = (chunk: Buffer | string): void => {
+        const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        try {
+          if (settled || total + value.byteLength > TELEGRAM_PRIVATE_FILE_MAX_BYTES || (declaredLength !== undefined && total + value.byteLength > declaredLength)) {
+            fail(502);
+            return;
+          }
+          value.copy(buffer, total);
+          total += value.byteLength;
+        } finally {
+          value.fill(0);
+        }
+      };
+      responseErrorListener = (): void => fail(502);
+      responseEndListener = (): void => {
+        if (declaredLength !== undefined && total !== declaredLength) {
+          fail(502);
+          return;
+        }
+        succeed();
+      };
+      incoming.on("data", responseDataListener);
+      incoming.on("error", responseErrorListener);
+      incoming.on("end", responseEndListener);
+    };
+
+    deadlineTimer = setTimeout(() => {
+      deadlineExpired = true;
+      fail(408);
+    }, TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+
+    try {
+      requestClient = request({
+        protocol: "https:",
+        hostname: "api.telegram.org",
+        port: 443,
+        path: `/file/bot${token}/${safePath}`,
+        method: "GET",
+        agent: false,
+        headers: { "accept-encoding": "identity" },
+      }, onResponse);
+      if (deadlineExpired) {
+        try { requestClient.destroy?.(); } catch { /* best-effort cancellation */ }
+        return;
+      }
+      requestErrorListener = (): void => fail(502);
+      requestClient.once("error", requestErrorListener);
+      requestClient.setTimeout(TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS, () => fail(408));
+      if (settled) return;
+      requestClient.end();
+    } catch {
+      fail(502);
+    }
+  });
+}
+
+function zeroTelegramResponseChunk(chunk: Buffer | string): void {
+  if (Buffer.isBuffer(chunk)) chunk.fill(0);
+}
+
+function headerValue(headers: IncomingHttpHeaders, name: string): string | undefined {
+  const value = headers[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseTelegramContentLength(value: string | string[] | undefined): number | undefined {
+  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value)) return undefined;
+  const length = Number(value);
+  return Number.isSafeInteger(length) && length >= 1 ? length : undefined;
+}
+
+function boundedTelegramToken(value: string): boolean {
+  return value.length > 0 && Buffer.byteLength(value, "utf8") <= TELEGRAM_FILE_ID_MAX_BYTES &&
+    !/[\u0000-\u001f\u007f\p{Cc}\p{Cf}\p{Zl}\p{Zp}\\/?#]/u.test(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  try {
+    return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
 }
 
 export function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
