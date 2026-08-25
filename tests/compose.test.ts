@@ -2,18 +2,38 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const composeEnvNames = new Set(
+  readFileSync(".env.example", "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/)?.[1])
+    .filter((name): name is string => name !== undefined),
+);
+
+function composeTestEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const childEnv = { ...process.env, ...overrides };
+  for (const name of composeEnvNames) delete childEnv[name];
+  childEnv.WEBHOOK_PORT = "9090";
+  return childEnv;
+}
+
 const dockerCompose = spawnSync("docker", ["compose", "version"], {
   cwd: process.cwd(),
   encoding: "utf8",
+  env: composeTestEnv(),
 });
 const hasDockerCompose = dockerCompose.status === 0;
+const sentinelPromotionKey = "sentinel-promotion-key";
 
 describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
   it("uses one app image and keeps runtime boundaries fixed", () => {
     const result = spawnSync(
       "docker",
       ["compose", "--env-file", ".env.example", "config", "--format", "json"],
-      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, WEBHOOK_PORT: "9090" } },
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: composeTestEnv({ KNOWLEDGE_PROMOTION_KEY: sentinelPromotionKey }),
+      },
     );
     expect(result.status).toBe(0);
 
@@ -124,6 +144,11 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     ]) {
       expect(webhookEnvironment?.[name]).toBeUndefined();
     }
+    expect(new Set(
+      Object.entries(config.services)
+        .filter(([, service]) => service.environment?.KNOWLEDGE_PROMOTION_KEY !== undefined)
+        .map(([name]) => name),
+    )).toEqual(new Set(["agent-worker", "knowledge-worker"]));
     expect(config.services["telegram-webhook"]?.environment?.PORT).toBe("8080");
     expect(config.services["telegram-webhook"]?.ports).toHaveLength(1);
     expect(config.services["telegram-webhook"]?.ports).toContainEqual(expect.objectContaining({
