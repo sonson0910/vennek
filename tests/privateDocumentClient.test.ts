@@ -5,7 +5,10 @@ import {
   createPrivateDocumentClient,
 } from "../packages/cardano-agent/src/privateComparison/privateDocumentClient.js";
 import { PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES } from "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js";
-import { PRIVATE_DOCUMENT_TIMEOUT_MS } from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
+import {
+  PRIVATE_DOCUMENT_MAX_BYTES,
+  PRIVATE_DOCUMENT_TIMEOUT_MS,
+} from "../packages/cardano-agent/src/privateComparison/privateDocumentProtocol.js";
 
 const token = Buffer.alloc(32, 8).toString("base64url");
 const metadata = { fileName: "claim 😀.txt", mime: "text/plain" };
@@ -142,5 +145,26 @@ describe("private document client", () => {
     } finally {
       timeout.mockRestore();
     }
+  });
+
+  it("rejects unsafe metadata and out-of-bounds input before making a request", () => {
+    const client = createPrivateDocumentClient({ url: "http://127.0.0.1", token });
+    expect(() => client.extract(new Uint8Array(0), metadata)).toThrow();
+    expect(() => client.extract(Buffer.alloc(PRIVATE_DOCUMENT_MAX_BYTES + 1), metadata)).toThrow();
+    expect(() => client.extract(new Uint8Array([1]), { fileName: "claim\n.txt", mime: "text/plain" })).toThrow();
+    expect(() => client.extract(new Uint8Array([1]), { fileName: "a".repeat(1025), mime: "text/plain" })).toThrow();
+    expect(() => client.extract(new Uint8Array([1]), { fileName: "claim.txt", mime: "text/\ud800" })).toThrow();
+  });
+
+  it("does not expose a token from a remote error body", async () => {
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ error: `secret ${token}` }));
+      response.writeHead(500, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      const extraction = createPrivateDocumentClient({ url, token }).extract(new Uint8Array([1]), metadata);
+      await expect(extraction).rejects.toThrow(/private extractor/i);
+      await expect(extraction).rejects.not.toThrow(token);
+    });
   });
 });

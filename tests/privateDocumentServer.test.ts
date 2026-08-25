@@ -97,7 +97,9 @@ describe("private document server", () => {
     await withServer(() => new FakeWorker(), async (port) => {
       expect((await request(port, { method: "GET" })).status).not.toBe(200);
       expect((await request(port, { path: "/v1/extract/private-document/" })).status).not.toBe(200);
-      expect((await request(port, { token: "bad" })).status).toBe(401);
+      for (const invalidToken of ["", "bad", `${token.slice(0, -1)}!`, Buffer.alloc(32, 8).toString("base64url")]) {
+        expect((await request(port, { token: invalidToken })).status).toBe(401);
+      }
       expect((await request(port, { headers: { "content-type": "application/json" } })).status).toBe(415);
       expect((await request(port, { headers: { "transfer-encoding": "chunked" } })).status).not.toBe(200);
       expect((await request(port, { body: Buffer.alloc(0) })).status).toBe(413);
@@ -124,6 +126,68 @@ describe("private document server", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect((await request(port)).status).toBe(429);
       expect((await first).status).toBe(504);
+    }, 25);
+  });
+
+  it("accepts the exact one-byte and twenty-mebibyte body bounds", async () => {
+    await withServer(() => new FakeWorker(), async (port) => {
+      expect((await request(port, { body: Buffer.alloc(1, 1) })).status).toBe(200);
+      expect((await request(port, { body: Buffer.alloc(PRIVATE_DOCUMENT_MAX_BYTES, 1) })).status).toBe(200);
+    }, 2_000);
+  });
+
+  it("times out a slow upload before creating a parser worker", async () => {
+    let workers = 0;
+    await withServer(() => {
+      workers += 1;
+      return new FakeWorker();
+    }, async (port) => {
+      const slow = await new Promise<{ status: number }>((resolve, reject) => {
+        let gotResponse = false;
+        const requestToSlow = http.request({
+          host: "127.0.0.1",
+          port,
+          path: "/v1/extract/private-document",
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/octet-stream",
+            "content-length": body.byteLength,
+            "x-private-document-file-name": Buffer.from(metadata.fileName).toString("base64url"),
+            "x-private-document-mime": Buffer.from(metadata.mime).toString("base64url"),
+          },
+        }, (response) => {
+          gotResponse = true;
+          response.resume();
+          response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+        });
+        requestToSlow.on("error", (error) => {
+          if (!gotResponse) reject(error);
+        });
+        requestToSlow.write(body.subarray(0, 1));
+        setTimeout(() => {
+          if (!requestToSlow.destroyed) requestToSlow.end(body.subarray(1));
+        }, 60);
+      });
+      expect(slow.status).toBe(504);
+      expect(workers).toBe(0);
+      expect((await request(port)).status).toBe(200);
+    }, 25);
+  });
+
+  it("bounds cleanup when worker termination never settles", async () => {
+    class NeverTerminatingWorker extends EventEmitter implements PrivateDocumentWorkerLike {
+      postMessage(): void {
+        setImmediate(() => this.emit("message", { ok: true, result: { type: "text", title: "claim", text: "Cardano" } }));
+      }
+      terminate(): Promise<number> {
+        return new Promise<number>(() => undefined);
+      }
+    }
+    let workers = 0;
+    await withServer(() => workers++ === 0 ? new NeverTerminatingWorker() : new FakeWorker(), async (port) => {
+      expect((await request(port)).status).toBe(504);
+      expect((await request(port)).status).toBe(200);
     }, 25);
   });
 
