@@ -12,6 +12,7 @@ import {
   KnowledgeRepository,
   retrieveEvidence,
   type EmbeddingProvider,
+  type PrivateComparisonCompletion,
   type SourceRegistryEntry,
 } from "@vennek/cardano-agent";
 import {
@@ -213,6 +214,33 @@ async function noPrivateMarkers(db: ReturnType<typeof createDatabase>, markers: 
   }
 }
 
+async function expectNoPrivateConversationState(
+  db: ReturnType<typeof createDatabase>,
+  updateId: number,
+  caption: string,
+): Promise<void> {
+  const ownerId = String(updateId);
+  const messages = await db.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM conversation_messages WHERE telegram_user_id = $1 OR telegram_chat_id = $1",
+    [ownerId],
+  );
+  expect(messages.rows[0]?.count).toBe("0");
+  const summaries = await db.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM conversation_summaries WHERE telegram_user_id = $1",
+    [ownerId],
+  );
+  expect(summaries.rows[0]?.count).toBe("0");
+  const cached = await db.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM retrieval_cache WHERE query_hash = $1",
+    [sha256Hex(caption)],
+  );
+  expect(cached.rows[0]?.count).toBe("0");
+}
+
+function tamperBase64(value: string): string {
+  return `${value[0] === "A" ? "B" : "A"}${value.slice(1)}`;
+}
+
 async function clearPrivateJobs(boss: PgBoss): Promise<void> {
   for (const job of await boss.findJobs(PRIVATE_COMPARISON_QUEUE)) {
     await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, job.id).catch(() => undefined);
@@ -360,14 +388,26 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       const evidence = await retrieveEvidence({ query: "Cardano proof of stake", language: "en", embeddingModel: "task10-embedding", cachePolicy: "stable" }, { db: app, embedder });
       expect(evidence[0]).toMatchObject({ sourceId, url: publicUrl, stale: false });
 
-      const complete = async (input: { model: string }) => ({
-        text: input.model === generationModel
-          ? JSON.stringify({ language: "en", claims: [{ text: `${answerMarker}: The file's ${extractedPhrase} agrees with Cardano proof of stake.`, privateCitationIds: ["U1"], cardanoCitationIds: ["E1"], kind: "fact" }] })
-          : '{"supported":[true]}',
-        model: input.model,
-        promptTokens: 7,
-        completionTokens: 5,
-      });
+      const retrievalRequests: Array<Parameters<typeof retrieveEvidence>[0]> = [];
+      const retrieve = async (
+        input: Parameters<typeof retrieveEvidence>[0],
+        dependencies: Parameters<typeof retrieveEvidence>[1],
+      ) => {
+        retrievalRequests.push(input);
+        return retrieveEvidence(input, dependencies);
+      };
+      const completionRequests: Array<Parameters<PrivateComparisonCompletion>[0]> = [];
+      const complete: PrivateComparisonCompletion = async (input) => {
+        completionRequests.push(input);
+        return {
+          text: input.model === generationModel
+            ? JSON.stringify({ language: "en", claims: [{ text: `${answerMarker}: The file's ${extractedPhrase} agrees with Cardano proof of stake.`, privateCitationIds: ["U1"], cardanoCitationIds: ["E1"], kind: "fact" }] })
+            : '{"supported":[true]}',
+          model: input.model,
+          promptTokens: 7,
+          completionTokens: 5,
+        };
+      };
       const processed = new Promise<void>((resolve, reject) => {
         void boss.work(PRIVATE_COMPARISON_QUEUE, async ([job]) => {
           if (!job) return;
@@ -378,7 +418,7 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
               api,
               encryptionKey,
               extractor: extractorClient,
-              retrieve: retrieveEvidence,
+              retrieve,
               db: app,
               embedder,
               embeddingModel: "task10-embedding",
@@ -412,6 +452,23 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       expect(telegram.messages[0]?.text).toContain(answerMarker);
       expect(telegram.messages[0]?.text).toContain(`[User file: ${markers.fileName.slice(0, -3)}]`);
       expect(telegram.messages[0]?.text).toContain(publicUrl);
+      expect(retrievalRequests).toHaveLength(1);
+      expect(retrievalRequests[0]).toMatchObject({
+        query: markers.caption,
+        personalized: true,
+        embeddingModel: "task10-embedding",
+      });
+      expect(completionRequests).toHaveLength(2);
+      const generationPrompt = completionRequests[0]?.messages.map((message) => message.content).join("\n") ?? "";
+      expect(completionRequests[0]?.model).toBe(generationModel);
+      expect(generationPrompt).toContain(markers.caption);
+      expect(generationPrompt).toContain(extractedPhrase);
+      expect(generationPrompt).toContain(publicUrl);
+      expect(generationPrompt).toContain(publicText);
+      const verificationPrompt = completionRequests[1]?.messages.map((message) => message.content).join("\n") ?? "";
+      expect(completionRequests[1]?.model).toBe(verifierModel);
+      expect(verificationPrompt).toContain(extractedPhrase);
+      expect(verificationPrompt).toContain(publicUrl);
 
       await waitFor(async () => {
         await boss.supervise(PRIVATE_COMPARISON_QUEUE);
@@ -422,7 +479,8 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
         [updateId],
       );
       expect(update.rows).toEqual([{ update_id: String(updateId), status: "processed" }]);
-      await noPrivateMarkers(owner, [markers.caption, markers.fileName, markers.fileId, markers.fileUniqueId, extractedPhrase, answerMarker, "U1"]);
+      await expectNoPrivateConversationState(owner, updateId, markers.caption);
+      await noPrivateMarkers(owner, [markers.caption, markers.fileName, markers.fileId, markers.fileUniqueId, extractedPhrase, answerMarker]);
     } finally {
       if (!stopped) {
         stopped = true;
@@ -436,6 +494,86 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       await owner.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
       await owner.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
       await owner.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await app.end().catch(() => undefined);
+      await owner.end().catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("rejects persisted ciphertext, IV, and tag tampering through the claimed production path", async () => {
+    const owner = createDatabase(ownerUrl!);
+    const app = createDatabase(databaseUrl!);
+    const boss = appBoss(app);
+    const queue = new PgBossPrivateComparisonQueue(boss, app, encryptionKey);
+    const jobIds: string[] = [];
+    const updateIds: number[] = [];
+    const failures: string[] = [];
+    const runtimeDependencies = {
+      api: {
+        getFile: async () => { throw new Error("Telegram must not be reached after tamper"); },
+        withDownloadedFile: async () => { throw new Error("Telegram must not be reached after tamper"); },
+      },
+      encryptionKey,
+      extractor: { extract: async () => { throw new Error("Extractor must not be reached after tamper"); } },
+      retrieve: async () => [],
+      db: app,
+      embedder: deterministicEmbedder(),
+      embeddingModel: "task10-embedding",
+      generationModel,
+      verifierModel,
+      complete: async ({ model }: { model: string }) => ({ text: "", model, promptTokens: 0, completionTokens: 0 }),
+      send: async () => ({ delivered: true, attempts: 1 }),
+      log: (category: string) => failures.push(category),
+    };
+    try {
+      await boss.start();
+      await boss.createQueue(PRIVATE_COMPARISON_QUEUE, {
+        retryLimit: PRIVATE_COMPARISON_RETRY_LIMIT,
+        retryDelay: PRIVATE_COMPARISON_RETRY_DELAY_SECONDS,
+        retryBackoff: PRIVATE_COMPARISON_RETRY_BACKOFF,
+        expireInSeconds: PRIVATE_COMPARISON_EXPIRE_SECONDS,
+        retentionSeconds: PRIVATE_COMPARISON_RETENTION_SECONDS,
+        deleteAfterSeconds: 1,
+      });
+      for (const field of ["ciphertext", "iv", "tag"] as const) {
+        const updateId = 8_710_000_000_000_000 + (Date.now() % 100_000) * 10 + updateIds.length;
+        updateIds.push(updateId);
+        const metadata = {
+          caption: `TASK10_TAMPER_CAPTION_${field}_${updateId}`,
+          fileId: `TASK10_TAMPER_FILE_${field}_${updateId}`,
+          fileUniqueId: `TASK10_TAMPER_UNIQUE_${field}_${updateId}`,
+          fileName: `TASK10_TAMPER_FILENAME_${field}_${updateId}.md`,
+        };
+        await expect(queue.enqueue(privateJob(updateId, metadata))).resolves.toBe(true);
+        const queued = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}`, queued: true });
+        expect(queued).toHaveLength(1);
+        const jobId = queued[0]?.id;
+        if (!jobId) throw new Error("Expected a persisted private job");
+        jobIds.push(jobId);
+        const encrypted = (queued[0]?.data as EncryptedPrivateComparisonJob).encrypted;
+        const tampered = tamperBase64(encrypted[field]);
+        await owner.query(
+          "UPDATE pgboss.job SET data = jsonb_set(data, ARRAY['encrypted', $1::text], to_jsonb($2::text), false) WHERE id = $3",
+          [field, tampered, jobId],
+        );
+        const claimed = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
+        expect(claimed).toHaveLength(1);
+        const claimedData = claimed[0]?.data as EncryptedPrivateComparisonJob;
+        expect(claimedData.encrypted[field]).toBe(tampered);
+        await expect(processPrivateComparisonJob(claimedData, runtimeDependencies)).rejects.toThrow(/validation/i);
+      }
+      expect(failures).toEqual(["validation", "validation", "validation"]);
+    } finally {
+      if (jobIds.length > 0) {
+        await owner.query("DELETE FROM pgboss.job WHERE id = ANY($1::uuid[])", [jobIds]).catch(() => undefined);
+      }
+      for (const updateId of updateIds) {
+        await owner.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+        await owner.query(
+          "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
+          [String(updateId), String(updateId)],
+        ).catch(() => undefined);
+      }
+      await boss.stop().catch(() => undefined);
       await app.end().catch(() => undefined);
       await owner.end().catch(() => undefined);
     }

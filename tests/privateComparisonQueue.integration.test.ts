@@ -25,6 +25,14 @@ function createIntegrationBoss(): PgBoss {
   });
 }
 
+async function superviseImmediately(db: ReturnType<typeof createDatabase>, boss: PgBoss): Promise<void> {
+  await db.query(
+    "UPDATE pgboss.queue SET monitor_on = now() - interval '2 seconds', maintain_on = now() - interval '2 seconds' WHERE name = $1",
+    [PRIVATE_COMPARISON_QUEUE],
+  );
+  await boss.supervise(PRIVATE_COMPARISON_QUEUE);
+}
+
 runIntegration("private comparison queue PostgreSQL/PgBoss integration", () => {
   it("admits one replay-safe encrypted job and deletes it after terminal completion", async () => {
     const db = createDatabase(databaseUrl!);
@@ -162,6 +170,83 @@ runIntegration("private comparison queue PostgreSQL/PgBoss integration", () => {
         await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, remainingJob.id).catch(() => undefined);
       }
       if (jobId) await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
+      await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await db.query(
+        "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
+        [userId, userId],
+      ).catch(() => undefined);
+      await boss.stop().catch(() => undefined);
+      await db.end();
+    }
+  }, 15_000);
+
+  it("automatically deletes a job after retry exhaustion without waiting between attempts", async () => {
+    const db = createDatabase(databaseUrl!);
+    const boss = createIntegrationBoss();
+    const key = Buffer.alloc(32, 7);
+    const updateId = 8_320_000_000_000_000 + randomInt(0, 100_000_000);
+    const userId = String(updateId);
+    const job = {
+      kind: "private-compare" as const,
+      updateId,
+      telegramUserId: userId,
+      telegramChatId: userId,
+      metadata: {
+        caption: "Retry exhaustion should be deleted",
+        fileId: `integration-exhausted-file-${updateId}`,
+        fileUniqueId: `integration-exhausted-unique-${updateId}`,
+      },
+    };
+    let jobId: string | undefined;
+    let terminalDeletionVerified = false;
+
+    try {
+      await boss.start();
+      await boss.createQueue(PRIVATE_COMPARISON_QUEUE, {
+        retryLimit: PRIVATE_COMPARISON_RETRY_LIMIT,
+        retryDelay: PRIVATE_COMPARISON_RETRY_DELAY_SECONDS,
+        retryBackoff: PRIVATE_COMPARISON_RETRY_BACKOFF,
+        expireInSeconds: PRIVATE_COMPARISON_EXPIRE_SECONDS,
+        retentionSeconds: PRIVATE_COMPARISON_RETENTION_SECONDS,
+        deleteAfterSeconds: 1,
+      });
+
+      const queue = new PgBossAgentQueue(boss, db, key);
+      await expect(queue.enqueue(job)).resolves.toBe(true);
+      const active = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
+      jobId = active[0]?.id;
+      if (!jobId) throw new Error("Expected an active integration job");
+
+      for (let attempt = 0; attempt <= PRIVATE_COMPARISON_RETRY_LIMIT; attempt += 1) {
+        await db.query(
+          "UPDATE pgboss.job SET started_on = now() - interval '1801 seconds' WHERE id = $1",
+          [jobId],
+        );
+        await superviseImmediately(db, boss);
+        const result = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { id: jobId });
+        expect(result).toHaveLength(1);
+        if (attempt < PRIVATE_COMPARISON_RETRY_LIMIT) {
+          expect(result[0]?.state).toBe("retry");
+          await db.query("UPDATE pgboss.job SET start_after = now() WHERE id = $1", [jobId]);
+          const claimed = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
+          expect(claimed).toHaveLength(1);
+          expect(claimed[0]?.id).toBe(jobId);
+        } else {
+          expect(result[0]?.state).toBe("failed");
+        }
+      }
+
+      await db.query(
+        "UPDATE pgboss.job SET completed_on = now() - interval '2 seconds' WHERE id = $1",
+        [jobId],
+      );
+      await superviseImmediately(db, boss);
+      await expect(boss.findJobs(PRIVATE_COMPARISON_QUEUE, { id: jobId })).resolves.toHaveLength(0);
+      terminalDeletionVerified = true;
+    } finally {
+      if (!terminalDeletionVerified && jobId) {
+        await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
+      }
       await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
       await db.query(
         "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
