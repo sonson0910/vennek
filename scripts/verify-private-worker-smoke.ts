@@ -8,12 +8,12 @@ import { PgBoss } from "pg-boss";
 import { createDatabase } from "@vennek/cardano-agent";
 import { runMigrations } from "./migrate-agent.js";
 import {
-  decryptPrivateComparisonJob,
   encryptPrivateComparisonJob,
   PgBossPrivateComparisonQueue,
   PRIVATE_COMPARISON_QUEUE,
   type PrivateComparisonIngressJob,
 } from "../apps/telegram-bot/dist/privateComparisonQueue.js";
+import { generatedSafeDocxBase64 } from "./verify-private-extractor-compose.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const node = process.execPath;
@@ -24,6 +24,7 @@ const publicEvidence = "Cardano uses proof of stake and Ouroboros consensus.";
 const vector = `[${Array.from({ length: 1_536 }, (_, index) => index === 0 ? 1 : 0).join(",")}]`;
 
 type SmokeMessage = { chat_id: string | number; text: string };
+type SmokeFile = { bytes: Buffer; fileName: string; mime: string };
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -81,14 +82,14 @@ function spawnService(entrypoint: string, env: NodeJS.ProcessEnv, args: readonly
   return child;
 }
 
-async function startTelegramHarness(files: Map<string, Buffer>): Promise<{ server: http.Server; port: number; messages: SmokeMessage[] }> {
+async function startTelegramHarness(files: Map<string, SmokeFile>): Promise<{ server: http.Server; port: number; messages: SmokeMessage[] }> {
   const messages: SmokeMessage[] = [];
   const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && request.url === `/bot${telegramToken}/getFile`) {
       const value = JSON.parse((await body(request)).toString("utf8")) as { file_id?: string };
       const file = files.get(value.file_id ?? "");
       if (!file) return json(response, { ok: false, error_code: 404, description: "file not found" }, 404);
-      return json(response, { ok: true, result: { file_id: value.file_id, file_unique_id: `unique-${value.file_id}`, file_size: file.byteLength, file_path: `documents/${value.file_id}.txt` } });
+      return json(response, { ok: true, result: { file_id: value.file_id, file_unique_id: `unique-${value.file_id}`, file_size: file.bytes.byteLength, file_path: `documents/${value.file_id}` } });
     }
     if (request.method === "POST" && request.url === `/bot${telegramToken}/sendMessage`) {
       const value = JSON.parse((await body(request)).toString("utf8")) as SmokeMessage;
@@ -96,15 +97,15 @@ async function startTelegramHarness(files: Map<string, Buffer>): Promise<{ serve
       return json(response, { ok: true, result: { message_id: messages.length } });
     }
     if (request.method === "GET" && request.url?.startsWith(`/file/bot${telegramToken}/documents/`)) {
-      const fileId = request.url.slice(`/file/bot${telegramToken}/documents/`.length).replace(/\.txt$/u, "");
+      const fileId = request.url.slice(`/file/bot${telegramToken}/documents/`.length);
       const file = files.get(fileId);
       if (!file) {
         response.writeHead(404);
         response.end();
         return;
       }
-      response.writeHead(200, { "content-type": "text/plain", "content-length": file.byteLength });
-      response.end(file);
+      response.writeHead(200, { "content-type": "application/octet-stream", "content-length": file.bytes.byteLength });
+      response.end(file.bytes);
       return;
     }
     response.writeHead(404);
@@ -196,14 +197,15 @@ async function main(): Promise<void> {
   const boss = new PgBoss({ db: { executeSql: (text, values) => db.query(text, values) }, migrate: false, createSchema: false, maintenanceIntervalSeconds: 1, superviseIntervalSeconds: 1 });
   const suffix = `${process.pid}-${Date.now()}`;
   const updateBase = 8_800_000_000_000_000 + (Date.now() % 1_000_000_000) * 1_000 + (process.pid % 1_000);
-  assert(Number.isSafeInteger(updateBase + 4), "smoke update id is not a safe integer");
+  assert(Number.isSafeInteger(updateBase + 5), "smoke update id is not a safe integer");
   const smokeOwner = String(updateBase);
   const evidence = await seedEvidence(db, suffix);
   console.log("compiled private worker smoke: local services");
-  const files = new Map<string, Buffer>([
-    ["safe", Buffer.from(`Cardano private smoke ${suffix}`)],
-    ["spoofed", Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")],
-    ["retry", Buffer.from(`Cardano private retry smoke ${suffix}`)],
+  const files = new Map<string, SmokeFile>([
+    ["safe-docx", { bytes: Buffer.from(generatedSafeDocxBase64, "base64"), fileName: "safe.docx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }],
+    ["exact-unicode", { bytes: Buffer.from("😀".repeat(2_000_000)), fileName: "exact.txt", mime: "text/plain" }],
+    ["spoofed", { bytes: Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"), fileName: "spoofed.txt", mime: "text/plain" }],
+    ["retry", { bytes: Buffer.from(`Cardano private retry smoke ${suffix}`), fileName: "retry.txt", mime: "text/plain" }],
   ]);
   const telegram = await startTelegramHarness(files);
   const litellm = await startLiteLlm();
@@ -246,39 +248,50 @@ async function main(): Promise<void> {
 
   const queue = new PgBossPrivateComparisonQueue(boss, db, smokeKey);
   try {
+    const deliveredCount = () => telegram.messages.length;
     await boss.start();
     await boss.createQueue(PRIVATE_COMPARISON_QUEUE, { policy: "standard", retryLimit: 3, retryDelay: 1, retryBackoff: true, expireInSeconds: 300, retentionSeconds: 300, deleteAfterSeconds: 1 });
-    const base = (updateId: number, fileId: string, caption = "Compare this Cardano consensus claim") => ({
+    const base = (updateId: number, fileId: string, caption = "Compare this Cardano consensus claim") => {
+      const file = files.get(fileId);
+      assert(file, `missing smoke file ${fileId}`);
+      return ({
       kind: "private-compare" as const,
       updateId,
       telegramUserId: smokeOwner,
       telegramChatId: smokeOwner,
-      metadata: { caption, fileId, fileUniqueId: `unique-${fileId}`, fileName: "claim.txt", mime: "text/plain", fileSize: files.get(fileId)!.byteLength },
-    });
-    assert(await queue.enqueue(base(updateBase + 1, "safe")), "safe smoke job was not admitted");
-    console.log("compiled private worker smoke: safe job");
+      metadata: { caption, fileId, fileUniqueId: `unique-${fileId}`, fileName: file.fileName, mime: file.mime, fileSize: file.bytes.byteLength },
+      });
+    };
+    assert(await queue.enqueue(base(updateBase + 1, "safe-docx")), "safe DOCX smoke job was not admitted");
+    console.log("compiled private worker smoke: safe DOCX job");
     await waitForUpdate(db, updateBase + 1);
-    assert(telegram.messages.length >= 1 && telegram.messages.at(-1)!.text.includes("Cardano uses proof of stake"), "safe compiled worker delivery failed");
+    assert(deliveredCount() >= 1 && telegram.messages.at(-1)!.text.includes("Cardano uses proof of stake"), "safe compiled worker delivery failed");
 
-    assert(await queue.enqueue(base(updateBase + 2, "spoofed")), "spoof smoke job was not admitted");
-    console.log("compiled private worker smoke: terminal job");
+    assert(await queue.enqueue(base(updateBase + 2, "exact-unicode")), "exact Unicode smoke job was not admitted");
+    console.log("compiled private worker smoke: exact Unicode TXT job");
     await waitForUpdate(db, updateBase + 2);
-    assert(telegram.messages.length >= 2 && /sorry|xin lỗi|lo siento/i.test(telegram.messages.at(-1)!.text), "deterministic terminal rejection was not localized and delivered once");
+    assert(deliveredCount() === 2, "exact Unicode smoke job was not delivered once");
+
+    assert(await queue.enqueue(base(updateBase + 3, "spoofed")), "spoof smoke job was not admitted");
+    console.log("compiled private worker smoke: terminal job");
+    await waitForUpdate(db, updateBase + 3);
+    assert(deliveredCount() === 3 && /sorry|xin lỗi|lo siento/i.test(telegram.messages.at(-1)!.text), "deterministic terminal rejection was not localized and delivered once");
 
     litellm.setFailNext();
     const qualityBeforeRetry = litellm.qualityCalls();
-    assert(await queue.enqueue(base(updateBase + 3, "retry")), "retry smoke job was not admitted");
+    assert(await queue.enqueue(base(updateBase + 4, "retry")), "retry smoke job was not admitted");
     console.log("compiled private worker smoke: retry job");
-    await waitForUpdate(db, updateBase + 3);
+    await waitForUpdate(db, updateBase + 4);
     assert(litellm.qualityCalls() >= qualityBeforeRetry + 2, "transient provider failure did not retry the compiled worker job");
-    assert(telegram.messages.length === 3, "retry smoke job delivered more than once");
+    assert(deliveredCount() === 4, "retry smoke job delivered more than once");
 
-    const tamperInput: PrivateComparisonIngressJob = base(updateBase + 4, "safe");
+    const tamperInput: PrivateComparisonIngressJob = base(updateBase + 5, "safe-docx");
     const encrypted = encryptPrivateComparisonJob(tamperInput, smokeKey);
     const tampered = { ...encrypted, encrypted: { ...encrypted.encrypted, ciphertext: `${encrypted.encrypted.ciphertext.slice(0, -1)}${encrypted.encrypted.ciphertext.endsWith("A") ? "B" : "A"}` } };
-    let tamperRejected = false;
-    try { decryptPrivateComparisonJob(tampered, smokeKey, { updateId: tamperInput.updateId, telegramUserId: tamperInput.telegramUserId, telegramChatId: tamperInput.telegramChatId }); } catch { tamperRejected = true; }
-    assert(tamperRejected, "tampered queue envelope was accepted by compiled crypto path");
+    const tamperedJobId = await boss.send(PRIVATE_COMPARISON_QUEUE, tampered, { retryLimit: 0, expireInSeconds: 60, retentionSeconds: 60, deleteAfterSeconds: 30 });
+    assert(tamperedJobId, "tampered smoke job was not persisted");
+    await waitFor(async () => (await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { id: tamperedJobId })).some((job) => job.state === "failed"));
+    assert(deliveredCount() === 4, "tampered queue envelope reached delivery");
 
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_500));
     const marker = `%${suffix}%`;
@@ -286,7 +299,7 @@ async function main(): Promise<void> {
       const result = await db.query<{ count: string }>(`SELECT count(*)::text AS count FROM ${schema}.${table} AS surface WHERE to_jsonb(surface)::text LIKE $1`, [marker]);
       assert(result.rows[0]?.count === "0", `private marker retained in ${schema}.${table}`);
     }
-    console.log("compiled private worker smoke passed: delivery, terminal reject, retry, tamper rejection, zero marker retention");
+    console.log("compiled private worker smoke passed: DOCX, exact Unicode, terminal reject, retry, worker tamper rejection, zero marker retention");
   } finally {
     worker.kill("SIGTERM");
     await waitForExit(worker);
@@ -295,11 +308,16 @@ async function main(): Promise<void> {
     await close(telegram.server).catch(() => undefined);
     await close(litellm.server).catch(() => undefined);
     await boss.stop().catch(() => undefined);
-    await db.query("DELETE FROM pgboss.job WHERE (data->>'updateId')::numeric BETWEEN $1 AND $2", [updateBase + 1, updateBase + 4]).catch(() => undefined);
+    await db.query(
+      "DELETE FROM pgboss.job WHERE name = $1 AND data->>'updateId' = ANY($2::text[])",
+      [PRIVATE_COMPARISON_QUEUE, Array.from({ length: 5 }, (_, index) => String(updateBase + index + 1))],
+    ).catch(() => undefined);
     await db.query("DELETE FROM usage_ledger WHERE telegram_user_id = $1", [smokeOwner]).catch(() => undefined);
     await db.query("DELETE FROM retrieval_cache WHERE query_hash = $1", [createHash("sha256").update("Compare this Cardano consensus claim").digest("hex")]).catch(() => undefined);
-    await db.query("DELETE FROM telegram_updates WHERE update_id BETWEEN $1 AND $2", [updateBase + 1, updateBase + 4]).catch(() => undefined);
+    await db.query("DELETE FROM telegram_updates WHERE update_id BETWEEN $1 AND $2", [updateBase + 1, updateBase + 5]).catch(() => undefined);
     await db.query("DELETE FROM telegram_admission_windows WHERE subject_id = $1 AND subject_type IN ('user', 'chat')", [smokeOwner]).catch(() => undefined);
+    await db.query("DELETE FROM knowledge_chunks WHERE version_id = $1", [evidence.versionId]).catch(() => undefined);
+    await db.query("DELETE FROM source_versions WHERE id = $1", [evidence.versionId]).catch(() => undefined);
     await db.query("DELETE FROM knowledge_sources WHERE id = $1", [evidence.sourceId]).catch(() => undefined);
     await db.end().catch(() => undefined);
   }

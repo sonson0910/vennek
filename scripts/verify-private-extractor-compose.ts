@@ -152,7 +152,7 @@ async function assertRenderedContracts(config: RenderedCompose): Promise<{ image
   return { image: privateExtractor.image ?? "", token };
 }
 
-const generatedSafeDocxBase64 = "UEsDBBQAAAAIAAAAAAD3S4B1wgAAAHYBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QuQ7CMAyGX6XKiqgRAwOiLMAKDLyAlbptRC7FLsfbk3INCBjt//gsLw7XSFxcnPVcqU4kzgFYd+SQyxDJZ6UJyaHkMbUQUR+xJZhOJjPQwQt5GcvQoZaLNTXYWyk2l7xmE3ylEllWxephHFiVwhit0ShZh5OvPyjjJ6HMybuHOxN5lA0KvhIG5TfgmdudKCVTU7HHJFt02QXnkGqog+5dTpb/a77cGZrGaHrnh7aYgiZm41tny7fi0PjX/XB/9/IGUEsDBBQAAAAIAAAAAAA3H46cgQAAAOgAAAALAAAAX3JlbHMvLnJlbHONzzEOwjAMBdCrRDlAXTEwoDQTJ0C9gJW6SUQTR4kRcHsyMBTEwOj/v55kc6ENJXJuIZamHmnLbdJBpJwAmguUsA1cKPdm5ZpQ+lk9FHRX9ASHcTxC3Rvamr2p5mehf0Re1+jozO6WKMsP+Guh1YzVk0z6znWB5R0PndVgDXw8Zl9QSwMEFAAAAAgAAAAAAHysnDuAAAAArAAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEXOMQ7CMAwF0KtEPQCuGBiikIWThMa0EXUcOYaU29OUgeV9WV/6sms28vQizGo2WnO17TosqsUC1GlBCvXEBfPePVgo6H7KDI0lFuEJa015phXO43gBCikP3jV75/jpWTrSUX8LEkNmUyS9g6KpxE80ips66H1XDsvhbwP+//kvUEsBAhQAFAAAAAgAAAAAAPdLgHXCAAAAdgEAABMAAAAAAAAAAAAAAAAAAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACAAAAAAANx+OnIEAAADoAAAACwAAAAAAAAAAAAAAAADzAAAAX3JlbHMvLnJlbHNQSwECFAAUAAAACAAAAAAAfKycO4AAAACsAAAAEQAAAAAAAAAAAAAAAACdAQAAd29yZC9kb2N1bWVudC54bWxQSwUGAAAAAAMAAwC5AAAATAIAAAAA";
+export const generatedSafeDocxBase64 = "UEsDBBQAAAAIAAAAAAD3S4B1wgAAAHYBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QuQ7CMAyGX6XKiqgRAwOiLMAKDLyAlbptRC7FLsfbk3INCBjt//gsLw7XSFxcnPVcqU4kzgFYd+SQyxDJZ6UJyaHkMbUQUR+xJZhOJjPQwQt5GcvQoZaLNTXYWyk2l7xmE3ylEllWxephHFiVwhit0ShZh5OvPyjjJ6HMybuHOxN5lA0KvhIG5TfgmdudKCVTU7HHJFt02QXnkGqog+5dTpb/a77cGZrGaHrnh7aYgiZm41tny7fi0PjX/XB/9/IGUEsDBBQAAAAIAAAAAAA3H46cgQAAAOgAAAALAAAAX3JlbHMvLnJlbHONzzEOwjAMBdCrRDlAXTEwoDQTJ0C9gJW6SUQTR4kRcHsyMBTEwOj/v55kc6ENJXJuIZamHmnLbdJBpJwAmguUsA1cKPdm5ZpQ+lk9FHRX9ASHcTxC3Rvamr2p5mehf0Re1+jozO6WKMsP+Guh1YzVk0z6znWB5R0PndVgDXw8Zl9QSwMEFAAAAAgAAAAAAHysnDuAAAAArAAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEXOMQ7CMAwF0KtEPQCuGBiikIWThMa0EXUcOYaU29OUgeV9WV/6sms28vQizGo2WnO17TosqsUC1GlBCvXEBfPePVgo6H7KDI0lFuEJa015phXO43gBCikP3jV75/jpWTrSUX8LEkNmUyS9g6KpxE80ips66H1XDsvhbwP+//kvUEsBAhQAFAAAAAgAAAAAAPdLgHXCAAAAdgEAABMAAAAAAAAAAAAAAAAAAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACAAAAAAANx+OnIEAAADoAAAACwAAAAAAAAAAAAAAAADzAAAAX3JlbHMvLnJlbHNQSwECFAAUAAAACAAAAAAAfKycO4AAAACsAAAAEQAAAAAAAAAAAAAAAACdAQAAd29yZC9kb2N1bWVudC54bWxQSwUGAAAAAAMAAwC5AAAATAIAAAAA";
 
 function makeSafePdf(active = false): Buffer {
   const content = "BT /F1 18 Tf 72 720 Td (Cardano private PDF smoke) Tj ET";
@@ -216,8 +216,8 @@ async function smoke(image: string, token: string): Promise<void> {
         ['text', Buffer.from(process.env.TEXT, 'base64'), 'safe.txt', 'text/plain', 200, 'Cardano private Compose smoke text'],
         ['docx', Buffer.from(process.env.DOCX, 'base64'), 'safe.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 200, 'Cardano private smoke text'],
         ['pdf', Buffer.from(process.env.PDF, 'base64'), 'safe.pdf', 'application/pdf', 200, 'Cardano private PDF smoke'],
-        ['unsafe', Buffer.from(process.env.UNSAFE, 'base64'), 'unsafe.pdf', 'application/pdf', 503, null],
-        ['spoofed', Buffer.from(process.env.SPOOFED, 'base64'), 'spoofed.txt', 'text/plain', 503, null],
+        ['unsafe', Buffer.from(process.env.UNSAFE, 'base64'), 'unsafe.pdf', 'application/pdf', 422, null],
+        ['spoofed', Buffer.from(process.env.SPOOFED, 'base64'), 'spoofed.txt', 'text/plain', 422, null],
       ];
       (async () => {
         for (const [label, body, name, mime, expected, marker] of cases) {
