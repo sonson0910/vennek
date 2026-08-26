@@ -181,8 +181,51 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     for (const name of ["postgres", "migrate", "provision-app-role", "provision-knowledge-role", "litellm", "telegram-webhook", "agent-worker"]) {
       expect(config.services[name]?.networks?.["pdf-sandbox"]).toBeUndefined();
     }
-    expect(config.services["agent-worker"]?.networks).toEqual({ default: null });
+    expect(config.services["agent-worker"]?.networks).toEqual({ default: null, "private-document-sandbox": null });
     expect(config.services["knowledge-worker"]?.networks).toEqual({ default: null, "pdf-sandbox": null });
+
+    const privateExtractor = config.services["private-document-extractor"];
+    expect(privateExtractor?.image).toBe(images[0]);
+    expect(privateExtractor?.command).toEqual(["node", "packages/cardano-agent/dist/privateComparison/privateDocumentServer.js"]);
+    expect(privateExtractor?.ports).toBeUndefined();
+    expect(privateExtractor?.expose).toEqual(["8083"]);
+    expect(privateExtractor?.networks).toEqual({ "private-document-sandbox": null });
+    expect(privateExtractor?.environment?.PRIVATE_DOCUMENT_EXTRACTOR_TOKEN).toBe(
+      "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    );
+    expect(privateExtractor?.environment?.PRIVATE_DOCUMENT_EXTRACTOR_PORT).toBe("8083");
+    expect(privateExtractor?.mem_limit).toBe("268435456");
+    expect(privateExtractor?.memswap_limit).toBe("268435456");
+    expect(privateExtractor?.cpus).toBe(0.5);
+    expect(privateExtractor?.pids_limit).toBe(64);
+    expect(privateExtractor?.read_only).toBe(true);
+    expect(privateExtractor?.cap_drop).toEqual(["ALL"]);
+    expect(privateExtractor?.security_opt).toContain("no-new-privileges:true");
+    expect(privateExtractor?.user).toBe("1000:1000");
+    expect(privateExtractor?.init).toBe(true);
+    expect(privateExtractor?.tmpfs?.[0]).toContain("/tmp:size=16m");
+    expect(privateExtractor?.healthcheck?.test?.join(" ")).toContain("127.0.0.1:8083");
+    expect(config.networks["private-document-sandbox"]?.internal).toBe(true);
+    expect(config.services["agent-worker"]?.networks).toEqual({
+      default: null,
+      "private-document-sandbox": null,
+    });
+    expect(workerEnvironment?.PRIVATE_DOCUMENT_EXTRACTOR_URL).toBe("http://private-document-extractor:8083");
+    expect(workerEnvironment?.PRIVATE_DOCUMENT_EXTRACTOR_TOKEN).toBe(
+      "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    );
+    expect(workerEnvironment?.VENNEK_PRIVATE_MODEL_QUALITY).toBe("cardano-private-quality");
+    expect(workerEnvironment?.VENNEK_PRIVATE_MODEL_VERIFIER).toBe("cardano-private-verifier");
+    expect(config.services["knowledge-worker"]?.networks?.["private-document-sandbox"]).toBeUndefined();
+    expect(config.services["pdf-extractor"]?.networks).toEqual({ "pdf-sandbox": null });
+    for (const name of [
+      "PRIVATE_DOCUMENT_EXTRACTOR_URL",
+      "PRIVATE_DOCUMENT_EXTRACTOR_TOKEN",
+      "VENNEK_PRIVATE_MODEL_QUALITY",
+      "VENNEK_PRIVATE_MODEL_VERIFIER",
+    ]) {
+      expect(webhookEnvironment?.[name]).toBeUndefined();
+    }
   });
 });
 
@@ -222,6 +265,39 @@ describe("LiteLLM embedding route contract", () => {
     expect(config).toContain("api_key: os.environ/OPENAI_API_KEY");
     expect(env).toContain("OPENAI_EMBEDDING_MODEL=text-embedding-3-small");
     expect(compose).toContain("OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}");
+  });
+});
+
+describe("LiteLLM private route contract", () => {
+  it("maps each private alias to one operator-supplied model without fallback", () => {
+    const config = readFileSync("config/litellm.example.yaml", "utf8");
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const env = readFileSync(".env.example", "utf8");
+    expect(config).toContain("model_name: cardano-private-quality");
+    expect(config).toContain("model: os.environ/PRIVATE_OPENAI_QUALITY_MODEL");
+    expect(config).toContain("model_name: cardano-private-verifier");
+    expect(config).toContain("model: os.environ/PRIVATE_OPENAI_VERIFIER_MODEL");
+    expect(config.match(/model_name: cardano-private-quality/g)).toHaveLength(1);
+    expect(config.match(/model_name: cardano-private-verifier/g)).toHaveLength(1);
+    expect(env).toContain("PRIVATE_OPENAI_QUALITY_MODEL=replace-with-approved-private-quality-model");
+    expect(env).toContain("PRIVATE_OPENAI_VERIFIER_MODEL=replace-with-approved-private-verifier-model");
+    expect(compose).toContain("PRIVATE_OPENAI_QUALITY_MODEL: ${PRIVATE_OPENAI_QUALITY_MODEL:?PRIVATE_OPENAI_QUALITY_MODEL is required}");
+    expect(compose).toContain("PRIVATE_OPENAI_VERIFIER_MODEL: ${PRIVATE_OPENAI_VERIFIER_MODEL:?PRIVATE_OPENAI_VERIFIER_MODEL is required}");
+  });
+});
+
+describe("private extractor verifier contract", () => {
+  it("uses deterministic temporary fixtures and validates the internal service", () => {
+    const verifier = readFileSync("scripts/verify-private-extractor-compose.ts", "utf8");
+    expect(verifier).toContain("mkdtemp");
+    expect(verifier).toContain("private-document-extractor");
+    expect(verifier).toContain("/v1/extract/private-document");
+    expect(verifier).toContain("PRIVATE_DOCUMENT_EXTRACTOR_TOKEN");
+    expect(verifier).toContain("DOCX");
+    expect(verifier).toContain("PDF");
+    expect(verifier).toContain("unsafe");
+    expect(verifier).toContain("spoof");
+    expect(verifier).toContain("down");
   });
 });
 

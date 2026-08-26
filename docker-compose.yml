@@ -58,6 +58,7 @@ services:
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      PRIVATE_OPENAI_API_KEY: ${PRIVATE_OPENAI_API_KEY:?PRIVATE_OPENAI_API_KEY is required}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY is required}
@@ -70,6 +71,8 @@ services:
       GEMINI_FAST_MODEL: ${GEMINI_FAST_MODEL:?GEMINI_FAST_MODEL is required}
       GEMINI_QUALITY_MODEL: ${GEMINI_QUALITY_MODEL:?GEMINI_QUALITY_MODEL is required}
       GEMINI_VERIFIER_MODEL: ${GEMINI_VERIFIER_MODEL:?GEMINI_VERIFIER_MODEL is required}
+      PRIVATE_OPENAI_QUALITY_MODEL: ${PRIVATE_OPENAI_QUALITY_MODEL:?PRIVATE_OPENAI_QUALITY_MODEL is required}
+      PRIVATE_OPENAI_VERIFIER_MODEL: ${PRIVATE_OPENAI_VERIFIER_MODEL:?PRIVATE_OPENAI_VERIFIER_MODEL is required}
     volumes:
       - ./config/litellm.example.yaml:/app/config.yaml:ro
     expose:
@@ -112,13 +115,22 @@ services:
       KNOWLEDGE_PROMOTION_KEY_ID: ${KNOWLEDGE_PROMOTION_KEY_ID:?KNOWLEDGE_PROMOTION_KEY_ID is required}
       KNOWLEDGE_PROMOTION_KEY: ${KNOWLEDGE_PROMOTION_KEY:?KNOWLEDGE_PROMOTION_KEY is required}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      PRIVATE_DOCUMENT_EXTRACTOR_URL: http://private-document-extractor:8083
+      PRIVATE_DOCUMENT_EXTRACTOR_TOKEN: ${PRIVATE_DOCUMENT_EXTRACTOR_TOKEN:?PRIVATE_DOCUMENT_EXTRACTOR_TOKEN is required}
+      VENNEK_PRIVATE_MODEL_QUALITY: ${VENNEK_PRIVATE_MODEL_QUALITY:?VENNEK_PRIVATE_MODEL_QUALITY is required}
+      VENNEK_PRIVATE_MODEL_VERIFIER: ${VENNEK_PRIVATE_MODEL_VERIFIER:?VENNEK_PRIVATE_MODEL_VERIFIER is required}
     command: ["node", "apps/telegram-bot/dist/main.js", "--worker"]
     depends_on:
       provision-app-role:
         condition: service_completed_successfully
       litellm:
         condition: service_started
+      private-document-extractor:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
+      - private-document-sandbox
 
   knowledge-worker:
     image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
@@ -178,9 +190,41 @@ services:
     networks:
       - pdf-sandbox
 
+  private-document-extractor:
+    image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
+    environment:
+      PRIVATE_DOCUMENT_EXTRACTOR_TOKEN: ${PRIVATE_DOCUMENT_EXTRACTOR_TOKEN:?PRIVATE_DOCUMENT_EXTRACTOR_TOKEN is required}
+      PRIVATE_DOCUMENT_EXTRACTOR_PORT: "8083"
+    command: ["node", "packages/cardano-agent/dist/privateComparison/privateDocumentServer.js"]
+    expose:
+      - "8083"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8083/health').then((r) => process.exit(r.status === 404 ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: "0.50"
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=0700,uid=1000,gid=1000,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    networks:
+      - private-document-sandbox
+
 volumes:
   vennek-postgres:
 
 networks:
   pdf-sandbox:
+    internal: true
+  private-document-sandbox:
     internal: true
