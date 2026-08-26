@@ -41,7 +41,7 @@ Foundation's official publisher organization at
 - Modify: `config/cardano-sources.json`
 - Test: `tests/sourceRegistry.test.ts`
 
-- [ ] **Step 1: Write failing registry and configuration tests**
+- [x] **Step 1: Write failing registry and configuration tests**
 
 Add focused cases to `tests/sourceRegistry.test.ts`:
 
@@ -108,7 +108,7 @@ fallback IDs, invalid `ingestionMode`, and any fallback chain.
 For Stack Exchange, reject any `allowedDomains` set other than exactly
 `api.stackexchange.com` plus `cardano.stackexchange.com`.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -118,7 +118,7 @@ npm test -- --run tests/sourceRegistry.test.ts
 
 Expected: FAIL because `ingestionMode`, `liveFallbackIds`, `stackexchange`, and `stackExchange` are rejected as unknown.
 
-- [ ] **Step 3: Implement the minimal discriminated contract**
+- [x] **Step 3: Implement the minimal discriminated contract**
 
 In `sourceRegistry.ts`, add and export:
 
@@ -181,7 +181,7 @@ exact same validated `owner` and no `liveFallbackIds`. This one-hop contract
 rejects chains and cycles without graph traversal. Do not normalize or
 synthesize fallback entries.
 
-- [ ] **Step 4: Update the registry and package exports**
+- [x] **Step 4: Update the registry and package exports**
 
 Set the Cardano Foundation entry to:
 
@@ -202,7 +202,7 @@ Replace the Stack Exchange entry's kind, URL, domains, and metadata with:
 Export `IngestionMode`, `StackExchangeScope`, and `sourceIsScheduled` from
 `packages/cardano-agent/src/index.ts`.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run:
 
@@ -226,7 +226,7 @@ git commit -m "feat: model resilient Cardano source families"
 - Modify: `apps/telegram-bot/src/knowledgeWorker.ts`
 - Test: `tests/knowledgeWorker.test.ts`
 
-- [ ] **Step 1: Write failing scheduler, manual, and stale-job tests**
+- [x] **Step 1: Write failing scheduler, manual, and stale-job tests**
 
 Add these behaviors to `tests/knowledgeWorker.test.ts`:
 
@@ -259,7 +259,7 @@ it("rejects a queued source that became monitor-only before execution", async ()
 Extend reconciliation coverage so an existing `source/cardano-foundation`
 schedule is unscheduled while unrelated keys are untouched.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -269,7 +269,7 @@ npm test -- --run tests/knowledgeWorker.test.ts
 
 Expected: FAIL because the current worker schedules and admits every registry entry.
 
-- [ ] **Step 3: Apply one shared admission policy**
+- [x] **Step 3: Apply one shared admission policy**
 
 Import `sourceIsScheduled` from `@vennek/cardano-agent` and apply it at all three
 admission points:
@@ -291,7 +291,7 @@ In `reconcileKnowledgeSchedules`, unschedule when the entry is missing or
 throw `Source is monitor-only and cannot be synchronized.` before `send` or
 `sync`. Keep job payloads as exactly `{ sourceId }`.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run:
 
@@ -320,7 +320,7 @@ git commit -m "feat: isolate monitor-only Cardano sources"
 - Modify: `tests/sourceCrawler.test.ts`
 - Modify: `tests/knowledgeRepository.integration.test.ts`
 
-- [ ] **Step 1: Write failing adapter contract and confinement tests**
+- [x] **Step 1: Write failing adapter contract and confinement tests**
 
 Create `tests/stackExchangeSource.test.ts` with a fake hardened request and a
 repository fake exposing `ensureSource`, `getStackExchangeFetchState`, and
@@ -360,7 +360,7 @@ returned human link.
 Add a `tests/sourceCrawler.test.ts` dispatch assertion proving the generic
 BasicCrawler is not invoked for `kind: "stackexchange"`.
 
-- [ ] **Step 2: Run the new tests and verify RED**
+- [x] **Step 2: Run the new tests and verify RED**
 
 Run:
 
@@ -370,7 +370,7 @@ npm test -- --run tests/stackExchangeSource.test.ts tests/sourceCrawler.test.ts
 
 Expected: FAIL because the adapter and source-kind dispatch do not exist.
 
-- [ ] **Step 3: Add bounded Stack Exchange fetch state without a migration**
+- [x] **Step 3: Add bounded Stack Exchange fetch state without a migration**
 
 In `knowledgeRepository.ts`, add:
 
@@ -404,7 +404,7 @@ Add a credential-gated integration test that creates a source, persists state,
 rejects an oversized/unknown-field state before SQL, and proves stale expected
 state returns `false` without overwriting the current value.
 
-- [ ] **Step 4: Implement the fixed-origin adapter**
+- [x] **Step 4: Implement the fixed-origin adapter**
 
 Create `stackExchangeSource.ts` with these public contracts:
 
@@ -485,7 +485,7 @@ repository operation for the immediate deferral write. On success, expose a
 `retryAt` only after indexing succeeds, matching the GitHub adapter's
 state-commit pattern.
 
-- [ ] **Step 5: Dispatch into the existing crawl/index contract**
+- [x] **Step 5: Dispatch into the existing crawl/index contract**
 
 In `crawlSource.ts`, branch after GitHub and before BasicCrawler:
 
@@ -518,7 +518,7 @@ Change the existing `GitHub fetch state commit failed.` message in
 `indexDocument.ts` to the source-neutral `Source fetch state commit failed.`,
 and update its focused assertion; both adapters share that callback contract.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 Run:
 
@@ -543,7 +543,7 @@ git commit -m "feat: ingest Cardano Stack Exchange through its API"
 - Modify: `scripts/validate-source-registry.ts`
 - Test: `tests/sourceRegistry.test.ts`
 
-- [ ] **Step 1: Write failing family-health tests**
+- [x] **Step 1: Write failing family-health tests**
 
 Load `cardano-foundation`, `cardano-foundation-github`, and
 `cardano-stack-exchange` from the checked-in config so the blocking IDs and
@@ -611,7 +611,7 @@ it("probes Stack Exchange with one fixed API GET", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -622,7 +622,7 @@ npm test -- --run tests/sourceRegistry.test.ts
 Expected: FAIL because results currently contain only `ok` and `reason` and all
 source failures block the command.
 
-- [ ] **Step 3: Separate raw probes from family resolution**
+- [x] **Step 3: Separate raw probes from family resolution**
 
 Keep `checkLive` as the single hardened probe. For ordinary entries preserve
 the current HEAD/range-GET behavior. For `stackexchange`, build exactly
@@ -661,7 +661,7 @@ export function liveValidationSucceeded(results: LiveCheckResult[]): boolean {
 Print `healthy`, `degraded-with-fallback (<fallbackId>): <reason>`, or
 `failed: <reason>` without response bodies or URLs.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run:
 
@@ -693,7 +693,7 @@ git commit -m "feat: gate Cardano source families with explicit fallback"
 - Modify: `docs/architecture/data-sources.md`
 - Modify: `docs/deployment/release-checklist.md`
 
-- [ ] **Step 1: Write the failing credential test**
+- [x] **Step 1: Write the failing credential test**
 
 Change the expected direct dependencies in `tests/cardanoRagEval.test.ts`:
 
@@ -712,7 +712,7 @@ it("requires only credentials used by live evaluation", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -722,14 +722,14 @@ npm test -- --run tests/cardanoRagEval.test.ts
 
 Expected: FAIL because `GITHUB_TOKEN` is still in `LIVE_CREDENTIALS`.
 
-- [ ] **Step 3: Remove only the unused credential requirement**
+- [x] **Step 3: Remove only the unused credential requirement**
 
 Delete `"GITHUB_TOKEN"` from `LIVE_CREDENTIALS`. Do not add provider secrets to
 the evaluator: `OPENAI_API_KEY` stays inside LiteLLM. Preserve report
 sanitization by deriving its allowlist from the corrected direct-credential
 constant.
 
-- [ ] **Step 4: Update operating documentation and examples**
+- [x] **Step 4: Update operating documentation and examples**
 
 Document these exact boundaries:
 
@@ -748,7 +748,7 @@ Document these exact boundaries:
 
 Keep example values as placeholders and never generate or commit an OpenAI key.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run:
 
@@ -771,7 +771,7 @@ git commit -m "fix: require only live RAG runtime credentials"
 - Modify: `docs/superpowers/plans/2026-08-26-cardano-source-resilience.md`
 - Modify only if evidence changes: `docs/superpowers/plans/2026-08-24-cardano-knowledge-rag.md`
 
-- [ ] **Step 1: Run focused and offline gates**
+- [x] **Step 1: Run focused and offline gates**
 
 Run:
 
@@ -791,7 +791,7 @@ Expected: all non-credential gates pass, audit reports zero moderate-or-higher
 vulnerabilities, and credential-gated integration tests either pass with a real
 test database or report their explicit existing skips.
 
-- [ ] **Step 2: Run live source validation**
+- [x] **Step 2: Run live source validation**
 
 Run:
 
@@ -824,7 +824,7 @@ official-override thresholds. If operator credentials are unavailable, leave
 this checkbox open and keep the public canary disabled; a fixture or mock does
 not satisfy this gate.
 
-- [ ] **Step 4: Request independent correctness and security reviews**
+- [x] **Step 4: Request independent correctness and security reviews**
 
 After implementation and verification, dispatch one read-only `reviewer` and
 one separate read-only `security_reviewer` over the finished commit range.
@@ -838,7 +838,7 @@ Resolve every substantiated finding, rerun its focused regression check, and
 send the fix to the same reviewer for re-review. The task is incomplete until
 both return PASS.
 
-- [ ] **Step 5: Record evidence and commit plan closeout**
+- [x] **Step 5: Record evidence and commit plan closeout**
 
 Check completed steps in this plan and record exact test counts, live source
 states, audit result, reviewer verdicts, and any still-open credential gate. In
@@ -849,3 +849,25 @@ actually exited zero.
 git add docs/superpowers/plans/2026-08-26-cardano-source-resilience.md docs/superpowers/plans/2026-08-24-cardano-knowledge-rag.md
 git commit -m "docs: close Cardano source resilience milestone"
 ```
+
+### Closeout evidence (2026-08-26)
+
+- Final implementation range: `8d6f390..442ff23`.
+- Full Vitest gate: 53 files passed, 9 credential-gated files skipped;
+  760 tests passed and 67 skipped. Typecheck, build, compiled package imports,
+  registry validation, dependency audit, and diff check passed.
+- Registry coverage remained 18/18 required official sources and 20 entries.
+  The 60-case offline RAG corpus passed with recall@10 and citation precision
+  both 100%, all 36 English and 24 Vietnamese cases passing, and zero policy,
+  answer-property, or freshness violations.
+- Live registry validation exited zero: 19 sources were healthy; the canonical
+  Cardano Foundation site returned HTTP 429 and was reported
+  `degraded-with-fallback` with `cardano-foundation-github` healthy. Cardano
+  Stack Exchange API was healthy.
+- Independent correctness and security reviews passed at `442ff23` after fixes
+  for live-discovery policy bypass, response-time backoff, GitHub trust-tier
+  poisoning, and overlapping organization/repository registry matches.
+- Managed-provider live RAG staging remains open because the environment lacks
+  `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`,
+  `VENNEK_MODEL_FAST`, `VENNEK_MODEL_QUALITY`, `VENNEK_MODEL_VERIFIER`, and
+  `VENNEK_EMBEDDING_MODEL`. The public factual canary remains disabled.

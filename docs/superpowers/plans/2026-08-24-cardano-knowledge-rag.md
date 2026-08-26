@@ -656,8 +656,11 @@ precision `100%`, zero policy violations), dependency audit (`0`
 vulnerabilities), and diff check. Independent release-document review passed.
 
 Credential-gated staging remains open. Live registry validation reported
-explicit upstream failures for Cardano Foundation (`429`) and Cardano Stack
-Exchange (`403`); the other `18` sources passed. Live RAG failed closed before
-retrieval because `DATABASE_URL`, LiteLLM/model settings, and `GITHUB_TOKEN`
-are not available in this environment. Do not open the public factual-answer
-canary until both live commands exit successfully.
+19 healthy sources and one explicit `degraded-with-fallback` family: the
+canonical Cardano Foundation site returned `429`, while its registered
+same-owner GitHub fallback passed. The official Cardano Stack Exchange API was
+healthy. Live RAG remains closed before retrieval because `DATABASE_URL`,
+`LITELLM_BASE_URL`, `LITELLM_API_KEY`, and the four Vennek model aliases are not
+available in this environment; `GITHUB_TOKEN` is no longer an evaluator gate.
+Do not open the public factual-answer canary until both live commands exit
+successfully.
