@@ -301,6 +301,18 @@ describe("private extractor verifier contract", () => {
     await expect(runWithCleanup(async () => "ok", async () => {
       throw new Error("teardown");
     })).rejects.toThrow("teardown");
+    const cleanupError = new Error("cleanup");
+    try {
+      await runWithCleanup(async () => {
+        throw primaryError;
+      }, async () => {
+        throw cleanupError;
+      });
+      throw new Error("expected dual failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toEqual([primaryError, cleanupError]);
+    }
   });
 
   it("uses deterministic temporary fixtures and validates the internal service", () => {
@@ -319,6 +331,25 @@ describe("private extractor verifier contract", () => {
     expect(verifier).toContain("cleanupError");
     expect(verifier).not.toContain(".catch(() => undefined)");
     expect(verifier).toContain("down");
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts?: Record<string, string> };
+    expect(packageJson.scripts?.["verify:private-extractor-compose"]).toContain("--smoke");
+  });
+});
+
+describe("poller deployment example scope", () => {
+  it("does not carry private worker extractor or provider settings", () => {
+    const deployEnv = readFileSync("deploy/vennek.env.example", "utf8");
+    for (const name of [
+      "PRIVATE_DOCUMENT_EXTRACTOR_URL",
+      "PRIVATE_DOCUMENT_EXTRACTOR_TOKEN",
+      "VENNEK_PRIVATE_MODEL_QUALITY",
+      "VENNEK_PRIVATE_MODEL_VERIFIER",
+      "PRIVATE_OPENAI_API_KEY",
+      "PRIVATE_OPENAI_QUALITY_MODEL",
+      "PRIVATE_OPENAI_VERIFIER_MODEL",
+    ]) {
+      expect(deployEnv).not.toContain(`${name}=`);
+    }
   });
 });
 

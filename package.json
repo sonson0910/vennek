@@ -29,7 +29,7 @@
     "validate:registry": "tsx scripts/validate-source-registry.ts",
     "validate:registry:live": "tsx scripts/validate-source-registry.ts --live",
     "verify:pdf-extractor-compose": "tsx scripts/verify-pdf-extractor-compose.ts",
-    "verify:private-extractor-compose": "tsx scripts/verify-private-extractor-compose.ts"
+    "verify:private-extractor-compose": "tsx scripts/verify-private-extractor-compose.ts --smoke"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

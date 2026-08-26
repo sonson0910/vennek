@@ -61,6 +61,9 @@ export async function runWithCleanup<T>(primary: () => Promise<T>, cleanup: () =
   } catch (error) {
     cleanupError = error;
   }
+  if (primaryError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError([primaryError, cleanupError], "private extractor verification failed");
+  }
   if (primaryError !== undefined) throw primaryError;
   if (cleanupError !== undefined) throw cleanupError;
   return result;
