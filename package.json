@@ -28,6 +28,8 @@
     "proof:fixture": "tsx scripts/create-proof-fixture.ts",
     "validate:registry": "tsx scripts/validate-source-registry.ts",
     "validate:registry:live": "tsx scripts/validate-source-registry.ts --live",
+    "eval:cardano-rag": "tsx scripts/evaluate-cardano-rag.ts --offline",
+    "eval:cardano-rag:live": "tsx scripts/evaluate-cardano-rag.ts --live",
     "verify:pdf-extractor-compose": "tsx scripts/verify-pdf-extractor-compose.ts",
     "verify:private-extractor-compose": "tsx scripts/verify-private-extractor-compose.ts --smoke",
     "verify:private-worker-smoke": "tsx scripts/verify-private-worker-smoke.ts"

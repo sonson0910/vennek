@@ -185,3 +185,23 @@ export type {
   PromoteDiscoveredLinkInput,
   PromotedDiscoveredLink,
 } from "./knowledge/liveDiscovery.js";
+
+export {
+  EVALUATION_CATEGORIES,
+  EVALUATION_THRESHOLDS,
+  calculateEvaluationMetrics,
+  parseEvaluationCorpus,
+  validateEvaluationCoverage,
+  validateEvaluationCorpus,
+  validateEvaluationThresholds,
+} from "./evaluation/metrics.js";
+export type {
+  EvaluationCase,
+  EvaluationCategory,
+  EvaluationCitation,
+  EvaluationClaim,
+  EvaluationLanguage,
+  EvaluationMetrics,
+  EvaluationRetrievalFixture,
+  EvaluationSourceTiers,
+} from "./evaluation/metrics.js";
