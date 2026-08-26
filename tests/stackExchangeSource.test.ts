@@ -87,6 +87,134 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     );
   });
 
+  it("uses only the fixed HTTPS API origin, GET, bounded paths, and the Cardano site", async () => {
+    const calls: RequestCall[] = [];
+    const request = responseRequest(calls, (path) => path.includes("/answers")
+      ? { items: [answer(22, 11)], has_more: false, quota_remaining: 8 }
+      : { items: [question(11)], has_more: false, quota_remaining: 9 });
+
+    await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.method).toBe("GET");
+      const url = new URL(call.url!);
+      expect(`${url.protocol}//${url.host}`).toBe("https://api.stackexchange.com");
+      expect(url.pathname).toMatch(/^\/2\.3\/questions(?:\/[0-9;]+\/answers)?$/);
+      expect(url.searchParams.get("site")).toBe("cardano");
+    }
+  });
+
+  it("ignores attacker post links and constructs citations from numeric IDs", async () => {
+    const calls: RequestCall[] = [];
+    const attackerQuestionLink = "https://attacker.example/questions/999";
+    const attackerAnswerLink = "https://attacker.example/a/888";
+    const answerItem = { ...answer(22, 11), link: attackerAnswerLink };
+    const request = responseRequest(calls, (path) => path.includes("/answers")
+      ? { items: [answerItem], has_more: false, quota_remaining: 8 }
+      : { items: [question(11, { link: attackerQuestionLink })], has_more: false, quota_remaining: 9 });
+
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+
+    expect(result.documents.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      "https://cardano.stackexchange.com/questions/11",
+      "https://cardano.stackexchange.com/a/22",
+    ]);
+    expect(calls.every(({ url }) => !url?.includes("attacker.example"))).toBe(true);
+  });
+
+  it("uses exact deleted-user attribution for missing or deleted owners", async () => {
+    const answerItem = answer(22, 11);
+    delete answerItem.owner;
+    const request = responseRequest([], (path) => path.includes("/answers")
+      ? { items: [answerItem], has_more: false, quota_remaining: 8 }
+      : { items: [question(11)], has_more: false, quota_remaining: 9 });
+
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+
+    expect(result.documents[0]?.text).toContain("Author: deleted user");
+    expect(result.documents[0]?.text).toContain("Author URL: unavailable");
+    expect(result.documents[1]?.text).toContain("Author: deleted user");
+    expect(result.documents[1]?.text).toContain("Author URL: unavailable");
+  });
+
+  it("fails closed for malformed consumed wrapper fields and licenses", async () => {
+    const malformedWrappers: Array<[string, unknown]> = [
+      ["non-boolean has_more", { items: [], has_more: 1, quota_remaining: 1 }],
+      ["negative quota_remaining", { items: [], has_more: false, quota_remaining: -1 }],
+      ["fractional quota_remaining", { items: [], has_more: false, quota_remaining: 1.5 }],
+      ["string quota_remaining", { items: [], has_more: false, quota_remaining: "1" }],
+      ["negative backoff", { items: [], has_more: false, quota_remaining: 1, backoff: -1 }],
+      ["fractional backoff", { items: [], has_more: false, quota_remaining: 1, backoff: 1.5 }],
+      ["string backoff", { items: [], has_more: false, quota_remaining: 1, backoff: "1" }],
+      ["null backoff", { items: [], has_more: false, quota_remaining: 1, backoff: null }],
+    ];
+    for (const [name, payload] of malformedWrappers) {
+      const request = rawResponseRequest([], () => ({ contentType: "application/json", body: JSON.stringify(payload) }));
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request }), name).rejects.toThrow(/invalid/i);
+    }
+
+    const missingLicense = question(11);
+    delete missingLicense.content_license;
+    for (const license of [undefined, "CC BY-SA 4.0\u0000"]) {
+      const item = license === undefined ? missingLicense : question(11, { content_license: license });
+      const request = responseRequest([], () => ({ items: [item], has_more: false, quota_remaining: 1 }));
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request }), `license ${String(license)}`).rejects.toThrow(/license/i);
+    }
+  });
+
+  it("aborts a request at the fixed eight-second boundary without waiting in real time", async () => {
+    vi.useFakeTimers();
+    const timeoutValues: number[] = [];
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      timeoutValues.push(milliseconds);
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("The operation timed out", "TimeoutError")), milliseconds);
+      return controller.signal;
+    });
+    try {
+      let destroyed = false;
+      const request = ((options, _callback) => {
+        const client = Object.assign(new EventEmitter(), {
+          end() {},
+          destroy() { destroyed = true; },
+        });
+        return client as never;
+      }) as PublicHttpsRequest;
+      const pending = fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
+      const observed = pending.then(() => undefined, (error: unknown) => error as Error);
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(destroyed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await observed;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/abort|timed out/i);
+      expect(destroyed).toBe(true);
+      expect(timeoutValues).toContain(8_000);
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("continues after an expired retry and clears retryAt only on successful commit", async () => {
+    const repository = fakeRepository({ retryAt: "2026-08-23T00:00:00.000Z" });
+    const request = responseRequest([], (path) => path.includes("/answers")
+      ? { items: [], has_more: false, quota_remaining: 7 }
+      : { items: [question(11)], has_more: false, quota_remaining: 8 });
+
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    await expect(result.commitState?.()).resolves.toBe(true);
+    expect(repository.compareAndSetStackExchangeFetchState).toHaveBeenCalledWith(
+      entry.id,
+      { retryAt: "2026-08-23T00:00:00.000Z" },
+      { checkedAt: now.toISOString(), quotaRemaining: 7 },
+      undefined,
+    );
+    expect(repository.compareAndSetStackExchangeFetchState.mock.calls[0]?.[2]).not.toHaveProperty("retryAt");
+  });
+
   it("returns a stored future retry without touching the API", async () => {
     const request = vi.fn() as unknown as PublicHttpsRequest;
     const repository = fakeRepository({ retryAt: "2026-08-24T00:05:00.000Z" });
@@ -177,6 +305,8 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       const options = rawOptions as { signal?: AbortSignal; deadlineAt?: number } | undefined;
       expect(options?.signal).toBeInstanceOf(AbortSignal);
       expect(options?.deadlineAt).toBeTypeOf("number");
+      expect(options!.deadlineAt!).toBeLessThanOrEqual(Date.now() + 120_000);
+      expect(options?.signal).not.toBe(controller.signal);
       await ensureStarted;
       return undefined;
     });
@@ -187,6 +317,34 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     releaseEnsure();
     await expect(pending).rejects.toThrow(/abort/i);
     expect(repository.getStackExchangeFetchState).not.toHaveBeenCalled();
+  });
+
+  it("bounds deadlines and propagates caller cancellation through both bootstrap reads", async () => {
+    let releaseState!: () => void;
+    const stateStarted = new Promise<void>((resolve) => { releaseState = resolve; });
+    const repository = fakeRepository();
+    let ensureOptions: unknown;
+    let stateOptions: unknown;
+    vi.mocked(repository.ensureSource).mockImplementation(async (_entry, options) => {
+      ensureOptions = options;
+    });
+    vi.mocked(repository.getStackExchangeFetchState).mockImplementation(async (_sourceId, options) => {
+      stateOptions = options;
+      await stateStarted;
+      return null;
+    });
+    const controller = new AbortController();
+    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, request: vi.fn() as unknown as PublicHttpsRequest });
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    for (const options of [ensureOptions, stateOptions]) {
+      const typed = options as { signal?: AbortSignal; deadlineAt?: number };
+      expect(typed.signal).toBeInstanceOf(AbortSignal);
+      expect(typed.signal).not.toBe(controller.signal);
+      expect(typed.deadlineAt).toBeLessThanOrEqual(Date.now() + 120_000);
+    }
+    controller.abort();
+    releaseState();
+    await expect(pending).rejects.toThrow(/abort/i);
   });
 
   it("cancels an in-flight API request when the caller aborts", async () => {
@@ -205,7 +363,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       }, 100);
       return client as never;
     }) as PublicHttpsRequest;
-    const pending = fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: controller.signal, now, request });
+    const pending = fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: controller.signal, now, lookup: publicLookup, request });
     setTimeout(() => controller.abort(), 5);
 
     await expect(pending).rejects.toThrow(/abort/i);
@@ -395,15 +553,16 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
 
 type ApiPayload = { items: unknown[]; has_more: boolean; quota_remaining: number };
 type RawResponse = { body: string | Uint8Array; contentType: string; statusCode?: number; contentLength?: string };
+type RequestCall = { path: string; headers: Record<string, string>; url?: string; method?: string };
 
 function responseRequest(
-  calls: Array<{ path: string; headers: Record<string, string> }>,
+  calls: Array<RequestCall>,
   payload: (path: string) => ApiPayload,
 ): PublicHttpsRequest {
   return ((options, callback) => {
     const headers = (options.headers ?? {}) as Record<string, string>;
     const path = `${options.path}`;
-    calls.push({ path, headers });
+    calls.push({ path, headers, url: `${options.protocol}//${options.hostname}${path}`, method: options.method });
     const body = Readable.from([Buffer.from(JSON.stringify(payload(path)))]);
     Object.assign(body, {
       statusCode: 200,
@@ -415,13 +574,13 @@ function responseRequest(
 }
 
 function rawResponseRequest(
-  calls: Array<{ path: string; headers: Record<string, string> }>,
+  calls: Array<RequestCall>,
   response: (path: string) => RawResponse,
 ): PublicHttpsRequest {
   return ((options, callback) => {
     const headers = (options.headers ?? {}) as Record<string, string>;
     const path = `${options.path}`;
-    calls.push({ path, headers });
+    calls.push({ path, headers, url: `${options.protocol}//${options.hostname}${path}`, method: options.method });
     const spec = response(path);
     const source = typeof spec.body === "string" ? Buffer.from(spec.body) : Buffer.from(spec.body);
     const body = Readable.from([source]);
