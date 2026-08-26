@@ -76,7 +76,9 @@ Omission means `scheduled`, preserving the behavior of every existing entry.
 The validator continues rejecting unknown fields and additionally enforces:
 
 - fallback IDs are non-empty, unique, registered, and not self-references;
-- fallback graphs contain no cycles;
+- only a `monitor-only` source may declare fallbacks, and every fallback is a
+  directly registered `scheduled` source, so fallback chains and cycles are
+  rejected by construction;
 - a fallback and its primary are both `official` and have the same normalized
   owner;
 - `monitor-only` entries may be probed but are never scheduled or manually
@@ -145,18 +147,21 @@ fetches bounded answer batches when present. Limits remain within the existing
 
 Each accepted question or answer becomes an independent immutable document.
 The adapter sanitizes returned HTML without executing it and validates IDs,
-timestamps, titles, bodies, and human-facing links. Citation URLs must match the
-fixed Cardano Stack Exchange question/answer URL shape. API URLs are retrieval
-provenance; human URLs are document provenance. No returned URL is recursively
-fetched.
+timestamps, titles, bodies, and optional profile links. It ignores returned post
+links and constructs citation URLs from validated numeric IDs using the fixed
+Cardano Stack Exchange question/answer URL shapes. API URLs are retrieval
+provenance; constructed human URLs are document provenance. No returned URL is
+recursively fetched.
 
 Stack Exchange contributions require attribution under CC BY-SA. The API
-question object exposes `owner`, `content_license`, and `link`; the official
+question object exposes `owner`, `content_license`, and `link`; answer responses
+do not consistently expose `link` under `filter=withbody`. The official
 license page confirms that public contributions use versioned CC BY-SA terms:
 <https://api.stackexchange.com/docs/types/question> and
 <https://stackoverflow.com/help/licensing>. Each stored document therefore
 retains the bounded author display name, validated author/profile link when
-present, exact `content_license`, and post URL. The rendered citation identifies
+present, exact `content_license`, and post URL constructed from the validated
+post ID. The rendered citation identifies
 the post author and license; a deleted or absent owner is labelled explicitly
 rather than invented. Attribution metadata is content provenance and must not
 be sent to logs as an error payload.
@@ -212,8 +217,8 @@ is an operator prerequisite, not a repository default.
 Use red-green TDD for each behavioral change.
 
 Registry tests cover optional-field validation, same-owner official fallbacks,
-missing IDs, duplicates, self-reference, cycles, community fallback rejection,
-and the Cardano Foundation configuration.
+missing IDs, duplicates, self-reference, fallback-chain rejection, community
+fallback rejection, and the Cardano Foundation configuration.
 
 Worker tests prove monitor-only sources are neither scheduled nor manually
 enqueued, stale queued monitor-only jobs fail before fetch, and scheduled
@@ -221,7 +226,8 @@ fallback sources retain their own singleton jobs.
 
 Stack Exchange tests use bounded fake responses to cover question and answer
 mapping, canonical citation links, HTML sanitization, pagination bounds,
-oversized/malformed JSON, invalid IDs and links, API error responses, quota,
+oversized/malformed JSON, invalid IDs and profile links, ignored returned post
+links, API error responses, quota,
 `backoff`, cancellation, unchanged-version behavior, and retained author/license
 attribution. SSRF tests prove no API response can redirect fetching to a
 returned link or another site.
