@@ -854,7 +854,7 @@ git commit -m "docs: close Cardano source resilience milestone"
 
 - Final implementation range: `8d6f390..442ff23`.
 - Full Vitest gate: 53 files passed, 9 credential-gated files skipped;
-  760 tests passed and 67 skipped. Typecheck, build, compiled package imports,
+  761 tests passed and 67 skipped. Typecheck, build, compiled package imports,
   registry validation, dependency audit, and diff check passed.
 - Registry coverage remained 18/18 required official sources and 20 entries.
   The 60-case offline RAG corpus passed with recall@10 and citation precision
