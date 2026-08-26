@@ -83,6 +83,31 @@ function request(port: number, options: { token?: string; path?: string; method?
 }
 
 describe("private document server", () => {
+  it("reports empty readiness while available or busy", async () => {
+    await withServer(() => new FakeWorker(), async (port) => {
+      const ready = await request(port, { path: "/health", method: "GET" });
+      expect(ready.status).toBe(200);
+      expect(ready.body).toBe("");
+      expect((await request(port, { path: "/health", method: "GET", token: "" })).status).toBe(200);
+    });
+
+    class HangingWorker extends EventEmitter implements PrivateDocumentWorkerLike {
+      postMessage(): void {}
+      terminate(): Promise<number> {
+        this.emit("exit", 0);
+        return Promise.resolve(0);
+      }
+    }
+    await withServer(() => new HangingWorker(), async (port) => {
+      const extraction = request(port);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const busy = await request(port, { path: "/health", method: "GET" });
+      expect(busy.status).toBe(200);
+      expect(busy.body).toBe("");
+      expect((await extraction).status).toBe(504);
+    }, 25);
+  });
+
   it("authenticates, decodes bounded metadata, transfers bytes, and validates output", async () => {
     let worker!: FakeWorker;
     const fill = vi.spyOn(Buffer.prototype, "fill");
@@ -249,6 +274,9 @@ describe("private document server", () => {
     if (!address || typeof address === "string") throw new Error("server did not bind");
     try {
       expect((await request(address.port)).status).toBe(504);
+      const poisoned = await request(address.port, { path: "/health", method: "GET" });
+      expect(poisoned.status).toBe(503);
+      expect(poisoned.body).toBe("");
       expect((await request(address.port)).status).toBe(503);
     } finally {
       await service.close();

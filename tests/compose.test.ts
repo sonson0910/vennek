@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { runWithCleanup } from "../scripts/verify-private-extractor-compose.js";
 
 const composeEnvNames = new Set(
   readFileSync(".env.example", "utf8")
@@ -205,6 +206,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     expect(privateExtractor?.init).toBe(true);
     expect(privateExtractor?.tmpfs?.[0]).toContain("/tmp:size=16m");
     expect(privateExtractor?.healthcheck?.test?.join(" ")).toContain("127.0.0.1:8083");
+    expect(privateExtractor?.healthcheck?.test?.join(" ")).toContain("r.status === 200");
     expect(config.networks["private-document-sandbox"]?.internal).toBe(true);
     expect(config.services["agent-worker"]?.networks).toEqual({
       default: null,
@@ -287,6 +289,20 @@ describe("LiteLLM private route contract", () => {
 });
 
 describe("private extractor verifier contract", () => {
+  it("always cleans up and surfaces teardown failures", async () => {
+    let cleaned = false;
+    const primaryError = new Error("primary");
+    await expect(runWithCleanup(async () => {
+      throw primaryError;
+    }, async () => {
+      cleaned = true;
+    })).rejects.toBe(primaryError);
+    expect(cleaned).toBe(true);
+    await expect(runWithCleanup(async () => "ok", async () => {
+      throw new Error("teardown");
+    })).rejects.toThrow("teardown");
+  });
+
   it("uses deterministic temporary fixtures and validates the internal service", () => {
     const verifier = readFileSync("scripts/verify-private-extractor-compose.ts", "utf8");
     expect(verifier).toContain("mkdtemp");
@@ -297,6 +313,11 @@ describe("private extractor verifier contract", () => {
     expect(verifier).toContain("PDF");
     expect(verifier).toContain("unsafe");
     expect(verifier).toContain("spoof");
+    expect(verifier).toContain("JavaScript");
+    expect(verifier).toContain("OpenAction");
+    expect(verifier).toContain("primaryError");
+    expect(verifier).toContain("cleanupError");
+    expect(verifier).not.toContain(".catch(() => undefined)");
     expect(verifier).toContain("down");
   });
 });

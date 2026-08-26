@@ -86,6 +86,10 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
   server.maxHeadersCount = MAX_HEADERS_COUNT;
 
   async function handleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    if (request.method === "GET" && request.url === "/health") {
+      sendHealth(response, state.state === "poisoned" ? 503 : 200);
+      return;
+    }
     if (request.method !== "POST" || request.url !== PRIVATE_DOCUMENT_PATH) {
       sendError(response, 404, "Private document request rejected");
       return;
@@ -414,6 +418,15 @@ function abortReason(signal: AbortSignal): PrivateDocumentServiceError {
 
 function sendError(response: http.ServerResponse, statusCode: number, message: string): void {
   sendJson(response, statusCode, Buffer.from(JSON.stringify({ error: message })));
+}
+
+function sendHealth(response: http.ServerResponse, statusCode: 200 | 503): void {
+  response.writeHead(statusCode, {
+    "content-length": 0,
+    connection: "close",
+    "cache-control": "no-store",
+  });
+  response.end();
 }
 
 function sendJson(response: http.ServerResponse, statusCode: number, body: Buffer): void {

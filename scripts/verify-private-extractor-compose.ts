@@ -47,6 +47,25 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+export async function runWithCleanup<T>(primary: () => Promise<T>, cleanup: () => Promise<void>): Promise<T> {
+  let primaryError: unknown;
+  let result!: T;
+  try {
+    result = await primary();
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupError: unknown;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError !== undefined) throw primaryError;
+  if (cleanupError !== undefined) throw cleanupError;
+  return result;
+}
+
 async function docker(args: string[], label: string): Promise<string> {
   try {
     const result = await exec("docker", args, {
@@ -113,6 +132,7 @@ async function assertRenderedContracts(config: RenderedCompose): Promise<{ image
   assert(privateExtractor && worker && knowledgeWorker && pdfExtractor && litellm, "private Compose services are incomplete");
   assert(privateExtractor.command?.join(" ") === "node packages/cardano-agent/dist/privateComparison/privateDocumentServer.js", "unexpected private extractor command");
   assert(privateExtractor.healthcheck?.test?.join(" ").includes("127.0.0.1:8083"), "private extractor healthcheck is missing");
+  assert(privateExtractor.healthcheck?.test?.join(" ").includes("r.status === 200"), "private extractor healthcheck must require readiness");
   assertSandbox(privateExtractor, "private-document-sandbox", "8083");
   assert(config.networks["private-document-sandbox"]?.internal === true, "private-document-sandbox must be internal");
   assert(worker.networks?.default === null && worker.networks?.["private-document-sandbox"] === null && Object.keys(worker.networks).length === 2, "agent-worker private network boundary changed");
@@ -131,15 +151,16 @@ async function assertRenderedContracts(config: RenderedCompose): Promise<{ image
 
 const generatedSafeDocxBase64 = "UEsDBBQAAAAIAAAAAAD3S4B1wgAAAHYBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QuQ7CMAyGX6XKiqgRAwOiLMAKDLyAlbptRC7FLsfbk3INCBjt//gsLw7XSFxcnPVcqU4kzgFYd+SQyxDJZ6UJyaHkMbUQUR+xJZhOJjPQwQt5GcvQoZaLNTXYWyk2l7xmE3ylEllWxephHFiVwhit0ShZh5OvPyjjJ6HMybuHOxN5lA0KvhIG5TfgmdudKCVTU7HHJFt02QXnkGqog+5dTpb/a77cGZrGaHrnh7aYgiZm41tny7fi0PjX/XB/9/IGUEsDBBQAAAAIAAAAAAA3H46cgQAAAOgAAAALAAAAX3JlbHMvLnJlbHONzzEOwjAMBdCrRDlAXTEwoDQTJ0C9gJW6SUQTR4kRcHsyMBTEwOj/v55kc6ENJXJuIZamHmnLbdJBpJwAmguUsA1cKPdm5ZpQ+lk9FHRX9ASHcTxC3Rvamr2p5mehf0Re1+jozO6WKMsP+Guh1YzVk0z6znWB5R0PndVgDXw8Zl9QSwMEFAAAAAgAAAAAAHysnDuAAAAArAAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEXOMQ7CMAwF0KtEPQCuGBiikIWThMa0EXUcOYaU29OUgeV9WV/6sms28vQizGo2WnO17TosqsUC1GlBCvXEBfPePVgo6H7KDI0lFuEJa015phXO43gBCikP3jV75/jpWTrSUX8LEkNmUyS9g6KpxE80ips66H1XDsvhbwP+//kvUEsBAhQAFAAAAAgAAAAAAPdLgHXCAAAAdgEAABMAAAAAAAAAAAAAAAAAAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACAAAAAAANx+OnIEAAADoAAAACwAAAAAAAAAAAAAAAADzAAAAX3JlbHMvLnJlbHNQSwECFAAUAAAACAAAAAAAfKycO4AAAACsAAAAEQAAAAAAAAAAAAAAAACdAQAAd29yZC9kb2N1bWVudC54bWxQSwUGAAAAAAMAAwC5AAAATAIAAAAA";
 
-function makeSafePdf(): Buffer {
+function makeSafePdf(active = false): Buffer {
   const content = "BT /F1 18 Tf 72 720 Td (Cardano private PDF smoke) Tj ET";
   const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
+    active ? "<< /Type /Catalog /Pages 2 0 R /OpenAction 6 0 R >>" : "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
   ];
+  if (active) objects.push("<< /S /JavaScript /JS (app.alert) >>");
   let source = "%PDF-1.4\n";
   const offsets = [0];
   for (let index = 0; index < objects.length; index += 1) {
@@ -155,10 +176,10 @@ function makeSafePdf(): Buffer {
 
 async function smoke(image: string, token: string): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "vennek-private-extractor-"));
-  try {
+  await runWithCleanup(async () => {
     const text = Buffer.from("Cardano private Compose smoke text\n");
     const docx = Buffer.from(generatedSafeDocxBase64, "base64");
-    const unsafePdf = Buffer.from("%PDF-1.4\n1 0 obj\n<< /S /JavaScript >>\nendobj\n", "ascii");
+    const unsafePdf = makeSafePdf(true);
     await Promise.all([
       writeFile(join(fixtureDir, "safe.txt"), text),
       writeFile(join(fixtureDir, "safe.docx"), docx),
@@ -205,10 +226,20 @@ async function smoke(image: string, token: string): Promise<void> {
       })().catch((error) => { console.error(error.message || error); process.exit(1); });
     `;
     await docker(["run", "--rm", "--network", network, "-e", `TOKEN=${token}`, "-e", `TEXT=${values.text}`, "-e", `DOCX=${values.docx}`, "-e", `PDF=${values.pdf}`, "-e", `UNSAFE=${values.unsafe}`, "-e", `SPOOFED=${values.spoofed}`, image, "node", "-e", probe], "private extractor smoke");
-  } finally {
-    await docker(compose("down", "--volumes", "--remove-orphans"), "private extractor cleanup").catch(() => undefined);
-    await rm(fixtureDir, { recursive: true, force: true });
-  }
+  }, async () => {
+    let cleanupError: unknown;
+    try {
+      await docker(compose("down", "--volumes", "--remove-orphans"), "private extractor cleanup");
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      await rm(fixtureDir, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError !== undefined) throw cleanupError;
+  });
 }
 
 async function main(): Promise<void> {
@@ -219,7 +250,9 @@ async function main(): Promise<void> {
   console.log(process.argv.includes("--smoke") ? "Private extractor Compose verification passed" : "Private extractor Compose contract passed");
 }
 
-void main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Private extractor Compose verification failed");
-  process.exitCode = 1;
-});
+if (process.argv[1]?.replaceAll("\\", "/").endsWith("/verify-private-extractor-compose.ts") || process.argv[1]?.replaceAll("\\", "/").endsWith("/verify-private-extractor-compose.js")) {
+  void main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "Private extractor Compose verification failed");
+    process.exitCode = 1;
+  });
+}
