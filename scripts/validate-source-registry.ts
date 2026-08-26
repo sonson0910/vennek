@@ -115,6 +115,9 @@ export async function checkLive(
     : head.response && !isSuccessful(head.response.statusCode)
       ? `HEAD returned HTTP ${head.response.statusCode}`
       : "HEAD returned an unsupported content type";
+  if (signal.aborted) {
+    return headReason;
+  }
   const get = await requestLive(entry, "GET", signal, requestImpl, { Range: "bytes=0-0" });
   const getOk = isAcceptedResponse(get.response);
   get.response?.cancel();
@@ -133,8 +136,12 @@ export async function runLiveValidation(
   entries: SourceRegistryEntry[],
   input: { signal?: AbortSignal; sourceTimeoutMs?: number; overallTimeoutMs?: number; request?: LiveRequest } = {}
 ): Promise<LiveCheckResult[]> {
-  const overallTimeout = AbortSignal.timeout(input.overallTimeoutMs ?? LIVE_OVERALL_TIMEOUT_MS);
-  const overallSignal = input.signal ? AbortSignal.any([input.signal, overallTimeout]) : overallTimeout;
+  const overallController = new AbortController();
+  const overallTimeout = setTimeout(
+    () => overallController.abort(new DOMException("Overall deadline exceeded", "TimeoutError")),
+    input.overallTimeoutMs ?? LIVE_OVERALL_TIMEOUT_MS
+  );
+  const overallSignal = input.signal ? AbortSignal.any([input.signal, overallController.signal]) : overallController.signal;
   const rawResults: Array<{ id: string; reason?: string }> = new Array(entries.length);
   let nextIndex = 0;
 
@@ -167,9 +174,13 @@ export async function runLiveValidation(
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(LIVE_WORKERS, entries.length) }, () => worker()));
-  const rawById = new Map(rawResults.map((result) => [result.id, result] as const));
-  return entries.map((entry) => resolveLiveResult(entry, rawById));
+  try {
+    await Promise.all(Array.from({ length: Math.min(LIVE_WORKERS, entries.length) }, () => worker()));
+    const rawById = new Map(rawResults.map((result) => [result.id, result] as const));
+    return entries.map((entry) => resolveLiveResult(entry, rawById));
+  } finally {
+    clearTimeout(overallTimeout);
+  }
 }
 
 export function liveValidationSucceeded(results: LiveCheckResult[]): boolean {
@@ -213,6 +224,7 @@ async function checkStackExchangeLive(entry: SourceRegistryEntry, signal: AbortS
       url: url.toString(),
       allowedDomains: ["api.stackexchange.com"],
       method: "GET",
+      headers: { "user-agent": "vennek-source-registry/1.0" },
       signal
     });
     const accepted = isAcceptedResponse(response);
@@ -235,7 +247,7 @@ function resolveLiveResult(
   if (!raw.reason) {
     return { id: entry.id, status: "healthy", blocking };
   }
-  const fallbackId = entry.liveFallbackIds?.find((id) => !rawById.get(id)?.reason);
+  const fallbackId = entry.liveFallbackIds?.find((id) => rawById.get(id)?.reason === undefined && rawById.has(id));
   return fallbackId
     ? { id: entry.id, status: "degraded-with-fallback", blocking, fallbackId, reason: raw.reason }
     : { id: entry.id, status: "failed", blocking, reason: raw.reason };

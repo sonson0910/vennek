@@ -250,10 +250,9 @@ describe("Cardano source registry", () => {
   });
 
   it("uses one source deadline across HEAD and GET fallback", async () => {
-    const calls: string[] = [];
-    const request = async (input: { method?: string; signal: AbortSignal }) => {
-      calls.push(input.method ?? "GET");
-      expect(input.signal).toBeInstanceOf(AbortSignal);
+    const calls: Array<{ method?: string; headers?: Record<string, string>; signal: AbortSignal }> = [];
+    const request = async (input: { method?: string; headers?: Record<string, string>; signal: AbortSignal }) => {
+      calls.push(input);
       return {
         url: official.url,
         statusCode: input.method === "HEAD" ? 405 : 200,
@@ -265,9 +264,30 @@ describe("Cardano source registry", () => {
     const signal = new AbortController().signal;
     const before = JSON.stringify(official);
     await expect(checkLive(official, signal, request)).resolves.toBeUndefined();
-    expect(calls).toEqual(["HEAD", "GET"]);
+    expect(calls.map((call) => call.method)).toEqual(["HEAD", "GET"]);
+    expect(calls[1]?.headers).toEqual({ Range: "bytes=0-0" });
+    expect(calls[0]?.signal).toBe(calls[1]?.signal);
     expect(JSON.stringify(official)).toBe(before);
+  });
 
+  it("fails a hanging ordinary range GET at its source deadline", async () => {
+    const results = await runLiveValidation([official], {
+      sourceTimeoutMs: 20,
+      overallTimeoutMs: 1_000,
+      request: async (input) => input.method === "HEAD"
+        ? response(input.url, 405)
+        : await new Promise<never>((_resolve, reject) => input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true }))
+    });
+    expect(results[0]).toEqual(expect.objectContaining({ status: "failed", reason: expect.stringMatching(/timeout/) }));
+  });
+
+  it("fails a hanging probe at the overall deadline", async () => {
+    const results = await runLiveValidation([official], {
+      sourceTimeoutMs: 1_000,
+      overallTimeoutMs: 20,
+      request: async (input) => await new Promise<never>((_resolve, reject) => input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true }))
+    });
+    expect(results[0]).toEqual(expect.objectContaining({ status: "failed", reason: expect.stringMatching(/timeout/) }));
   });
 
   it("resolves a rate-limited Cardano Foundation primary through its healthy declared fallback", async () => {
@@ -313,15 +333,16 @@ describe("Cardano source registry", () => {
   });
 
   it("probes Stack Exchange once with its fixed hardened API query", async () => {
-    const calls: Array<{ url: string; method?: string; allowedDomains: string[] }> = [];
+    const calls: Array<{ url: string; method?: string; allowedDomains: string[]; headers?: Record<string, string> }> = [];
     await expect(checkLive({ ...cardanoStackExchange, url: "https://evil.example/query?site=evil" }, undefined, async (input) => {
-      calls.push({ url: input.url, method: input.method, allowedDomains: input.allowedDomains });
+      calls.push({ url: input.url, method: input.method, allowedDomains: input.allowedDomains, headers: input.headers });
       return response(input.url, 200, "application/json; charset=utf-8");
     })).resolves.toBeUndefined();
     expect(calls).toEqual([{
       url: "https://api.stackexchange.com/2.3/questions?filter=default&pagesize=1&site=cardano",
       method: "GET",
-      allowedDomains: ["api.stackexchange.com"]
+      allowedDomains: ["api.stackexchange.com"],
+      headers: { "user-agent": "vennek-source-registry/1.0" }
     }]);
   });
 
@@ -335,6 +356,14 @@ describe("Cardano source registry", () => {
       request: async (input) => response(input.url, input.url.endsWith("/second") ? 200 : 503)
     });
     expect(results.find((result) => result.id === "family-primary")).toMatchObject({ status: "degraded-with-fallback", fallbackId: "second-fallback" });
+  });
+
+  it("does not treat an omitted fallback probe as healthy", async () => {
+    const primary = { ...cardanoFoundation, liveFallbackIds: ["omitted-fallback"] };
+    const results = await runLiveValidation([primary], { request: async (input) => response(input.url, 503) });
+    expect(results[0]).toEqual(expect.objectContaining({ id: primary.id, status: "failed", blocking: true }));
+    expect(results[0]?.fallbackId).toBeUndefined();
+    expect(liveValidationSucceeded(results)).toBe(false);
   });
 
   it("fails empty results and never exposes response bodies or URLs in safe state", async () => {
