@@ -119,7 +119,7 @@ export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Prom
     if (!title || content === undefined) continue;
     seen.add(url);
     const matches = entries.filter((entry) =>
-      entry.trustTier === trustTier && supportsDirectPromotion(entry) && urlMatchesSourceScope(url, entry));
+      entry.trustTier === trustTier && supportsDirectPromotionUrl(url, entry));
     links.push({
       url,
       title,
@@ -199,7 +199,7 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
   if (matches.length !== 1) return unverified;
 
   const entry = matches[0]!;
-  if (!supportsDirectPromotion(entry)) return unverified;
+  if (!supportsDirectPromotionUrl(url, entry)) return unverified;
   const deadline = createPromotionDeadline(input.signal, input.deadlineAt);
   const signal = deadline.signal;
   const now = input.now ?? new Date();
@@ -260,6 +260,23 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
 
 function supportsDirectPromotion(entry: SourceRegistryEntry): boolean {
   return sourceIsScheduled(entry) && entry.kind !== "stackexchange";
+}
+
+function supportsDirectPromotionUrl(url: string, entry: SourceRegistryEntry): boolean {
+  if (!supportsDirectPromotion(entry) || !urlMatchesSourceScope(url, entry)) return false;
+  if (entry.kind !== "github") return true;
+
+  const parsed = new URL(url);
+  if (parsed.hostname.toLowerCase() !== "github.com") return false;
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments[0] !== entry.github.owner) return false;
+  if (entry.github.repository === undefined) return segments.length === 1;
+  if (segments[1] !== entry.github.repository) return false;
+
+  const tail = segments.slice(2);
+  return tail.length === 0 ||
+    (tail.length === 1 && (tail[0] === "releases" || tail[0] === "tags")) ||
+    (tail.length === 3 && tail[0] === "releases" && tail[1] === "tag" && /^[A-Za-z0-9._-]+$/.test(tail[2]!));
 }
 
 type PromotionDeadline = { signal: AbortSignal; deadlineAt: number };

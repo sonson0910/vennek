@@ -61,6 +61,14 @@ const githubEntry: SourceRegistryEntry = {
   github: { owner: "IntersectMBO", repository: "cardano-node" },
 };
 
+const githubOrganizationEntry: SourceRegistryEntry = {
+  ...githubEntry,
+  id: "iog-github-organization",
+  owner: "Input Output Global",
+  url: "https://github.com/input-output-hk",
+  github: { owner: "input-output-hk" },
+};
+
 function result(url: string, title = "Result"): { title: string; content: string; url: string } {
   return { title, content: "Cardano documentation", url };
 }
@@ -283,6 +291,58 @@ describe("SearXNG live discovery", () => {
       expect.objectContaining({ matchedSourceId: "iog-github" }),
     ]);
     expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("keeps contributor-controlled GitHub pages out of official promotion", async () => {
+    const unsafeUrls = [
+      "https://github.com/IntersectMBO/cardano-node/issues/123",
+      "https://github.com/IntersectMBO/cardano-node/pull/456",
+      "https://github.com/IntersectMBO/cardano-node/discussions/789",
+      "https://api.github.com/repos/IntersectMBO/cardano-node/issues/123",
+      "https://raw.githubusercontent.com/IntersectMBO/cardano-node/main/README.md",
+    ];
+    const search = vi.fn(async () => unsafeUrls.map((url) => result(url)));
+    const links = await discoverLiveSources({
+      query: "Cardano node issue",
+      registry: [githubEntry],
+      search: { search },
+    });
+    expect(links).toHaveLength(unsafeUrls.length);
+    expect(links.every((link) => link.matchedSourceId === undefined)).toBe(true);
+
+    const organizationIssue = "https://github.com/input-output-hk/cardano-node/issues/999";
+    await expect(discoverLiveSources({
+      query: "Cardano organization issue",
+      registry: [githubOrganizationEntry],
+      search: { search: vi.fn(async () => [result(organizationIssue)]) },
+    })).resolves.toEqual([
+      expect.not.objectContaining({ matchedSourceId: expect.any(String) }),
+    ]);
+
+    const request = vi.fn<PublicHttpsRequest>();
+    const repository = fakeRepository();
+    const embed = vi.fn(async () => [{ index: 0, embedding: Array.from({ length: 1_536 }, () => 0) }]);
+    for (const url of unsafeUrls) {
+      await expect(promoteDiscoveredLink({
+        link: { url, title: "Result", content: "text", trustTier: "unverified" },
+        registry: [githubEntry],
+        repository,
+        embedder: { embed },
+        embeddingModel: "cardano-embedding",
+        request,
+      })).resolves.toEqual({ url, title: "Result", content: "text", trustTier: "unverified" });
+    }
+    await expect(promoteDiscoveredLink({
+      link: { url: organizationIssue, title: "Result", content: "text", trustTier: "unverified" },
+      registry: [githubOrganizationEntry],
+      repository,
+      embedder: { embed },
+      embeddingModel: "cardano-embedding",
+      request,
+    })).resolves.toEqual({ url: organizationIssue, title: "Result", content: "text", trustTier: "unverified" });
+    expect(request).not.toHaveBeenCalled();
+    expect(repository.ensureSource).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
   });
 
   it("rejects wallet recovery phrases before calling live search", async () => {
