@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import {
   PRIVATE_DOCUMENT_MAX_BYTES,
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
+  PrivateDocumentExtractionError,
   validatePrivateExtractionResult,
   type PrivateDocumentType,
   type PrivateExtractionResult,
@@ -53,23 +54,23 @@ export async function extractPrivateDocument(
   metadata: PrivateDocumentMetadata,
 ): Promise<PrivateExtractionResult> {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > PRIVATE_DOCUMENT_MAX_BYTES) {
-    throw new Error("Private document input must be between 1 byte and 20 MiB");
+    throw new PrivateDocumentExtractionError("unsupported", "Private document input must be between 1 byte and 20 MiB");
   }
   const advisoryType = advisoryDocumentType(metadata);
   const buffer = Buffer.from(bytes);
   const detected = await fileTypeFromBuffer(buffer);
 
   if (detected?.ext === "pdf") {
-    if (advisoryType !== "pdf") throw new Error("Document type mismatch");
+    if (advisoryType !== "pdf") throw new PrivateDocumentExtractionError("spoofed", "Document type mismatch");
     return extractPdf(buffer, metadata);
   }
   if (detected?.ext === "zip" || detected?.ext === "docx") {
-    if (advisoryType !== "docx") throw new Error("Document type mismatch");
+    if (advisoryType !== "docx") throw new PrivateDocumentExtractionError("spoofed", "Document type mismatch");
     return extractDocx(buffer, metadata);
   }
-  if (detected !== undefined) throw new Error("Document type mismatch");
+  if (detected !== undefined) throw new PrivateDocumentExtractionError("unsupported", "Document type mismatch");
   if (advisoryType !== "text" && advisoryType !== "markdown") {
-    throw new Error("Document type mismatch");
+    throw new PrivateDocumentExtractionError("unsupported", "Document type mismatch");
   }
   return extractText(buffer, advisoryType, metadata);
 }
@@ -89,7 +90,7 @@ function advisoryDocumentType(metadata: PrivateDocumentMetadata): PrivateDocumen
       return type;
     }
   }
-  throw new Error("Document type mismatch");
+  throw new PrivateDocumentExtractionError("unsupported", "Document type mismatch");
 }
 
 function extractText(buffer: Buffer, type: "text" | "markdown", metadata: PrivateDocumentMetadata): PrivateExtractionResult {
@@ -97,10 +98,10 @@ function extractText(buffer: Buffer, type: "text" | "markdown", metadata: Privat
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
   } catch {
-    throw new Error("Text unavailable");
+    throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
   }
   text = normalizeText(text);
-  if (isRawHtml(text) || hasDisallowedTextControl(text)) throw new Error("Document type mismatch");
+  if (isRawHtml(text) || hasDisallowedTextControl(text)) throw new PrivateDocumentExtractionError("unsafe", "Document type mismatch");
   return finalize(type, titleFromMetadata(metadata, type === "markdown" ? "Markdown document" : "Text document"), text);
 }
 
@@ -113,10 +114,10 @@ async function extractDocx(buffer: Buffer, metadata: PrivateDocumentMetadata): P
     const mammoth = await import("mammoth");
     result = await mammoth.extractRawText({ buffer });
   } catch {
-    throw new Error("Text unavailable");
+    throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
   }
   const text = typeof result.value === "string" ? normalizeText(result.value) : "";
-  if (!text) throw new Error("Text unavailable");
+  if (!text) throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
   return finalize("docx", titleFromMetadata(metadata, "DOCX document"), text);
 }
 
@@ -382,7 +383,7 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
   let document: Awaited<typeof loadingTask.promise> | undefined;
   try {
     document = await loadingTask.promise;
-    if (document.numPages < 1 || document.numPages > PDF_MAX_PAGES) throw new Error("PDF page limit exceeded");
+    if (document.numPages < 1 || document.numPages > PDF_MAX_PAGES) throw new PrivateDocumentExtractionError("unsupported", "PDF page limit exceeded");
     const [openAction, attachments, documentActions] = await Promise.all([
       document.getOpenAction(),
       document.getAttachments(),
@@ -447,8 +448,9 @@ async function extractPdf(buffer: Buffer, metadata: PrivateDocumentMetadata): Pr
     const pdfTitle = typeof info?.Title === "string" ? info.Title.trim() : "";
     return finalize("pdf", pdfTitle || titleFromMetadata(metadata, "PDF document"), parts.join(""));
   } catch (error) {
+    if (error instanceof PrivateDocumentExtractionError) throw error;
     if (error instanceof Error && (/Unsafe document|page limit|Text unavailable/u.test(error.message))) throw error;
-    throw new Error("Text unavailable");
+    throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
   } finally {
     if (document) await document.cleanup();
     await loadingTask.destroy();
@@ -759,9 +761,9 @@ function finalize(type: PrivateDocumentType, title: string, text: string): Priva
       try {
         return validatePrivateExtractionResult({ type, title: fallback, text: normalizedText });
       } catch {
-        throw new Error("Text unavailable");
+        throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
       }
     }
-    throw new Error("Text unavailable");
+    throw new PrivateDocumentExtractionError("text-unavailable", "Text unavailable");
   }
 }

@@ -76,7 +76,7 @@ export type PrivateComparisonRuntimeDependencies = Readonly<{
   complete: PrivateComparisonCompletion;
   compare?: typeof comparePrivateDocument;
   recordUsage?: (telegramUserId: string, usage: PrivateComparisonUsage) => Promise<void> | void;
-  send(chatId: string, text: string): Promise<{ delivered: boolean; attempts: number; aborted?: boolean; status?: number } | void>;
+  send(chatId: string, text: string, signal?: AbortSignal): Promise<{ delivered: boolean; attempts: number; aborted?: boolean; status?: number } | void>;
   signal?: AbortSignal;
   markStatus?: (updateId: number, status: "processed" | "failed") => Promise<void>;
   log?: (category: PrivateComparisonFailureCategory) => void;
@@ -207,7 +207,9 @@ export async function processPrivateComparisonJob(
 
     phase = "delivery";
     throwIfAborted(signal);
-    const delivery = await stopOnAbort(Promise.resolve().then(() => dependencies.send(owner.telegramChatId, finalAnswer)), signal);
+    const delivery = await stopOnAbort(Promise.resolve().then(() => signal === undefined
+      ? dependencies.send(owner.telegramChatId, finalAnswer)
+      : dependencies.send(owner.telegramChatId, finalAnswer, signal)), signal);
     const outcome = normalizeDelivery(delivery);
     if (outcome.aborted || signal?.aborted) return abortedOutcome(outcome.attempts, outcome.status);
     await markPrivateStatus(dependencies, owner.updateId, outcome.delivered ? "processed" : "failed");
@@ -324,7 +326,9 @@ async function deliverTerminalFailure(
 ): Promise<PrivateComparisonJobOutcome | undefined> {
   if (signal?.aborted) return abortedOutcome(0);
   const delivery = normalizeDelivery(await stopOnAbort(
-    Promise.resolve().then(() => dependencies.send(chatId, terminalFailureMessage(language, category))),
+    Promise.resolve().then(() => signal === undefined
+      ? dependencies.send(chatId, terminalFailureMessage(language, category))
+      : dependencies.send(chatId, terminalFailureMessage(language, category), signal)),
     signal,
   ));
   if (delivery.aborted || signal?.aborted) return abortedOutcome(delivery.attempts, delivery.status);

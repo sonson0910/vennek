@@ -5,6 +5,7 @@ import {
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
   PRIVATE_DOCUMENT_PATH,
   PRIVATE_DOCUMENT_TIMEOUT_MS,
+  isPrivateDocumentFailureCategory,
   validatePrivateDocumentToken,
   validatePrivateExtractionResult,
 } from "@vennek/cardano-agent";
@@ -16,6 +17,15 @@ describe("private document protocol", () => {
     expect(PRIVATE_DOCUMENT_MAX_TEXT_BYTES).toBe(8_000_000);
     expect(PRIVATE_DOCUMENT_PATH).toBe("/v1/extract/private-document");
     expect(PRIVATE_DOCUMENT_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("accepts only bounded parser failure categories", () => {
+    for (const value of ["unsafe", "spoofed", "unsupported", "text-unavailable"] as const) {
+      expect(isPrivateDocumentFailureCategory(value)).toBe(true);
+    }
+    for (const value of ["Private document failed", "secret", "", null, 1]) {
+      expect(isPrivateDocumentFailureCategory(value)).toBe(false);
+    }
   });
 
   it("accepts the exact Unicode output boundary and returns a frozen exact result", () => {

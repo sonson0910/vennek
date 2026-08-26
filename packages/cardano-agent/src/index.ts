@@ -19,11 +19,13 @@ export {
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
   PRIVATE_DOCUMENT_PATH,
   PRIVATE_DOCUMENT_TIMEOUT_MS,
+  isPrivateDocumentFailureCategory,
   validatePrivateDocumentToken,
   validatePrivateExtractionResult,
 } from "./privateComparison/privateDocumentProtocol.js";
 export type {
   PrivateDocumentType,
+  PrivateDocumentFailureCategory,
   PrivateExtractionResult,
 } from "./privateComparison/privateDocumentProtocol.js";
 export { extractPrivateDocument } from "./privateComparison/privateDocumentWorker.js";
@@ -34,6 +36,7 @@ export {
   PRIVATE_DOCUMENT_FILE_NAME_HEADER,
   PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES,
   PRIVATE_DOCUMENT_MIME_HEADER,
+  PRIVATE_DOCUMENT_TERMINATION_GRACE_MS,
 } from "./privateComparison/privateDocumentServer.js";
 export type {
   PrivateDocumentServer,

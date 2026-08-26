@@ -8,14 +8,28 @@ export const PRIVATE_DOCUMENT_TIMEOUT_MS = 30_000;
 const PRIVATE_DOCUMENT_MAX_TITLE_CODE_POINTS = 300;
 
 export type PrivateDocumentType = "pdf" | "docx" | "text" | "markdown";
+export type PrivateDocumentFailureCategory = "unsafe" | "spoofed" | "unsupported" | "text-unavailable";
 export type PrivateExtractionResult = Readonly<{
   type: PrivateDocumentType;
   title: string;
   text: string;
 }>;
 
+export class PrivateDocumentExtractionError extends Error {
+  constructor(readonly category: PrivateDocumentFailureCategory, message: string) {
+    super(message);
+    this.name = "PrivateDocumentExtractionError";
+  }
+}
+
 const PRIVATE_DOCUMENT_TYPES = new Set<PrivateDocumentType>(["pdf", "docx", "text", "markdown"]);
 const PRIVATE_DOCUMENT_RESULT_KEYS = ["type", "title", "text"];
+const PRIVATE_DOCUMENT_FAILURE_CATEGORIES = new Set<PrivateDocumentFailureCategory>([
+  "unsafe",
+  "spoofed",
+  "unsupported",
+  "text-unavailable",
+]);
 const WALLET_SCAN_WINDOW = 32_768;
 const WALLET_SCAN_STEP = WALLET_SCAN_WINDOW / 2;
 const WALLET_SCAN_FIELD_CARRY = 128;
@@ -31,6 +45,21 @@ export function validatePrivateDocumentToken(value: unknown): Buffer {
     throw new Error("Private extractor token is invalid");
   }
   return token;
+}
+
+export function isPrivateDocumentFailureCategory(value: unknown): value is PrivateDocumentFailureCategory {
+  return typeof value === "string" && PRIVATE_DOCUMENT_FAILURE_CATEGORIES.has(value as PrivateDocumentFailureCategory);
+}
+
+export function classifyPrivateDocumentError(value: unknown): PrivateDocumentFailureCategory | undefined {
+  if (value !== null && typeof value === "object" && "category" in value && isPrivateDocumentFailureCategory((value as { category?: unknown }).category)) {
+    return (value as { category: PrivateDocumentFailureCategory }).category;
+  }
+  const message = value instanceof Error ? value.message : "";
+  if (/Unsafe document|wallet|active annotation|action/u.test(message)) return "unsafe";
+  if (/spoofed|type mismatch/u.test(message)) return "unsupported";
+  if (/page limit|Text unavailable/u.test(message)) return "text-unavailable";
+  return undefined;
 }
 
 export function validatePrivateExtractionResult(value: unknown): PrivateExtractionResult {

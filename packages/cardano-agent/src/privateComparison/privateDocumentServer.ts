@@ -6,8 +6,10 @@ import {
   PRIVATE_DOCUMENT_MAX_TEXT_BYTES,
   PRIVATE_DOCUMENT_PATH,
   PRIVATE_DOCUMENT_TIMEOUT_MS,
+  isPrivateDocumentFailureCategory,
   validatePrivateDocumentToken,
   validatePrivateExtractionResult,
+  type PrivateDocumentFailureCategory,
   type PrivateExtractionResult,
 } from "./privateDocumentProtocol.js";
 import type { PrivateDocumentMetadata } from "./privateDocumentWorker.js";
@@ -28,6 +30,7 @@ export type PrivateDocumentServerOptions = {
   token: string;
   timeoutMs?: number;
   workerFactory?: () => PrivateDocumentWorkerLike;
+  onPoison?: () => void | Promise<void>;
 };
 
 export type PrivateDocumentServer = {
@@ -41,10 +44,16 @@ const MAX_FILE_NAME_BYTES = 1024;
 const MAX_MIME_BYTES = 256;
 const MAX_HEADER_SIZE = 16 * 1024;
 const MAX_HEADERS_COUNT = 64;
+export const PRIVATE_DOCUMENT_TERMINATION_GRACE_MS = 250;
 const processPrivateDocumentState: { state: "available" | "busy" | "poisoned" } = { state: "available" };
 
 class PrivateDocumentServiceError extends Error {
-  constructor(readonly statusCode: number, message: string, readonly poisonSlot = false) {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+    readonly poisonSlot = false,
+    readonly category?: PrivateDocumentFailureCategory,
+  ) {
     super(message);
     this.name = "PrivateDocumentServiceError";
   }
@@ -146,7 +155,7 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       input = await readRequestBody(request, contentLength, abortController.signal);
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) throw new PrivateDocumentServiceError(504, "Private document extraction timed out");
-      const result = await runPrivateDocumentWorker(input, metadata, workerFactory, remainingMs, abortController.signal);
+      const result = await runPrivateDocumentWorker(input, metadata, workerFactory, remainingMs, abortController.signal, options.onPoison);
       const validated = validatePrivateExtractionResult(result);
       const payload = Buffer.from(JSON.stringify(validated));
       if (payload.byteLength > PRIVATE_DOCUMENT_MAX_WIRE_RESPONSE_BYTES) {
@@ -160,7 +169,7 @@ export function createPrivateDocumentServer(options: PrivateDocumentServerOption
       if (response.headersSent) {
         response.destroy();
       } else if (error instanceof PrivateDocumentServiceError) {
-        sendError(response, error.statusCode, error.message);
+        sendError(response, error.statusCode, error.message, error.category);
       } else {
         sendError(response, 503, "Private document extraction unavailable");
       }
@@ -204,6 +213,7 @@ export async function runPrivateDocumentWorker(
   workerFactory: () => PrivateDocumentWorkerLike = defaultWorkerFactory,
   timeoutMs = PRIVATE_DOCUMENT_TIMEOUT_MS,
   signal?: AbortSignal,
+  onPoison?: () => void | Promise<void>,
 ): Promise<PrivateExtractionResult> {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > PRIVATE_DOCUMENT_MAX_BYTES) {
     throw new PrivateDocumentServiceError(413, "Private document request rejected");
@@ -243,13 +253,23 @@ export async function runPrivateDocumentWorker(
         termination = undefined;
       }
 
+      const poison = () => {
+        try {
+          const result = onPoison?.();
+          if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+        } catch {
+          // Poison handling must not change the bounded parser result.
+        }
+      };
       const settle = (terminationTimedOut: boolean) => {
         if (settled) return;
         settled = true;
         if (terminationTimer !== undefined) clearTimeout(terminationTimer);
         if (terminationTimedOut) {
+          poison();
           reject(new PrivateDocumentServiceError(504, "Private document extraction timed out", true));
         } else if (terminationFailed) {
+          poison();
           reject(new PrivateDocumentServiceError(
             error instanceof PrivateDocumentServiceError ? error.statusCode : 503,
             error?.message ?? "Private document extraction unavailable",
@@ -264,7 +284,7 @@ export async function runPrivateDocumentWorker(
         }
       };
 
-      const remainingMs = deadlineAt - Date.now();
+      const remainingMs = Math.max(0, deadlineAt - Date.now()) + PRIVATE_DOCUMENT_TERMINATION_GRACE_MS;
       if (termination === undefined) {
         settle(true);
         return;
@@ -289,9 +309,12 @@ export async function runPrivateDocumentWorker(
         finish(new PrivateDocumentServiceError(503, "Private document extraction unavailable"));
         return;
       }
-      const value = message as { ok?: unknown; result?: unknown };
+      const value = message as { ok?: unknown; result?: unknown; category?: unknown };
       if (value.ok !== true) {
-        finish(new PrivateDocumentServiceError(503, "Private document extraction unavailable"));
+        const category = isPrivateDocumentFailureCategory(value.category) ? value.category : undefined;
+        finish(category === undefined
+          ? new PrivateDocumentServiceError(503, "Private document extraction unavailable")
+          : new PrivateDocumentServiceError(422, "Private document rejected", false, category));
         return;
       }
       try {
@@ -416,8 +439,8 @@ function abortReason(signal: AbortSignal): PrivateDocumentServiceError {
     : new PrivateDocumentServiceError(504, "Private document extraction aborted");
 }
 
-function sendError(response: http.ServerResponse, statusCode: number, message: string): void {
-  sendJson(response, statusCode, Buffer.from(JSON.stringify({ error: message })));
+function sendError(response: http.ServerResponse, statusCode: number, message: string, category?: PrivateDocumentFailureCategory): void {
+  sendJson(response, statusCode, Buffer.from(JSON.stringify({ error: message, ...(category === undefined ? {} : { category }) })));
 }
 
 function sendHealth(response: http.ServerResponse, statusCode: 200 | 503): void {
@@ -461,7 +484,15 @@ async function main(): Promise<void> {
     return;
   }
   const port = Number(process.env.PRIVATE_DOCUMENT_EXTRACTOR_PORT ?? process.env.PORT ?? 8082);
-  const service = createPrivateDocumentServer({ token });
+  let service: PrivateDocumentServer;
+  let stopping = false;
+  const poison = () => {
+    if (stopping) return;
+    stopping = true;
+    process.exitCode = 1;
+    void service.close().catch(() => undefined).finally(() => process.exit(1));
+  };
+  service = createPrivateDocumentServer({ token, onPoison: poison });
   await service.listen(port, "0.0.0.0");
 }
 

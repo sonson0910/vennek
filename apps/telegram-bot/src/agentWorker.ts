@@ -28,6 +28,7 @@ export type AgentAnswerDependencies = {
 export type AgentJobSender = (
   telegramChatId: string,
   text: string,
+  signal?: AbortSignal,
 ) => Promise<{ delivered: boolean; attempts: number } | void>;
 
 export type AgentWorkerDependencies = {
@@ -43,6 +44,7 @@ export type AgentJobOutcome = {
 export async function processAgentJob(
   job: TelegramAnswerJob,
   dependencies: AgentWorkerDependencies,
+  signal?: AbortSignal,
 ): Promise<AgentJobOutcome> {
   const response = job.walletSecretDetected || job.text === WALLET_SECRET_JOB_MARKER ? WALLET_SECRET_WARNING : await dependencies.answer({
     telegramUserId: job.telegramUserId,
@@ -50,7 +52,9 @@ export async function processAgentJob(
     text: job.text,
     updateId: job.updateId,
   });
-  const delivery = await dependencies.send(job.telegramChatId, response);
+  const delivery = signal === undefined
+    ? await dependencies.send(job.telegramChatId, response)
+    : await dependencies.send(job.telegramChatId, response, signal);
   return delivery && "delivered" in delivery ? delivery : { delivered: true, attempts: 1 };
 }
 

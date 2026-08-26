@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { abortableSleep, createTelegramApi, FixedWindowRateLimiter, runPolling as runTelegramPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
+import { abortableSleep, createTelegramApi, deliverMessage, FixedWindowRateLimiter, runPolling as runTelegramPolling, telegramCall, TelegramApiError, type RateLimiter, type RuntimeLogger, type TelegramApi, type TelegramUpdate } from "@vennek/telegram-bot";
 import { readTelegramOffset, writeTelegramOffset } from "@vennek/telegram-bot";
 import { routeTelegramText } from "@vennek/telegram-bot";
 
@@ -658,6 +658,22 @@ describe("Telegram polling runtime", () => {
     controller.abort();
     await sleeping;
     expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it("passes the job abort signal to every Telegram send attempt", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const api: TelegramApi = {
+      async getUpdates() { return []; },
+      async sendMessage(_params, signal) {
+        receivedSignal = signal;
+        return { ok: true };
+      },
+    };
+
+    await expect(deliverMessage(api, { chat_id: "7", text: "answer", disable_web_page_preview: true }, 0, controller.signal))
+      .resolves.toMatchObject({ delivered: true });
+    expect(receivedSignal).toBe(controller.signal);
   });
 });
 

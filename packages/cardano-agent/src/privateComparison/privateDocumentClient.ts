@@ -3,8 +3,10 @@ import {
   PRIVATE_DOCUMENT_MAX_BYTES,
   PRIVATE_DOCUMENT_PATH,
   PRIVATE_DOCUMENT_TIMEOUT_MS,
+  isPrivateDocumentFailureCategory,
   validatePrivateDocumentToken,
   validatePrivateExtractionResult,
+  type PrivateDocumentFailureCategory,
   type PrivateExtractionResult,
 } from "./privateDocumentProtocol.js";
 import {
@@ -30,6 +32,7 @@ export class PrivateDocumentClientError extends Error {
     readonly retryable: boolean,
     readonly status?: number,
     readonly aborted = false,
+    readonly category?: PrivateDocumentFailureCategory,
   ) {
     super(message);
     this.name = "PrivateDocumentClientError";
@@ -153,9 +156,14 @@ export class PrivateDocumentClient {
           if (settled) return;
           try {
             if (total !== declaredLength) throw new Error("Private extractor response rejected");
-            if (response.statusCode !== 200) throw new PrivateDocumentClientError("Private extractor request failed", retryableStatus(response.statusCode), response.statusCode);
             payload = Buffer.concat(chunks, total);
             const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+            if (response.statusCode !== 200) {
+              const category = response.statusCode === 422 && value !== null && typeof value === "object" && isPrivateDocumentFailureCategory((value as { category?: unknown }).category)
+                ? (value as { category: PrivateDocumentFailureCategory }).category
+                : undefined;
+              throw new PrivateDocumentClientError("Private extractor request failed", retryableStatus(response.statusCode), response.statusCode, false, category);
+            }
             finish(undefined, validatePrivateExtractionResult(value));
           } catch (error) {
             finish(error instanceof PrivateDocumentClientError ? error : new PrivateDocumentClientError("Private extractor response rejected", false));

@@ -264,10 +264,12 @@ describe("private document server", () => {
       "../packages/cardano-agent/src/privateComparison/privateDocumentServer.js"
     );
     let workers = 0;
+    const poison = vi.fn();
     const service = createIsolatedServer({
       token,
       workerFactory: () => workers++ === 0 ? new NeverTerminatingWorker() : new FakeWorker(),
       timeoutMs: 25,
+      onPoison: poison,
     });
     await service.listen(0);
     const address = service.server.address();
@@ -278,9 +280,27 @@ describe("private document server", () => {
       expect(poisoned.status).toBe(503);
       expect(poisoned.body).toBe("");
       expect((await request(address.port)).status).toBe(503);
+      expect(poison).toHaveBeenCalledOnce();
     } finally {
       await service.close();
     }
+  });
+
+  it("maps a worker parser category to a generic non-retryable 422 response", async () => {
+    class RejectingWorker extends EventEmitter implements PrivateDocumentWorkerLike {
+      postMessage(): void {
+        setImmediate(() => this.emit("message", { ok: false, category: "unsafe" }));
+      }
+      terminate(): Promise<number> {
+        this.emit("exit", 0);
+        return Promise.resolve(0);
+      }
+    }
+    await withServer(() => new RejectingWorker(), async (port) => {
+      const response = await request(port);
+      expect(response.status).toBe(422);
+      expect(JSON.parse(response.body)).toEqual({ error: "Private document rejected", category: "unsafe" });
+    });
   });
 
   it("rejects timeout overrides outside the bounded service deadline", async () => {

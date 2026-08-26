@@ -77,6 +77,20 @@ describe("agent worker", () => {
     expect(JSON.stringify(job)).not.toContain("abandon");
   });
 
+  it("passes the pg-boss job signal to the answer delivery callback", async () => {
+    const answer = vi.fn<AgentAnswer>().mockResolvedValue("answer");
+    const send = vi.fn<AgentJobSender>().mockResolvedValue({ delivered: true, attempts: 1 });
+    const signal = new AbortController().signal;
+
+    await processAgentJob(
+      { updateId: 10, telegramUserId: "1", telegramChatId: "2", text: "hello" },
+      { answer, send },
+      signal,
+    );
+
+    expect(send).toHaveBeenCalledWith("2", "answer", signal);
+  });
+
   it("recognizes the fixed marker even without a legacy boolean flag", async () => {
     const answer = vi.fn<AgentAnswer>();
     const send = vi.fn<AgentJobSender>().mockResolvedValue({ delivered: true, attempts: 1 });

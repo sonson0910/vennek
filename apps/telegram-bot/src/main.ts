@@ -336,7 +336,7 @@ async function runWorker(): Promise<void> {
       const outcome = await processAgentJob(job.data, {
         answer,
         send: async (chatId, text) => {
-          const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000);
+          const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000, job.signal);
           if (!delivery.delivered) {
             logJson("warn", "telegram_delivery_abandoned", {
               updateId: job.data.updateId,
@@ -347,7 +347,7 @@ async function runWorker(): Promise<void> {
           }
           return delivery;
         },
-      });
+      }, job.signal);
       await db.query(
         "UPDATE telegram_updates SET status = $1, processed_at = CASE WHEN $1 = 'processed' THEN now() ELSE processed_at END WHERE update_id = $2",
         [outcome.delivered ? "processed" : "failed", job.data.updateId],
@@ -373,8 +373,8 @@ async function runWorker(): Promise<void> {
           verifierModel: config.privateModels!.verifier,
           complete: privateCompletion(privateLlm),
           recordUsage: (telegramUserId, usage) => recordPrivateUsage(db, telegramUserId, usage),
-          send: async (chatId, text) => {
-            const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000, job.signal);
+          send: async (chatId, text, sendSignal) => {
+            const delivery = await deliverMessage(api, { chat_id: chatId, text, disable_web_page_preview: true }, 3_000, sendSignal ?? job.signal);
             if (!delivery.delivered) {
               logJson("warn", "telegram_delivery_abandoned", {
                 updateId,

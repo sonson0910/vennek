@@ -206,6 +206,19 @@ describe("private document client", () => {
     }
   });
 
+  it("preserves only the bounded parser category from a deterministic rejection", async () => {
+    await withServer((_request, response) => {
+      const payload = Buffer.from(JSON.stringify({ error: "Private document rejected", category: "spoofed" }));
+      response.writeHead(422, { "content-type": "application/json", "content-length": payload.byteLength });
+      response.end(payload);
+    }, async (url) => {
+      const error = await makeClient(url, token).extract(new Uint8Array([1]), metadata).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(PrivateDocumentClientError);
+      expect(error).toMatchObject({ status: 422, retryable: false, category: "spoofed" });
+      expect((error as Error).message).not.toContain("spoofed");
+    });
+  });
+
   it("does not expose mutable URL/token fields or serialize the token", async () => {
     await withServer((_request, response) => {
       const payload = Buffer.from(JSON.stringify({ type: "text", title: "claim", text: "Cardano" }));

@@ -63,7 +63,7 @@ export type TelegramUpdate = {
 
 export type TelegramApi = {
   getUpdates(params: { offset: number; timeout: number; allowed_updates: string[] }): Promise<TelegramUpdate[]>;
-  sendMessage(params: { chat_id: number | string; text: string; disable_web_page_preview: boolean }): Promise<unknown>;
+  sendMessage(params: { chat_id: number | string; text: string; disable_web_page_preview: boolean }, signal?: AbortSignal): Promise<unknown>;
   getFile?(params: { file_id: string }): Promise<TelegramFile>;
   withDownloadedFile?(
     filePath: string,
@@ -301,7 +301,7 @@ export function createTelegramApi(token: string, signal?: AbortSignal, options: 
   const request = options.request ?? ((requestOptions, callback) => https.request(requestOptions, callback));
   const api: TelegramPrivateApi = {
     getUpdates: (params) => telegramCall<TelegramUpdate[]>(token, "getUpdates", params, signal),
-    sendMessage: (params) => telegramCall(token, "sendMessage", params, signal),
+    sendMessage: (params, requestSignal) => telegramCall(token, "sendMessage", params, requestSignal ?? signal),
     getFile: async ({ file_id }) => {
       const safeFileId = validateTelegramFileId(file_id);
       let result: unknown;
@@ -338,7 +338,7 @@ export async function deliverMessage(
 
   for (let attempts = 1; attempts <= TELEGRAM_DELIVERY_MAX_ATTEMPTS; attempts += 1) {
     try {
-      await api.sendMessage(params);
+      await api.sendMessage(params, signal);
       return { delivered: true, attempts };
     } catch (error) {
       const status = error instanceof TelegramApiError ? error.status : undefined;
