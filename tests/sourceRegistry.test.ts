@@ -153,6 +153,10 @@ describe("Cardano source registry", () => {
     expect(validateSourceRegistry([{ ...stackExchange, allowedDomains: [...stackExchange.allowedDomains].reverse() }])).toMatchObject([
       { allowedDomains: ["cardano.stackexchange.com", "api.stackexchange.com"] }
     ]);
+    const inheritedSite = Object.create({ site: "cardano" }) as Record<string, unknown>;
+    expect(() => validateSourceRegistry([{ ...stackExchange, stackExchange: inheritedSite }])).toThrow(/site|metadata/i);
+    const validated = validateSourceRegistry([stackExchange]);
+    expect(validated[0]?.stackExchange).not.toBe(stackExchange.stackExchange);
     expect(() => validateSourceRegistry([{ ...stackExchange, url: "https://api.stackexchange.com/2.3/questions/" }])).toThrow(/stack exchange.*url|exact/i);
     expect(() => validateSourceRegistry([{ ...stackExchange, allowedDomains: ["cardano.stackexchange.com"] }])).toThrow(/stack exchange.*domain|exact/i);
     expect(() => validateSourceRegistry([{ ...stackExchange, allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com", "example.com"] }])).toThrow(/stack exchange.*domain|exact/i);

@@ -296,7 +296,8 @@ function validateStackExchangeScope(
   if (!isRecord(value)) {
     throw new Error(`Source entry ${index} stackExchange metadata must be an object.`);
   }
-  if (Object.keys(value).some((key) => key !== "site")) {
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "site" || !Object.prototype.hasOwnProperty.call(value, "site")) {
     throw new Error(`Unknown field in source entry ${index} stackExchange metadata.`);
   }
   if (value.site !== "cardano") {
@@ -309,7 +310,7 @@ function validateStackExchangeScope(
   if (allowedDomains.length !== expectedDomains.length || expectedDomains.some((domain) => !allowedDomains.includes(domain))) {
     throw new Error(`Source entry ${index} stackexchange allowedDomains must be exact.`);
   }
-  return value as StackExchangeScope;
+  return { site: "cardano" };
 }
 
 function validateDomains(value: unknown, index: number): string[] {
