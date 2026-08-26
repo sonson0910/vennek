@@ -130,6 +130,7 @@ describe("Cardano source registry", () => {
     const ids = new Set(config.official.map((entry) => entry.id));
     expect(REQUIRED_OFFICIAL_SOURCE_IDS).toContain("cardano-org");
     expect(REQUIRED_OFFICIAL_SOURCE_IDS.every((id) => ids.has(id))).toBe(true);
+    expect(config.official.find((entry) => entry.id === "cardano-foundation")?.url).toBe("https://cardanofoundation.org/");
     expect(config.community.length).toBeGreaterThanOrEqual(2);
     expect(validateSourceRegistry([...config.official, ...config.community])).toHaveLength(
       config.official.length + config.community.length

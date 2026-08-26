@@ -61,7 +61,7 @@
       "owner": "Cardano Foundation",
       "trustTier": "official",
       "kind": "page",
-      "url": "https://cardanofoundation.org/about",
+      "url": "https://cardanofoundation.org/",
       "allowedDomains": ["cardanofoundation.org"],
       "topics": ["governance", "ecosystem", "education"],
       "networks": ["mainnet", "preprod", "preview"],
