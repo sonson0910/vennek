@@ -269,6 +269,9 @@ function parseAnswer(value: unknown, questionIds: Set<number>): Answer {
 function parseAuthor(value: unknown): Author {
   if (value === null || value === undefined) return { displayName: "deleted user", url: "unavailable" };
   if (!isPlainRecord(value)) throw new Error("Stack Exchange owner is invalid.");
+  if (Object.prototype.hasOwnProperty.call(value, "user_type") && value.user_type === "does_not_exist") {
+    return { displayName: "deleted user", url: "unavailable" };
+  }
   const userId = safePositiveInteger(value.user_id, "owner user_id");
   const displayName = boundedSanitized(value.display_name, MAX_AUTHOR_CHARS, "owner display_name");
   const url = typeof value.link === "string" && validAuthorUrl(value.link, userId) ? value.link : "unavailable";

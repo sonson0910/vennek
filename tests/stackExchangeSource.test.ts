@@ -93,7 +93,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [answer(22, 11)], has_more: false, quota_remaining: 8 }
       : { items: [question(11)], has_more: false, quota_remaining: 9 });
 
-    await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(calls).toHaveLength(2);
     for (const call of calls) {
@@ -114,7 +114,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [answerItem], has_more: false, quota_remaining: 8 }
       : { items: [question(11, { link: attackerQuestionLink })], has_more: false, quota_remaining: 9 });
 
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
       "https://cardano.stackexchange.com/questions/11",
@@ -130,12 +130,28 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [answerItem], has_more: false, quota_remaining: 8 }
       : { items: [question(11)], has_more: false, quota_remaining: 9 });
 
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents[0]?.text).toContain("Author: deleted user");
     expect(result.documents[0]?.text).toContain("Author URL: unavailable");
     expect(result.documents[1]?.text).toContain("Author: deleted user");
     expect(result.documents[1]?.text).toContain("Author URL: unavailable");
+  });
+
+  it("treats shallow_user does_not_exist owners as deleted for questions and answers", async () => {
+    const deletedOwner = { user_type: "does_not_exist", display_name: "untrusted display name" };
+    const deletedAnswer = { ...answer(22, 11), owner: deletedOwner };
+    const request = responseRequest([], (path) => path.includes("/answers")
+      ? { items: [deletedAnswer], has_more: false, quota_remaining: 8 }
+      : { items: [question(11, { owner: deletedOwner })], has_more: false, quota_remaining: 9 });
+
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
+
+    for (const document of result.documents) {
+      expect(document.text).toContain("Author: deleted user");
+      expect(document.text).toContain("Author URL: unavailable");
+      expect(document.text).not.toContain("untrusted display name");
+    }
   });
 
   it("fails closed for malformed consumed wrapper fields and licenses", async () => {
@@ -151,7 +167,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     ];
     for (const [name, payload] of malformedWrappers) {
       const request = rawResponseRequest([], () => ({ contentType: "application/json", body: JSON.stringify(payload) }));
-      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request }), name).rejects.toThrow(/invalid/i);
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request }), name).rejects.toThrow(/invalid/i);
     }
 
     const missingLicense = question(11);
@@ -159,7 +175,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     for (const license of [undefined, "CC BY-SA 4.0\u0000"]) {
       const item = license === undefined ? missingLicense : question(11, { content_license: license });
       const request = responseRequest([], () => ({ items: [item], has_more: false, quota_remaining: 1 }));
-      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request }), `license ${String(license)}`).rejects.toThrow(/license/i);
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request }), `license ${String(license)}`).rejects.toThrow(/license/i);
     }
   });
 
@@ -204,7 +220,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [], has_more: false, quota_remaining: 7 }
       : { items: [question(11)], has_more: false, quota_remaining: 8 });
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
     await expect(result.commitState?.()).resolves.toBe(true);
     expect(repository.compareAndSetStackExchangeFetchState).toHaveBeenCalledWith(
       entry.id,
@@ -219,7 +235,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     const request = vi.fn() as unknown as PublicHttpsRequest;
     const repository = fakeRepository({ retryAt: "2026-08-24T00:05:00.000Z" });
 
-    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request })).resolves.toEqual({
+    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request })).resolves.toEqual({
       documents: [],
       unchanged: 0,
       deferredUntil: new Date("2026-08-24T00:05:00.000Z"),
@@ -232,7 +248,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     const request = responseRequest(calls, () => ({ items: [], has_more: false, quota_remaining: 0 }));
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:01:00.000Z"));
@@ -251,7 +267,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       : { items: [question(11)], has_more: false, quota_remaining: 7, backoff: 1 });
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:01:00.000Z"));
@@ -271,7 +287,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       : { items: [question(11)], has_more: false, quota_remaining: 8 });
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(calls).toHaveLength(2);
@@ -285,13 +301,13 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
 
   it("clamps backoff to the minimum and maximum retry windows", async () => {
     const minimum = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 4, backoff: 0 }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request: minimum })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: minimum })).resolves.toMatchObject({
       deferredUntil: new Date("2026-08-24T00:01:00.000Z"),
       documents: [],
     });
 
     const maximum = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 4, backoff: Number.MAX_SAFE_INTEGER }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request: maximum })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: maximum })).resolves.toMatchObject({
       deferredUntil: new Date("2026-08-25T00:00:00.000Z"),
       documents: [],
     });
@@ -311,7 +327,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       return undefined;
     });
     const controller = new AbortController();
-    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, request: vi.fn() as unknown as PublicHttpsRequest });
+    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, lookup: publicLookup, request: vi.fn() as unknown as PublicHttpsRequest });
     await Promise.resolve();
     controller.abort();
     releaseEnsure();
@@ -334,7 +350,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       return null;
     });
     const controller = new AbortController();
-    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, request: vi.fn() as unknown as PublicHttpsRequest });
+    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, lookup: publicLookup, request: vi.fn() as unknown as PublicHttpsRequest });
     for (let index = 0; index < 4; index += 1) await Promise.resolve();
     for (const options of [ensureOptions, stateOptions]) {
       const typed = options as { signal?: AbortSignal; deadlineAt?: number };
@@ -380,7 +396,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     });
     const controller = new AbortController();
     const request = vi.fn() as unknown as PublicHttpsRequest;
-    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, request });
+    const pending = fetchStackExchangeSource({ entry, repository, signal: controller.signal, now, lookup: publicLookup, request });
     await Promise.resolve();
     controller.abort();
     releaseState();
@@ -397,7 +413,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
           has_more: false,
           quota_remaining: 3,
         });
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
     expect(result.documents[0]?.text).toContain(`Author: ${"a".repeat(120)}`);
     expect(result.documents[0]?.text).not.toContain(`Author: ${"a".repeat(121)}`);
   });
@@ -416,7 +432,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [], has_more: false, quota_remaining: 2 }
       : { items: [question(11, { body })], has_more: false, quota_remaining: 3 });
 
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request })).rejects.toThrow(/large|size/i);
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request })).rejects.toThrow(/large|size/i);
   });
 
   it("follows bounded answer pagination and never requests a sixth answer page", async () => {
@@ -426,7 +442,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       const page = Number(new URL(`https://api.stackexchange.com${path}`).searchParams.get("page"));
       return { items: page <= 2 ? [answer(page + 20, 11)] : [], has_more: page < 5, quota_remaining: 10 - page };
     });
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
     expect(result.documents).toHaveLength(3);
     expect(calls.filter(({ path }) => path.includes("/answers")).map(({ path }) => new URL(`https://api.stackexchange.com${path}`).searchParams.get("page"))).toEqual(["1", "2", "3", "4", "5"]);
   });
@@ -437,7 +453,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       const page = Number(new URL(`https://api.stackexchange.com${path}`).searchParams.get("page"));
       return { items: Array.from({ length: 100 }, (_, index) => question((page - 1) * 100 + index + 1)), has_more: page < 5, quota_remaining: 10 };
     });
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
     expect(result.documents).toHaveLength(500);
   });
 
@@ -451,7 +467,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       return { contentType: "application/json", body: questionBodies[page - 1]! };
     });
 
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request })).rejects.toThrow(/aggregate/i);
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request })).rejects.toThrow(/aggregate/i);
     expect(calls).toHaveLength(16);
   });
 
@@ -469,7 +485,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     ];
     for (const [name, spec, error] of cases) {
       const request = rawResponseRequest([], () => ({ ...spec }));
-      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request }), name).rejects.toThrow(error);
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request }), name).rejects.toThrow(error);
     }
   });
 
@@ -481,12 +497,12 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       { last_activity_date: "bad" },
     ]) {
       const request = responseRequest([], () => ({ items: [question(11, overrides)], has_more: false, quota_remaining: 1 }));
-      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request })).rejects.toThrow(/invalid/i);
+      await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request })).rejects.toThrow(/invalid/i);
     }
     const duplicate = responseRequest([], (path) => path.includes("/answers")
       ? { items: [answer(22, 11), answer(22, 11)], has_more: false, quota_remaining: 1 }
       : { items: [question(11)], has_more: false, quota_remaining: 2 });
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request: duplicate })).rejects.toThrow(/answer IDs/i);
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: duplicate })).rejects.toThrow(/answer IDs/i);
   });
 
   it("returns false from the adapter commit callback without retrying CAS", async () => {
@@ -495,7 +511,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     const request = responseRequest([], (path) => path.includes("/answers")
       ? { items: [], has_more: false, quota_remaining: 1 }
       : { items: [question(11)], has_more: false, quota_remaining: 2 });
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
     await expect(result.commitState?.()).resolves.toBe(false);
     expect(repository.compareAndSetStackExchangeFetchState).toHaveBeenCalledOnce();
   });
@@ -508,7 +524,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     repository.compareAndSetStackExchangeFetchState = vi.fn(async () => false);
     const request = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 2, backoff: 1 }));
 
-    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, request })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request })).resolves.toMatchObject({
       documents: [],
       deferredUntil: new Date("2026-08-24T00:05:00.000Z"),
     });
@@ -519,7 +535,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     const calls: Array<{ path: string; headers: Record<string, string> }> = [];
     const request = responseRequest(calls, () => ({ items: [], has_more: true, quota_remaining: 10 }));
 
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(calls.map(({ path }) => new URL(`https://api.stackexchange.com${path}`).searchParams.get("page"))).toEqual(["1", "2", "3", "4", "5"]);
@@ -529,7 +545,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       has_more: false,
       quota_remaining: 10,
     }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request: duplicate })).rejects.toThrow(/question IDs/i);
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: duplicate })).rejects.toThrow(/question IDs/i);
   });
 
   it("fails closed for unknown licenses and attacker author links", async () => {
@@ -538,13 +554,13 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       has_more: false,
       quota_remaining: 10,
     }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request: invalidLicense })).rejects.toThrow(/license/i);
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: invalidLicense })).rejects.toThrow(/license/i);
 
     const calls: Array<{ path: string; headers: Record<string, string> }> = [];
     const request = responseRequest(calls, (path) => path.includes("/answers")
       ? { items: [], has_more: false, quota_remaining: 9 }
       : { items: [question(11, { owner: { user_id: 7, display_name: "<b>A</b>", link: "https://attacker.example/users/7/evil" } })], has_more: false, quota_remaining: 10 });
-    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, request });
+    const result = await fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request });
     expect(result.documents[0]?.text).toContain("Author: A");
     expect(result.documents[0]?.text).toContain("Author URL: unavailable");
     expect(calls.every(({ path }) => path.startsWith("/2.3/"))).toBe(true);
