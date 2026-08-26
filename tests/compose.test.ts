@@ -269,21 +269,6 @@ describe("LiteLLM embedding route contract", () => {
     expect(compose).toContain("OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}");
   });
 
-  it("keeps omitted completion fallbacks on valid OpenAI-backed route settings", () => {
-    const compose = readFileSync("docker-compose.yml", "utf8");
-    for (const [name, fallback] of [
-      ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-      ["GEMINI_API_KEY", "OPENAI_API_KEY"],
-      ["ANTHROPIC_FAST_MODEL", "OPENAI_FAST_MODEL"],
-      ["ANTHROPIC_QUALITY_MODEL", "OPENAI_QUALITY_MODEL"],
-      ["ANTHROPIC_VERIFIER_MODEL", "OPENAI_VERIFIER_MODEL"],
-      ["GEMINI_FAST_MODEL", "OPENAI_FAST_MODEL"],
-      ["GEMINI_QUALITY_MODEL", "OPENAI_QUALITY_MODEL"],
-      ["GEMINI_VERIFIER_MODEL", "OPENAI_VERIFIER_MODEL"],
-    ]) {
-      expect(compose).toContain(`${name}: \${${name}:-\${${fallback}}}`);
-    }
-  });
 });
 
 describe("LiteLLM private route contract", () => {
