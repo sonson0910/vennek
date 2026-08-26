@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PgBoss, type JobWithMetadata, type QueueOptions } from "pg-boss";
 import {
+  sourceIsScheduled,
   validateSourceRegistry,
   validateSourceRegistryEnvelope,
   type SourceRegistryEntry,
@@ -71,7 +72,8 @@ export async function reconcileKnowledgeSchedules(
 ): Promise<void> {
   const schedules = await boss.getSchedules(KNOWLEDGE_QUEUE);
   for (const schedule of schedules) {
-    if (schedule.key.startsWith(KNOWLEDGE_SCHEDULE_PREFIX) && !entries.has(schedule.key.slice(KNOWLEDGE_SCHEDULE_PREFIX.length))) {
+    const sourceId = schedule.key.slice(KNOWLEDGE_SCHEDULE_PREFIX.length);
+    if (schedule.key.startsWith(KNOWLEDGE_SCHEDULE_PREFIX) && (!entries.has(sourceId) || !sourceIsScheduled(entries.get(sourceId)!))) {
       await boss.unschedule(KNOWLEDGE_QUEUE, schedule.key);
     }
   }
@@ -82,6 +84,7 @@ export async function scheduleKnowledgeSources(
   entries: KnowledgeSourceMap,
 ): Promise<void> {
   for (const entry of entries.values()) {
+    if (!sourceIsScheduled(entry)) continue;
     await boss.schedule(
       KNOWLEDGE_QUEUE,
       entry.refresh === "hourly" ? KNOWLEDGE_HOURLY_CRON : KNOWLEDGE_DAILY_CRON,
@@ -104,6 +107,7 @@ export async function enqueueKnowledgeSource(
   const entries = loadKnowledgeSourceMap(registryPath);
   const entry = entries.get(sourceId);
   if (!entry) throw new Error("Unknown Cardano source id.");
+  if (!sourceIsScheduled(entry)) throw new Error("Source is monitor-only and cannot be synchronized.");
   const jobId = await boss.send(KNOWLEDGE_QUEUE, { sourceId: entry.id }, {
     ...KNOWLEDGE_QUEUE_OPTIONS,
     singletonKey: entry.id,
@@ -142,6 +146,7 @@ export async function registerKnowledgeWorker(input: {
       const entries = loadKnowledgeSourceMap(input.registryPath);
       const entry = entries.get(data.sourceId);
       if (!entry) throw new Error("Knowledge source is no longer registered.");
+      if (!sourceIsScheduled(entry)) throw new Error("Source is monitor-only and cannot be synchronized.");
       if (!(job.signal instanceof AbortSignal)) throw new Error("Knowledge job cancellation signal is invalid.");
       const signal = input.signal ? AbortSignal.any([job.signal, input.signal]) : job.signal;
       signal.throwIfAborted();

@@ -103,6 +103,18 @@ describe("knowledge worker contract", () => {
     const boss = fakeBoss();
     const entries = loadKnowledgeSourceMap();
     await scheduleKnowledgeSources(boss, entries);
+    expect(boss.schedule).not.toHaveBeenCalledWith(
+      KNOWLEDGE_QUEUE,
+      expect.any(String),
+      { sourceId: "cardano-foundation" },
+      expect.any(Object),
+    );
+    expect(boss.schedule).toHaveBeenCalledWith(
+      KNOWLEDGE_QUEUE,
+      KNOWLEDGE_DAILY_CRON,
+      { sourceId: "cardano-foundation-github" },
+      expect.objectContaining({ key: "source/cardano-foundation-github", singletonKey: "cardano-foundation-github" }),
+    );
     expect(boss.schedule).toHaveBeenCalledWith(KNOWLEDGE_QUEUE, KNOWLEDGE_DAILY_CRON, expect.any(Object), expect.objectContaining({ tz: "UTC", key: "source/cardano-docs", singletonKey: "cardano-docs", policy: "exclusive" }));
     expect(boss.schedule).toHaveBeenCalledWith(KNOWLEDGE_QUEUE, KNOWLEDGE_HOURLY_CRON, expect.any(Object), expect.objectContaining({ tz: "UTC", key: "source/intersect", singletonKey: "intersect", policy: "exclusive" }));
   });
@@ -118,11 +130,13 @@ describe("knowledge worker contract", () => {
     const boss = fakeBoss();
     boss.getSchedules.mockResolvedValue([
       { name: KNOWLEDGE_QUEUE, key: "source/removed", cron: "0 * * * *", timezone: "UTC" },
+      { name: KNOWLEDGE_QUEUE, key: "source/cardano-foundation", cron: "0 * * * *", timezone: "UTC" },
       { name: KNOWLEDGE_QUEUE, key: "operator", cron: "0 * * * *", timezone: "UTC" },
     ]);
-    await reconcileKnowledgeSchedules(boss, new Map([["kept", {} as never]]));
+    await reconcileKnowledgeSchedules(boss, loadKnowledgeSourceMap());
     expect(boss.unschedule).toHaveBeenCalledWith(KNOWLEDGE_QUEUE, "source/removed");
-    expect(boss.unschedule).toHaveBeenCalledTimes(1);
+    expect(boss.unschedule).toHaveBeenCalledWith(KNOWLEDGE_QUEUE, "source/cardano-foundation");
+    expect(boss.unschedule).toHaveBeenCalledTimes(2);
   });
 
   it("creates the queue policy and reloads the registry for each job", async () => {
@@ -135,6 +149,15 @@ describe("knowledge worker contract", () => {
     await boss.invoke({ sourceId: "cardano-org" });
     expect(sync).toHaveBeenCalledTimes(2);
     expect(sync).toHaveBeenCalledWith(expect.objectContaining({ id: "cardano-org" }), expect.any(AbortSignal));
+  });
+
+  it("rejects stale monitor-only jobs before synchronization", async () => {
+    const boss = fakeBoss();
+    const sync = vi.fn(async () => undefined);
+    await registerKnowledgeWorker({ boss: boss as unknown as KnowledgeBoss, sync });
+
+    await expect(boss.invoke({ sourceId: "cardano-foundation" })).rejects.toThrow("Source is monitor-only and cannot be synchronized.");
+    expect(sync).not.toHaveBeenCalled();
   });
 
   it("passes pg-boss job cancellation to source synchronization", async () => {
@@ -170,6 +193,15 @@ describe("knowledge worker contract", () => {
     await expect(enqueueKnowledgeSource(boss as unknown as Pick<KnowledgeBoss, "send" | "findJobs">, "cardano-org")).resolves.toBe("job-1");
     expect(boss.send).toHaveBeenCalledWith(KNOWLEDGE_QUEUE, { sourceId: "cardano-org" }, expect.objectContaining({ singletonKey: "cardano-org", policy: "exclusive", retryLimit: 2 }));
     await expect(enqueueKnowledgeSource(boss as unknown as Pick<KnowledgeBoss, "send" | "findJobs">, "not-a-source")).rejects.toThrow(/unknown/i);
+  });
+
+  it("rejects monitor-only sources before queue lookup or enqueue", async () => {
+    const boss = fakeBoss();
+
+    await expect(enqueueKnowledgeSource(boss as unknown as Pick<KnowledgeBoss, "send" | "findJobs">, "cardano-foundation"))
+      .rejects.toThrow("Source is monitor-only and cannot be synchronized.");
+    expect(boss.findJobs).not.toHaveBeenCalled();
+    expect(boss.send).not.toHaveBeenCalled();
   });
 
   it("returns the existing pending job id when exclusive enqueue deduplicates", async () => {
