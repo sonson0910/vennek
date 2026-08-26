@@ -33,6 +33,7 @@ export type StackExchangeSourceInput = {
   repository: Pick<KnowledgeRepository, "ensureSource" | "getStackExchangeFetchState" | "compareAndSetStackExchangeFetchState">;
   signal: AbortSignal;
   now?: Date;
+  clock?: () => Date;
   lookup?: PublicHttpsLookup;
   request?: PublicHttpsRequest;
 };
@@ -121,7 +122,7 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
     });
     lastQuota = response.quotaRemaining;
     if (response.backoffSeconds !== undefined || lastQuota === 0) {
-      const deferredUntil = await deferFetch(input, validated.id, originalState, now, response.quotaRemaining, response.backoffSeconds, crawlSignal);
+      const deferredUntil = await deferFetch(input, validated.id, originalState, observationTime(input), response.quotaRemaining, response.backoffSeconds, crawlSignal);
       return { documents: [], unchanged: 0, deferredUntil };
     }
 
@@ -159,7 +160,7 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
         });
         lastQuota = answers.quotaRemaining;
         if (answers.backoffSeconds !== undefined || lastQuota === 0) {
-          const deferredUntil = await deferFetch(input, validated.id, originalState, now, answers.quotaRemaining, answers.backoffSeconds, crawlSignal);
+          const deferredUntil = await deferFetch(input, validated.id, originalState, observationTime(input), answers.quotaRemaining, answers.backoffSeconds, crawlSignal);
           return { documents: [], unchanged: 0, deferredUntil };
         }
         if (answers.items.length > 100) throw new Error("Stack Exchange answer page is too large.");
@@ -187,6 +188,12 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
     options,
   );
   return { documents, unchanged: 0, commitState };
+}
+
+function observationTime(input: StackExchangeSourceInput): Date {
+  const observedAt = input.clock?.() ?? new Date();
+  if (!Number.isFinite(observedAt.getTime())) throw new Error("Retrieval time must be a valid date.");
+  return observedAt;
 }
 
 async function fetchApiPage(input: StackExchangeSourceInput & {

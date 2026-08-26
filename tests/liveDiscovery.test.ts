@@ -32,6 +32,25 @@ const communityEntry: SourceRegistryEntry = {
   allowedDomains: ["community.example.org"],
 };
 
+const monitorOnlyEntry: SourceRegistryEntry = {
+  ...entry,
+  id: "foundation-web",
+  owner: "Cardano Foundation",
+  url: "https://cardanofoundation.org/",
+  allowedDomains: ["cardanofoundation.org"],
+  ingestionMode: "monitor-only",
+};
+
+const stackExchangeEntry: SourceRegistryEntry = {
+  ...communityEntry,
+  id: "cardano-stack-exchange",
+  owner: "Cardano Stack Exchange",
+  kind: "stackexchange",
+  url: "https://api.stackexchange.com/2.3/questions",
+  allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com"],
+  stackExchange: { site: "cardano" },
+};
+
 function result(url: string, title = "Result"): { title: string; content: string; url: string } {
   return { title, content: "Cardano documentation", url };
 }
@@ -212,6 +231,35 @@ describe("SearXNG live discovery", () => {
     });
     expect("versionHash" in promoted ? promoted.versionHash : undefined).toMatch(/^[0-9a-f]{64}$/);
     expect(repository.ensureSource).toHaveBeenCalledWith(entry, expect.objectContaining({ signal: expect.any(AbortSignal), deadlineAt: expect.any(Number) }));
+  });
+
+  it("does not directly promote monitor-only or adapter-owned sources", async () => {
+    const request = vi.fn<PublicHttpsRequest>();
+    const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 as const }]);
+    const repository = fakeRepository();
+    const embed = vi.fn(async () => [{ index: 0, embedding: Array.from({ length: 1_536 }, () => 0) }]);
+
+    for (const [source, url] of [
+      [monitorOnlyEntry, "https://cardanofoundation.org/news"],
+      [stackExchangeEntry, "https://cardano.stackexchange.com/questions/1/example"],
+    ] as const) {
+      await expect(promoteDiscoveredLink({
+        link: { url, title: "Result", content: "text", trustTier: "unverified", matchedSourceId: source.id },
+        registry: [source],
+        repository,
+        embedder: { embed },
+        embeddingModel: "cardano-embedding",
+        request,
+        lookup,
+      })).resolves.toEqual({ url, title: "Result", content: "text", trustTier: "unverified" });
+    }
+
+    expect(request).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(repository.ensureSource).not.toHaveBeenCalled();
+    expect(repository.storeVersion).not.toHaveBeenCalled();
+    expect(repository.replaceChunks).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
   });
 
   it("rejects wallet recovery phrases before calling live search", async () => {

@@ -12,7 +12,12 @@ import {
   SEARXNG_MAX_QUERY_CODE_POINTS,
   SearxngClient,
 } from "./searxng.js";
-import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry } from "./sourceRegistry.js";
+import {
+  sourceIsScheduled,
+  urlMatchesSourceScope,
+  validateSourceRegistry,
+  type SourceRegistryEntry,
+} from "./sourceRegistry.js";
 import type { PublicHttpsLookup, PublicHttpsRequest } from "@vennek/cardano-governance-skills";
 import { findWalletSecret } from "../security/walletSecrets.js";
 import type { RepositoryOperationOptions } from "./knowledgeRepository.js";
@@ -97,7 +102,9 @@ export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Prom
   const trustTier = input.trustTier ?? "official";
   if (trustTier !== "official" && trustTier !== "community") throw new Error("Live discovery trust tier is invalid");
   const selectedDomains = normalizeSearchDomains(
-    entries.filter((entry) => entry.trustTier === trustTier).flatMap((entry) => entry.allowedDomains),
+    entries
+      .filter((entry) => entry.trustTier === trustTier && supportsDirectPromotion(entry))
+      .flatMap((entry) => entry.allowedDomains),
   );
   if (selectedDomains.length === 0) return [];
   input.signal?.throwIfAborted();
@@ -111,7 +118,8 @@ export async function discoverLiveSources(input: DiscoverLiveSourcesInput): Prom
     const content = boundedContent(result.content, MAX_CONTENT_CHARS);
     if (!title || content === undefined) continue;
     seen.add(url);
-    const matches = entries.filter((entry) => entry.trustTier === trustTier && urlMatchesSourceScope(url, entry));
+    const matches = entries.filter((entry) =>
+      entry.trustTier === trustTier && supportsDirectPromotion(entry) && urlMatchesSourceScope(url, entry));
     links.push({
       url,
       title,
@@ -191,6 +199,7 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
   if (matches.length !== 1) return unverified;
 
   const entry = matches[0]!;
+  if (!supportsDirectPromotion(entry)) return unverified;
   const deadline = createPromotionDeadline(input.signal, input.deadlineAt);
   const signal = deadline.signal;
   const now = input.now ?? new Date();
@@ -247,6 +256,10 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
   } catch {
     throw new Error("Live source promotion failed");
   }
+}
+
+function supportsDirectPromotion(entry: SourceRegistryEntry): boolean {
+  return sourceIsScheduled(entry) && (entry.kind === "page" || entry.kind === "sitemap");
 }
 
 type PromotionDeadline = { signal: AbortSignal; deadlineAt: number };

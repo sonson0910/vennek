@@ -220,7 +220,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       ? { items: [], has_more: false, quota_remaining: 7 }
       : { items: [question(11)], has_more: false, quota_remaining: 8 });
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request });
     await expect(result.commitState?.()).resolves.toBe(true);
     expect(repository.compareAndSetStackExchangeFetchState).toHaveBeenCalledWith(
       entry.id,
@@ -248,7 +248,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     const request = responseRequest(calls, () => ({ items: [], has_more: false, quota_remaining: 0 }));
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:01:00.000Z"));
@@ -267,7 +267,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       : { items: [question(11)], has_more: false, quota_remaining: 7, backoff: 1 });
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:01:00.000Z"));
@@ -280,6 +280,37 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     );
   });
 
+  it("starts the minimum deferral when a delayed backoff response is observed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const repository = fakeRepository();
+      const request = responseRequest([], () => {
+        vi.setSystemTime(new Date(now.getTime() + 61_000));
+        return { items: [], has_more: false, quota_remaining: 7, backoff: 1 };
+      });
+
+      const result = await fetchStackExchangeSource({
+        entry,
+        repository,
+        signal: new AbortController().signal,
+        now,
+        lookup: publicLookup,
+        request,
+      });
+
+      expect(result.deferredUntil).toEqual(new Date("2026-08-24T00:02:01.000Z"));
+      expect(repository.compareAndSetStackExchangeFetchState).toHaveBeenCalledWith(
+        entry.id,
+        null,
+        { checkedAt: "2026-08-24T00:01:01.000Z", retryAt: "2026-08-24T00:02:01.000Z", quotaRemaining: 7 },
+        expect.objectContaining({ timeoutMs: 5_000 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops immediately on answer backoff after staging a question", async () => {
     const calls: Array<{ path: string; headers: Record<string, string> }> = [];
     const request = responseRequest(calls, (path) => path.includes("/answers")
@@ -287,7 +318,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
       : { items: [question(11)], has_more: false, quota_remaining: 8 });
     const repository = fakeRepository();
 
-    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
+    const result = await fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request });
 
     expect(result.documents).toEqual([]);
     expect(calls).toHaveLength(2);
@@ -301,13 +332,13 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
 
   it("clamps backoff to the minimum and maximum retry windows", async () => {
     const minimum = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 4, backoff: 0 }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: minimum })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request: minimum })).resolves.toMatchObject({
       deferredUntil: new Date("2026-08-24T00:01:00.000Z"),
       documents: [],
     });
 
     const maximum = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 4, backoff: Number.MAX_SAFE_INTEGER }));
-    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, lookup: publicLookup, request: maximum })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository: fakeRepository(), signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request: maximum })).resolves.toMatchObject({
       deferredUntil: new Date("2026-08-25T00:00:00.000Z"),
       documents: [],
     });
@@ -524,7 +555,7 @@ describe("bounded Cardano Stack Exchange ingestion", () => {
     repository.compareAndSetStackExchangeFetchState = vi.fn(async () => false);
     const request = responseRequest([], () => ({ items: [], has_more: false, quota_remaining: 2, backoff: 1 }));
 
-    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request })).resolves.toMatchObject({
+    await expect(fetchStackExchangeSource({ entry, repository, signal: new AbortController().signal, now, clock: () => now, lookup: publicLookup, request })).resolves.toMatchObject({
       documents: [],
       deferredUntil: new Date("2026-08-24T00:05:00.000Z"),
     });
