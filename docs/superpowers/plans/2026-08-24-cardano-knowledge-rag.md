@@ -568,7 +568,7 @@ Verified with targeted private-path suites (`129` passed before final remediatio
 - Modify: `package.json`
 - Test: `tests/cardanoRagEval.test.ts`
 
-- [ ] **Step 1: Create a versioned evaluation corpus**
+- [x] **Step 1: Create a versioned evaluation corpus**
 
 Add at least 60 manually reviewable cases: at least five each for fundamentals, consensus, staking, assets, transactions, wallets, Plutus/Aiken, nodes/APIs, governance/CIPs, Catalyst, ecosystem, and failure/adversarial behavior. At least 15 questions are Vietnamese and at least five explicitly require current evidence.
 
@@ -578,11 +578,11 @@ Each JSONL row uses this schema:
 {"id":"consensus-001","language":"vi","question":"Ouroboros là gì?","requiredSourceIds":["cardano-docs","ouroboros-consensus"],"requiredTerms":["proof-of-stake"],"forbiddenTerms":["proof-of-work"],"validAt":"2026-08-24"}
 ```
 
-- [ ] **Step 2: Implement deterministic metrics**
+- [x] **Step 2: Implement deterministic metrics**
 
 Calculate retrieval recall@10, citation precision from claim/citation labels, unsupported-claim count, community-overrides-official violations, and per-language pass rate. Exit non-zero below 90% recall@10, below 95% citation precision, or above zero official-override violations.
 
-- [ ] **Step 3: Add offline and live commands**
+- [x] **Step 3: Add offline and live commands**
 
 ```json
 "eval:cardano-rag": "tsx scripts/evaluate-cardano-rag.ts --offline",
@@ -591,7 +591,7 @@ Calculate retrieval recall@10, citation precision from claim/citation labels, un
 
 Offline mode uses checked-in retrieved fixtures and fake model outputs. Live mode requires explicit database, LiteLLM, and source credentials and writes a timestamped report without replacing the approved baseline.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `npm test -- --run tests/cardanoRagEval.test.ts && npm run eval:cardano-rag`
 
@@ -601,6 +601,10 @@ Expected: all fixture tests pass and thresholds are satisfied.
 git add package.json packages/cardano-agent/src/evaluation samples/evaluation scripts/evaluate-cardano-rag.ts tests/cardanoRagEval.test.ts
 git commit -m "test: evaluate grounded Cardano answers"
 ```
+
+- [x] **R9 complete (2026-08-26)**
+
+Implementation commits: `48d5c74`, `a3db916`, `b55f06f`, `4235714`, and `bce88e0`. The checked-in corpus contains `60` manually reviewable cases across `12` categories (`5` each), including `24` Vietnamese and `7` current-evidence cases. Offline evaluation passes with recall@10 `100%`, citation precision `100%`, per-language pass rate `100%`, and zero unsupported claims, official-override violations, answer-property failures, or freshness violations. Targeted tests (`11/11`), the no-credential full suite (`708` passed, `66` credential-gated skipped), typecheck, build, compiled imports, registry validation, and diff check passed. Independent code and authoritative-corpus reviews passed. Live evaluation remains an explicit R10 credential-gated release check.
 
 ### Task 10: Run the Knowledge Release Gate
 
