@@ -126,6 +126,11 @@ export type {
   GithubSourceInput,
   GithubSourceResult,
 } from "./knowledge/githubSource.js";
+export { fetchStackExchangeSource } from "./knowledge/stackExchangeSource.js";
+export type {
+  StackExchangeSourceInput,
+  StackExchangeSourceResult,
+} from "./knowledge/stackExchangeSource.js";
 
 export { crawlSource, fetchCrawlResponse } from "./knowledge/crawlSource.js";
 export type {
@@ -155,6 +160,7 @@ export type {
   KnowledgeChunkInput,
   KnowledgeVersion,
   RepositoryOperationOptions,
+  StackExchangeFetchState,
   StoreVersionInput,
 } from "./knowledge/knowledgeRepository.js";
 export { PromotionAuditRepository } from "./knowledge/promotionAudit.js";

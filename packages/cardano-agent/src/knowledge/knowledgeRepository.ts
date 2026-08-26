@@ -20,6 +20,12 @@ export type GithubEndpointState = {
   rateLimitRemaining?: number;
 };
 
+export type StackExchangeFetchState = {
+  checkedAt?: string;
+  retryAt?: string;
+  quotaRemaining?: number;
+};
+
 export type GithubEndpointStateUpdate = {
   sourceId: string;
   endpoint: GithubEndpoint;
@@ -210,6 +216,34 @@ function validateGithubEndpointState(value: unknown, field = "Endpoint state"): 
     throw new Error(`${field} is too large.`);
   }
   return value as GithubEndpointState;
+}
+
+function validateStackExchangeFetchState(value: unknown, field = "Stack Exchange fetch state"): StackExchangeFetchState {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${field} must be a plain JSON object.`);
+  }
+  const allowed = new Set(["checkedAt", "retryAt", "quotaRemaining"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`${field} contains unknown field: ${key}`);
+  }
+  if ("checkedAt" in value) assertIsoDate(value.checkedAt, `${field} checkedAt`);
+  if ("retryAt" in value) assertIsoDate(value.retryAt, `${field} retryAt`);
+  if ("quotaRemaining" in value) {
+    const remaining = value.quotaRemaining;
+    if (typeof remaining !== "number" || !Number.isSafeInteger(remaining) || remaining < 0) {
+      throw new Error(`${field} quotaRemaining is invalid.`);
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_ENDPOINT_STATE_BYTES) {
+    throw new Error(`${field} is too large.`);
+  }
+  return value as StackExchangeFetchState;
+}
+
+function serializeStackExchangeFetchState(value: StackExchangeFetchState | null): string {
+  if (value === null) return "null";
+  validateStackExchangeFetchState(value);
+  return JSON.stringify(value);
 }
 
 function serializeEndpointState(value: GithubEndpointState | null): string {
@@ -430,6 +464,57 @@ export class KnowledgeRepository {
     );
     const state = result.rows[0]?.state;
     return state === null || state === undefined ? null : validateGithubEndpointState(state);
+  }
+
+  async getStackExchangeFetchState(
+    sourceId: string,
+    options?: RepositoryOperationOptions,
+  ): Promise<StackExchangeFetchState | null> {
+    assertSourceId(sourceId);
+    if (options) {
+      const state = await runBoundedTransaction(this.db, options, async (client) => {
+        ensureOperationActive(options);
+        const result = await client.query<{ state: unknown }>(
+          `SELECT fetch_state -> 'stackexchange' AS state FROM knowledge_sources WHERE id = $1`,
+          [sourceId],
+        );
+        ensureOperationActive(options);
+        return result.rows[0]?.state;
+      });
+      return state === null || state === undefined ? null : validateStackExchangeFetchState(state);
+    }
+    const result = await this.db.query<{ state: unknown }>(
+      `SELECT fetch_state -> 'stackexchange' AS state FROM knowledge_sources WHERE id = $1`,
+      [sourceId],
+    );
+    const state = result.rows[0]?.state;
+    return state === null || state === undefined ? null : validateStackExchangeFetchState(state);
+  }
+
+  async compareAndSetStackExchangeFetchState(
+    sourceId: string,
+    expectedState: StackExchangeFetchState | null,
+    nextState: StackExchangeFetchState | null,
+    options?: RepositoryOperationOptions,
+  ): Promise<boolean> {
+    assertSourceId(sourceId);
+    if (expectedState !== null) validateStackExchangeFetchState(expectedState, "Expected Stack Exchange fetch state");
+    if (nextState !== null) validateStackExchangeFetchState(nextState, "Next Stack Exchange fetch state");
+    const query = `UPDATE knowledge_sources
+       SET fetch_state = jsonb_set(COALESCE(fetch_state, '{}'::jsonb), ARRAY['stackexchange']::text[], $2::jsonb, true)
+       WHERE id = $1
+         AND COALESCE(fetch_state -> 'stackexchange', 'null'::jsonb) = $3::jsonb`;
+    const parameters = [sourceId, serializeStackExchangeFetchState(nextState), serializeStackExchangeFetchState(expectedState)];
+    if (options) {
+      return runBoundedTransaction(this.db, options, async (client) => {
+        ensureOperationActive(options);
+        const result = await client.query(query, parameters);
+        ensureOperationActive(options);
+        return (result.rowCount ?? 0) === 1;
+      });
+    }
+    const result = await this.db.query(query, parameters);
+    return (result.rowCount ?? 0) === 1;
   }
 
   async compareAndSetGithubEndpointState(

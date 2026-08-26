@@ -23,6 +23,18 @@ const pageEntry: SourceRegistryEntry = {
   networks: ["mainnet"],
   refresh: "daily"
 };
+const stackExchangeEntry: SourceRegistryEntry = {
+  id: "cardano-stackexchange",
+  owner: "Cardano",
+  trustTier: "official",
+  kind: "stackexchange",
+  url: "https://api.stackexchange.com/2.3/questions",
+  allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com"],
+  topics: ["questions"],
+  networks: ["mainnet"],
+  refresh: "daily",
+  stackExchange: { site: "cardano" },
+};
 
 describe("bounded source crawler", () => {
   it("extracts the required HTML document and follows safe relative links", async () => {
@@ -345,6 +357,40 @@ describe("bounded source crawler", () => {
     await expect(result.commitState?.()).resolves.toBe(true);
     expect(repository.compareAndSetGithubEndpointStates).toHaveBeenCalledTimes(1);
   });
+
+  it("dispatches Stack Exchange through its API adapter instead of BasicCrawler", async () => {
+    const { request, calls } = fakeRequest({
+      "/2.3/questions?order=desc&sort=activity&pagesize=100&page=1&filter=withbody&site=cardano": json({
+        items: [{
+          question_id: 11,
+          title: "Question",
+          body: "<p>Body.</p>",
+          creation_date: 1_700_000_000,
+          last_activity_date: 1_700_000_001,
+          content_license: "CC BY-SA 4.0",
+          owner: null,
+        }],
+        has_more: false,
+        quota_remaining: 99,
+      }),
+      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&filter=withbody&site=cardano": json({
+        items: [],
+        has_more: false,
+        quota_remaining: 98,
+      }),
+    });
+    const repository = fakeRepository();
+
+    const result = await crawlSource({ entry: stackExchangeEntry, repository, signal: new AbortController().signal, now, lookup: publicLookup, request });
+
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents[0]).toMatchObject({ sourceId: stackExchangeEntry.id, trustTier: "official" });
+    expect(calls).toEqual([
+      "/2.3/questions?order=desc&sort=activity&pagesize=100&page=1&filter=withbody&site=cardano",
+      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&filter=withbody&site=cardano",
+    ]);
+    expect(result.commitState).toBeTypeOf("function");
+  });
 });
 
 type ResponseSpec = {
@@ -416,7 +462,9 @@ function fakeRepository(): KnowledgeRepository {
     ensureSource: vi.fn(async () => undefined),
     getGithubEndpointState: vi.fn(async () => null),
     compareAndSetGithubEndpointState: vi.fn(async () => true),
-    compareAndSetGithubEndpointStates: vi.fn(async () => true)
+    compareAndSetGithubEndpointStates: vi.fn(async () => true),
+    getStackExchangeFetchState: vi.fn(async () => null),
+    compareAndSetStackExchangeFetchState: vi.fn(async () => true),
   } as unknown as KnowledgeRepository;
 }
 

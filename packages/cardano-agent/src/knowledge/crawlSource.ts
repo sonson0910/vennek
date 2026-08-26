@@ -9,6 +9,7 @@ import {
 import { extractContent } from "./extractContent.js";
 import type { PdfExtractor } from "./extractContent.js";
 import { fetchGithubSource } from "./githubSource.js";
+import { fetchStackExchangeSource } from "./stackExchangeSource.js";
 import { KnowledgeRepository, type RepositoryOperationOptions } from "./knowledgeRepository.js";
 import { urlMatchesSourceScope, validateSourceRegistry, type SourceRegistryEntry, type TrustTier } from "./sourceRegistry.js";
 
@@ -142,6 +143,32 @@ export async function crawlSource(input: CrawlSourceInput): Promise<CrawlSourceR
       unchanged: github.unchanged,
       ...(github.deferredUntil ? { deferredUntil: github.deferredUntil } : {}),
       ...(github.commitState ? { commitState: github.commitState } : {}),
+    };
+  }
+
+  if (entry.kind === "stackexchange") {
+    const stackExchange = await fetchStackExchangeSource({
+      entry,
+      repository: input.repository,
+      signal: crawlSignal,
+      now: retrievedAt,
+      lookup: input.lookup,
+      request: input.request,
+    });
+    const documents = stackExchange.documents.map((document) => ({
+      sourceId: entry.id,
+      canonicalUrl: document.canonicalUrl,
+      trustTier: entry.trustTier,
+      title: document.title,
+      text: document.text,
+      publishedAt: document.publishedAt,
+      retrievedAt,
+    } satisfies CrawledDocument));
+    return {
+      documents,
+      unchanged: stackExchange.unchanged,
+      ...(stackExchange.deferredUntil ? { deferredUntil: stackExchange.deferredUntil } : {}),
+      ...(stackExchange.commitState ? { commitState: stackExchange.commitState } : {}),
     };
   }
 

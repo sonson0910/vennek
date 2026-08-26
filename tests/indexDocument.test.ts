@@ -195,7 +195,7 @@ describe("indexCrawlResult", () => {
     const deps = dependencies();
     const commitState = vi.fn(async () => false);
 
-    await expect(indexCrawlResult({ crawlResult: { documents: [document()], unchanged: 0, commitState }, ...deps })).rejects.toThrow(/commit/i);
+    await expect(indexCrawlResult({ crawlResult: { documents: [document()], unchanged: 0, commitState }, ...deps })).rejects.toThrow(/Source fetch state commit failed/i);
     expect(deps.repository.replaceChunks).toHaveBeenCalledTimes(1);
   });
 });

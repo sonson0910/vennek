@@ -17,6 +17,18 @@ const githubEntry: SourceRegistryEntry = {
   networks: ["mainnet"],
   refresh: "daily"
 };
+const stackExchangeEntry: SourceRegistryEntry = {
+  id: "test-cardano-stackexchange",
+  owner: "Cardano",
+  trustTier: "official",
+  kind: "stackexchange",
+  url: "https://api.stackexchange.com/2.3/questions",
+  allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com"],
+  topics: ["questions"],
+  networks: ["mainnet"],
+  refresh: "daily",
+  stackExchange: { site: "cardano" },
+};
 
 describe("knowledge repository validation", () => {
   it("bounds ensureSource acquisition and releases a client that arrives after abort", async () => {
@@ -225,6 +237,31 @@ describe("knowledge repository validation", () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
+  it("validates fixed Stack Exchange fetch state before issuing SQL", async () => {
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => ({ rowCount: 1, rows: [{ state: null }] }));
+    const repository = new KnowledgeRepository({ query } as unknown as Pool);
+    const checkedAt = "2026-08-24T00:00:00.000Z";
+
+    await expect(repository.getStackExchangeFetchState(stackExchangeEntry.id)).resolves.toBeNull();
+    await expect(repository.compareAndSetStackExchangeFetchState(stackExchangeEntry.id, null, {
+      checkedAt,
+      retryAt: "2026-08-24T00:01:00.000Z",
+      quotaRemaining: 0,
+    })).resolves.toBe(true);
+    await expect(repository.compareAndSetStackExchangeFetchState(stackExchangeEntry.id, null, {
+      unknown: "field",
+    } as never)).rejects.toThrow(/unknown/i);
+    await expect(repository.compareAndSetStackExchangeFetchState(stackExchangeEntry.id, null, {
+      checkedAt: "x".repeat(4_100),
+    })).rejects.toThrow(/ISO|large/i);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]?.[1]).toEqual([
+      stackExchangeEntry.id,
+      JSON.stringify({ checkedAt, retryAt: "2026-08-24T00:01:00.000Z", quotaRemaining: 0 }),
+      "null",
+    ]);
+  });
+
   it("validates complete chunk queries before issuing SQL", async () => {
     const query = vi.fn(async () => ({ rows: [] }));
     const repository = new KnowledgeRepository({ query } as unknown as Pool);
@@ -354,6 +391,26 @@ describe.skipIf(!databaseUrl)("knowledge repository", () => {
       await expect(repository.compareAndSetGithubEndpointState(sourceId, "repository", expected, next)).resolves.toBe(true);
       await expect(repository.compareAndSetGithubEndpointState(sourceId, "repository", expected, { etag: '"stale"' })).resolves.toBe(false);
       await expect(repository.getGithubEndpointState(sourceId, "repository")).resolves.toEqual(next);
+    } finally {
+      await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
+      await db.end();
+    }
+  });
+
+  it("persists Stack Exchange fetch state with a fixed key and rejects stale CAS", async () => {
+    const db = createDatabase(databaseUrl!);
+    const repository = new KnowledgeRepository(db);
+    const sourceId = `test-stackexchange-${process.pid}-${Date.now()}`;
+    const entry = { ...stackExchangeEntry, id: sourceId };
+    const checkedAt = "2026-08-24T00:00:00.000Z";
+    try {
+      await repository.ensureSource(entry);
+      const initial = await repository.getStackExchangeFetchState(sourceId);
+      expect(initial).toBeNull();
+      const next = { checkedAt, quotaRemaining: 12 };
+      await expect(repository.compareAndSetStackExchangeFetchState(sourceId, initial, next)).resolves.toBe(true);
+      await expect(repository.compareAndSetStackExchangeFetchState(sourceId, initial, { checkedAt })).resolves.toBe(false);
+      await expect(repository.getStackExchangeFetchState(sourceId)).resolves.toEqual(next);
     } finally {
       await db.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
       await db.end();

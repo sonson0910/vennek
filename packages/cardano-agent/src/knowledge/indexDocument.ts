@@ -105,7 +105,7 @@ export async function indexCrawlResult(input: IndexCrawlInput): Promise<IndexCra
   ensureActive(signal);
   let committed = false;
   if (input.crawlResult.commitState) {
-    if (!(await input.crawlResult.commitState(repositoryOperation(deadline)))) throw new Error("GitHub fetch state commit failed.");
+    if (!(await input.crawlResult.commitState(repositoryOperation(deadline)))) throw new Error("Source fetch state commit failed.");
     ensureActive(signal);
     committed = true;
   }
