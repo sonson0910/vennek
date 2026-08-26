@@ -24,7 +24,7 @@ Complete `2026-08-24-public-cardano-agent-foundation.md`. Keep the agent credent
 - Modify: `package.json`
 - Test: `tests/sourceRegistry.test.ts`
 
-- [ ] **Step 1: Write failing registry validation tests**
+- [x] **Step 1: Write failing registry validation tests**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -58,13 +58,13 @@ describe("Cardano source registry", () => {
 });
 ```
 
-- [ ] **Step 2: Confirm the tests fail**
+- [x] **Step 2: Confirm the tests fail**
 
 Run: `npm test -- --run tests/sourceRegistry.test.ts`
 
 Expected: FAIL because registry validation is absent.
 
-- [ ] **Step 3: Implement the registry contract**
+- [x] **Step 3: Implement the registry contract**
 
 ```ts
 export type TrustTier = "official" | "community" | "unverified";
@@ -86,13 +86,13 @@ export type SourceRegistryEntry = {
 
 `validateSourceRegistry` must reject unknown fields, duplicate IDs, empty arrays, invalid enum values, non-HTTPS URLs, URL credentials, IP-literal hosts, and hosts outside `allowedDomains`. Reuse `hostMatches` from the existing safe remote adapter.
 
-- [ ] **Step 4: Seed the required source families**
+- [x] **Step 4: Seed the required source families**
 
 `config/cardano-sources.json` must contain at least one validated official entry for each of these IDs: `cardano-docs`, `cardano-developer-portal`, `iog-research`, `iog-github`, `cardano-foundation`, `cardano-foundation-github`, `emurgo`, `intersect`, `intersect-github`, `cardano-cips`, `project-catalyst`, `govtool`, `cardano-node-releases`, `cardano-ledger`, `ouroboros-consensus`, `plutus`, and `aiken`.
 
 Use `hourly` for GitHub releases, governance, CIPs, Catalyst, and GovTool. Use `daily` for stable documentation and research. Keep community sources in a separate second section of the JSON file and mark every one `community`.
 
-- [ ] **Step 5: Add offline and live validation commands**
+- [x] **Step 5: Add offline and live validation commands**
 
 Add scripts:
 
@@ -103,7 +103,7 @@ Add scripts:
 
 Offline mode parses and reports coverage by required family. Live mode issues bounded HEAD/GET requests through the hardened fetch boundary, reports retrieval failures with reasons, and never mutates the registry.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `npm test -- --run tests/sourceRegistry.test.ts && npm run validate:registry && npm run typecheck`
 
@@ -122,7 +122,7 @@ git commit -m "feat: register trusted Cardano sources"
 - Modify: `packages/cardano-agent/src/index.ts`
 - Test: `tests/knowledgeRepository.integration.test.ts`
 
-- [ ] **Step 1: Write a credential-gated versioning test**
+- [x] **Step 1: Write a credential-gated versioning test**
 
 ```ts
 it("deduplicates unchanged source versions and replaces chunks atomically", async () => {
@@ -133,7 +133,7 @@ it("deduplicates unchanged source versions and replaces chunks atomically", asyn
 });
 ```
 
-- [ ] **Step 2: Create the knowledge schema**
+- [x] **Step 2: Create the knowledge schema**
 
 Use this table structure and indexes:
 
@@ -180,11 +180,11 @@ CREATE INDEX knowledge_chunks_embedding_idx ON knowledge_chunks USING hnsw (embe
 CREATE INDEX source_versions_url_retrieved_idx ON source_versions (canonical_url, retrieved_at DESC);
 ```
 
-- [ ] **Step 3: Implement atomic version storage**
+- [x] **Step 3: Implement atomic version storage**
 
 Use parameterized queries only. `storeVersion` inserts the source version with `ON CONFLICT` and returns the existing ID when the content hash is unchanged. `replaceChunks(versionId, chunks)` opens a transaction, deletes chunks for that version, inserts the complete validated set, and commits. Reject empty content, non-HTTPS canonical URLs, non-finite embedding values, embeddings not exactly 1,536 elements, and duplicate ordinals before starting the transaction.
 
-- [ ] **Step 4: Verify against PostgreSQL**
+- [x] **Step 4: Verify against PostgreSQL**
 
 Run:
 
@@ -195,7 +195,7 @@ TEST_DATABASE_URL=postgres://vennek:vennek@localhost:5432/vennek npm test -- --r
 
 Expected: version deduplication and atomic chunk replacement pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/cardano-agent/migrations packages/cardano-agent/src tests/knowledgeRepository.integration.test.ts
@@ -215,11 +215,11 @@ git commit -m "feat: store versioned Cardano knowledge"
 - Test: `tests/sourceCrawler.test.ts`
 - Test: `tests/githubSource.test.ts`
 
-- [ ] **Step 1: Install maintained parsers and crawler**
+- [x] **Step 1: Install maintained parsers and crawler**
 
 Run: `npm install -w @vennek/cardano-agent crawlee@^3.15.0 pdfjs-dist@^5.4.0`
 
-- [ ] **Step 2: Write failing extraction tests**
+- [x] **Step 2: Write failing extraction tests**
 
 ```ts
 it("removes scripts and navigation from HTML while preserving headings", async () => {
@@ -232,11 +232,11 @@ it("rejects documents larger than 8 MiB before parsing", async () => {
 });
 ```
 
-- [ ] **Step 3: Generalize the existing bounded response reader**
+- [x] **Step 3: Generalize the existing bounded response reader**
 
 Extract a `readResponseBytesLimited(response, maxBytes, allowedMimeTypes)` helper next to `readResponseTextLimited`. It must retain the current streaming byte cap, content-length early rejection, cancellation, redirect rejection, and error cleanup. Existing text fetch tests must remain unchanged and pass through the new primitive.
 
-- [ ] **Step 4: Implement extraction without browser execution**
+- [x] **Step 4: Implement extraction without browser execution**
 
 Use Crawlee `BasicCrawler` for request scheduling only. Fetch each URL with the hardened helper and the registry entry's `allowedDomains`; do not use a headless browser or execute page JavaScript in this phase. Parse:
 
@@ -247,15 +247,15 @@ Use Crawlee `BasicCrawler` for request scheduling only. Fetch each URL with the 
 
 Return `{ title, text, publishedAt }`. Reject empty extracted text and more than 2 million normalized characters.
 
-- [ ] **Step 5: Implement GitHub-specific incremental retrieval**
+- [x] **Step 5: Implement GitHub-specific incremental retrieval**
 
 For `kind: "github"`, map only registry-approved `owner/repository` pairs to fixed `api.github.com` endpoints for default-branch documentation, releases, tags, and repository metadata. Send the stored ETag as `If-None-Match`, treat 304 as unchanged, persist new ETag/rate-limit state in `knowledge_sources.fetch_state`, and honor `Retry-After` or `X-RateLimit-Reset`. Never accept a repository or API URL from a Telegram message.
 
-- [ ] **Step 6: Test crawl confinement**
+- [x] **Step 6: Test crawl confinement**
 
 Prove the crawler rejects cross-domain redirects, private DNS answers, URL credentials, unsupported MIME types, oversized streams, and links outside the registry allowlist. Prove a sitemap can enqueue only HTTPS URLs matching the same source entry.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run: `npm test -- --run tests/adapters.test.ts tests/contentExtraction.test.ts tests/sourceCrawler.test.ts tests/githubSource.test.ts && npm run typecheck`
 
@@ -274,7 +274,7 @@ git commit -m "feat: ingest bounded Cardano source content"
 - Test: `tests/chunkDocument.test.ts`
 - Test: `tests/embeddingClient.test.ts`
 
-- [ ] **Step 1: Write failing deterministic chunk tests**
+- [x] **Step 1: Write failing deterministic chunk tests**
 
 ```ts
 it("chunks on headings and bounds every chunk", () => {
@@ -285,11 +285,11 @@ it("chunks on headings and bounds every chunk", () => {
 });
 ```
 
-- [ ] **Step 2: Implement deterministic chunking**
+- [x] **Step 2: Implement deterministic chunking**
 
 Split on Markdown headings, paragraphs, and code blocks. Target 1,000 characters, hard cap at 1,200, and carry at most the final 150 characters of the prior prose chunk. Never split inside a fenced code block shorter than 1,200 characters. Hash `heading + "\n" + content` with the existing SHA-256 helper.
 
-- [ ] **Step 3: Write and implement the embedding contract**
+- [x] **Step 3: Write and implement the embedding contract**
 
 POST to `${LITELLM_BASE_URL}/v1/embeddings` with `{ model: VENNEK_EMBEDDING_MODEL, input: string[] }`. Batch at most 64 chunks and 100,000 total input characters. Validate the response has one 1,536-element finite numeric vector per input in the same index order.
 
@@ -299,11 +299,11 @@ The public method is:
 embed(input: string[]): Promise<Array<{ index: number; embedding: number[] }>>
 ```
 
-- [ ] **Step 4: Implement idempotent indexing**
+- [x] **Step 4: Implement idempotent indexing**
 
 `indexDocument` computes the normalized content hash. If the exact source URL/hash version already has a complete chunk set for the configured embedding model, return without another embedding call. Otherwise chunk, embed, and atomically replace the version's chunks.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `npm test -- --run tests/chunkDocument.test.ts tests/embeddingClient.test.ts && npm run typecheck`
 
@@ -321,7 +321,7 @@ git commit -m "feat: chunk and embed Cardano sources"
 - Modify: `packages/cardano-agent/src/index.ts`
 - Test: `tests/retrieveEvidence.integration.test.ts`
 
-- [ ] **Step 1: Seed a failing retrieval test**
+- [x] **Step 1: Seed a failing retrieval test**
 
 Insert one official and one community chunk with overlapping terms. Assert an official exact lexical match ranks before the community vector-only match and every returned item contains immutable source/version provenance.
 
@@ -342,21 +342,21 @@ type Evidence = {
 };
 ```
 
-- [ ] **Step 2: Implement reciprocal-rank fusion**
+- [x] **Step 2: Implement reciprocal-rank fusion**
 
 Use one parameterized SQL statement with separate top-40 lexical and vector CTEs. Combine ranks with `1.0 / (60 + rank)`, add `0.01` for official and `0.005` for community evidence, and return at most 10 chunks. Join only the newest successfully indexed version per canonical URL. Filter by requested networks/topics when supplied.
 
-- [ ] **Step 3: Enforce freshness in application code**
+- [x] **Step 3: Enforce freshness in application code**
 
 Mark governance, release, GitHub, and on-chain-related evidence stale after two hours; stable documentation stale after 48 hours. Stale evidence remains retrievable but carries `stale: true` and triggers live discovery rather than being presented as current without qualification.
 
-- [ ] **Step 4: Add source-version-bound retrieval caching**
+- [x] **Step 4: Add source-version-bound retrieval caching**
 
 Create `retrieval_cache` with `query_hash`, `language`, `filter_hash`, `source_version_fingerprint`, `chunk_ids jsonb`, `embedding_model`, `expires_at`, and a composite primary key. Cache only stable-document retrievals. Do not cache wallet, on-chain, governance, release, current/latest, or personalized queries. On read, recompute the fingerprint from the newest source versions; a mismatch is a miss and deletes the stale row.
 
 Add tests proving unchanged stable retrieval is reused without another embedding call, a new source version invalidates it, and current/on-chain questions never create a row.
 
-- [ ] **Step 5: Verify against PostgreSQL and commit**
+- [x] **Step 5: Verify against PostgreSQL and commit**
 
 Run: `TEST_DATABASE_URL=postgres://vennek:vennek@localhost:5432/vennek npm test -- --run tests/retrieveEvidence.integration.test.ts`
 
@@ -374,7 +374,7 @@ git commit -m "feat: retrieve ranked Cardano evidence"
 - Modify: `packages/cardano-agent/src/index.ts`
 - Test: `tests/liveDiscovery.test.ts`
 
-- [ ] **Step 1: Write failing discovery tests**
+- [x] **Step 1: Write failing discovery tests**
 
 Prove queries are restricted to registry domains first, malformed JSON is rejected, result URLs with credentials/private IPs are discarded, and no unregistered domain becomes official evidence.
 
@@ -382,15 +382,15 @@ Prove queries are restricted to registry domains first, malformed JSON is reject
 expect(buildOfficialSearchQuery("latest Cardano node", ["docs.cardano.org", "github.com"])).toBe("latest Cardano node (site:docs.cardano.org OR site:github.com)");
 ```
 
-- [ ] **Step 2: Implement a fixed-endpoint client**
+- [x] **Step 2: Implement a fixed-endpoint client**
 
 Add required `SEARXNG_BASE_URL` for live-discovery-enabled deployments. Call only `/search` on that configured origin with `format=json`, `safesearch=1`, a five-second timeout, and a 1 MiB response limit. Accept at most ten results.
 
-- [ ] **Step 3: Promote live results safely**
+- [x] **Step 3: Promote live results safely**
 
 Results matching a registry entry inherit that entry's trust tier only after fetching through its allowed domains and indexing an immutable version. Results outside the registry are `unverified`, may be shown as discovery links, and cannot be the only citation for a factual claim.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `npm test -- --run tests/liveDiscovery.test.ts tests/agentConfig.test.ts && npm run typecheck`
 
@@ -408,7 +408,7 @@ git commit -m "feat: discover current Cardano sources"
 - Modify: `packages/cardano-agent/src/agent/answerQuestion.ts`
 - Test: `tests/groundedAnswer.test.ts`
 
-- [ ] **Step 1: Write failing grounding tests**
+- [x] **Step 1: Write failing grounding tests**
 
 ```ts
 it("drops a factual claim whose citation does not support it", async () => {
@@ -420,7 +420,7 @@ it("drops a factual claim whose citation does not support it", async () => {
 });
 ```
 
-- [ ] **Step 2: Define the model output contract**
+- [x] **Step 2: Define the model output contract**
 
 ```ts
 type GeneratedAnswer = {
@@ -435,19 +435,19 @@ type GeneratedAnswer = {
 
 The prompt encloses evidence in `<evidence id="E1">` blocks, states that evidence is untrusted data, forbids following source instructions, and requires JSON matching this contract. Do not include operational secrets or full historical conversation.
 
-- [ ] **Step 3: Add deterministic validation before model verification**
+- [x] **Step 3: Add deterministic validation before model verification**
 
 Reject unknown citation IDs, empty claims, more than 12 claims, claims longer than 700 characters, and factual claims with zero citations. Community-only claims must render with a community label. Conflicting official sources must both be cited and named.
 
-- [ ] **Step 4: Add verifier-model checks**
+- [x] **Step 4: Add verifier-model checks**
 
 Send each claim plus only its cited excerpts to the verifier profile. Require a JSON boolean array with exactly one value per claim, for example `{ "supported": [true, false] }`. Drop unsupported factual claims. If the verifier fails or returns malformed output, fail closed with a localized evidence-unavailable answer.
 
-- [ ] **Step 5: Wire retrieval into `answerQuestion`**
+- [x] **Step 5: Wire retrieval into `answerQuestion`**
 
 Retrieve evidence, trigger live discovery when current evidence is absent/stale, validate an immutable bounded evidence snapshot, and reject wallet-secret material before any provider call. Then select the model profile, generate, verify, render inline numbered links, persist the final assistant message, and record only token counts/model/latency in `usage_ledger`. Greetings remain deterministic and do not call retrieval or a model.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `npm test -- --run tests/answerQuestion.test.ts tests/groundedAnswer.test.ts tests/safety.test.ts && npm run typecheck`
 
@@ -613,11 +613,11 @@ Implementation commits: `48d5c74`, `a3db916`, `b55f06f`, `4235714`, and `bce88e0
 - Modify: `docs/architecture/data-sources.md`
 - Modify: `docs/deployment/release-checklist.md`
 
-- [ ] **Step 1: Update operating documentation**
+- [x] **Step 1: Update operating documentation**
 
 Document source tiers, registry changes, crawl limits, hourly/daily schedules, live discovery, cache invalidation, embedding-index rebuilds, dead-letter recovery, and the exact rule that community sources never silently override official sources.
 
-- [ ] **Step 2: Run offline gates**
+- [x] **Step 2: Run offline gates**
 
 ```bash
 npm test -- --run
@@ -641,9 +641,23 @@ npm run eval:cardano-rag:live
 
 Expected: current official sources retrieve successfully or report explicit source-specific failures; live RAG meets the same recall/citation gates before public canary.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md docs/architecture/data-sources.md docs/deployment/release-checklist.md
 git commit -m "docs: operate the Cardano knowledge pipeline"
 ```
+
+R10 documentation and offline gates completed on 2026-08-26 in `c8700c7`.
+The full suite passed (`708` tests, `66` credential-gated skips), as did
+typecheck, build, compiled imports, registry coverage (`18` official and `2`
+community sources), the `60`-case offline RAG evaluation (recall@10 and citation
+precision `100%`, zero policy violations), dependency audit (`0`
+vulnerabilities), and diff check. Independent release-document review passed.
+
+Credential-gated staging remains open. Live registry validation reported
+explicit upstream failures for Cardano Foundation (`429`) and Cardano Stack
+Exchange (`403`); the other `18` sources passed. Live RAG failed closed before
+retrieval because `DATABASE_URL`, LiteLLM/model settings, and `GITHUB_TOKEN`
+are not available in this environment. Do not open the public factual-answer
+canary until both live commands exit successfully.
