@@ -132,9 +132,11 @@ runIntegration("private comparison queue PostgreSQL/PgBoss integration", () => {
 
       const queue = new PgBossAgentQueue(boss, db, key);
       await expect(queue.enqueue(job)).resolves.toBe(true);
+      const admitted = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}`, queued: true });
+      jobId = admitted[0]?.id;
+      if (!jobId) throw new Error("Expected a queued integration job");
       const active = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
-      jobId = active[0]?.id;
-      if (!jobId) throw new Error("Expected an active integration job");
+      expect(active[0]?.id).toBe(jobId);
 
       await db.query(
         "UPDATE pgboss.job SET started_on = now() - interval '1801 seconds' WHERE id = $1",
@@ -165,10 +167,6 @@ runIntegration("private comparison queue PostgreSQL/PgBoss integration", () => {
       expect(createdToNextAttempt).toBeGreaterThanOrEqual(0);
       expect(createdToNextAttempt).toBeLessThanOrEqual(PRIVATE_COMPARISON_MAX_LIFETIME_SECONDS * 1_000);
     } finally {
-      const remaining = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}` }).catch(() => []);
-      for (const remainingJob of remaining) {
-        await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, remainingJob.id).catch(() => undefined);
-      }
       if (jobId) await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
       await db.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
       await db.query(
@@ -213,9 +211,11 @@ runIntegration("private comparison queue PostgreSQL/PgBoss integration", () => {
 
       const queue = new PgBossAgentQueue(boss, db, key);
       await expect(queue.enqueue(job)).resolves.toBe(true);
+      const admitted = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}`, queued: true });
+      jobId = admitted[0]?.id;
+      if (!jobId) throw new Error("Expected a queued integration job");
       const active = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
-      jobId = active[0]?.id;
-      if (!jobId) throw new Error("Expected an active integration job");
+      expect(active[0]?.id).toBe(jobId);
 
       for (let attempt = 0; attempt <= PRIVATE_COMPARISON_RETRY_LIMIT; attempt += 1) {
         await db.query(

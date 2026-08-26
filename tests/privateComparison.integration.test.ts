@@ -266,12 +266,6 @@ function tamperBase64(value: string): string {
   return `${value[0] === "A" ? "B" : "A"}${value.slice(1)}`;
 }
 
-async function clearPrivateJobs(boss: PgBoss): Promise<void> {
-  for (const job of await boss.findJobs(PRIVATE_COMPARISON_QUEUE)) {
-    await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, job.id).catch(() => undefined);
-  }
-}
-
 function privateJob(updateId: number, markers: { caption: string; fileId: string; fileUniqueId: string; fileName: string }): PrivateComparisonIngressJob {
   const userId = String(updateId);
   return {
@@ -380,7 +374,6 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       });
 
       await boss.start();
-      await clearPrivateJobs(boss);
       const queue = new PgBossPrivateComparisonQueue(boss, app, encryptionKey);
       const ingress = privateJob(updateId, markers);
       await expect(queue.enqueue(ingress)).resolves.toBe(true);
@@ -410,7 +403,7 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
         telegramChatId: "9001",
       })).toThrow(/owner|authentication/i);
 
-      const evidence = await retrieveEvidence({ query: "Cardano proof of stake", language: "en", embeddingModel: "task10-embedding", cachePolicy: "stable" }, { db: app, embedder });
+      const evidence = await retrieveEvidence({ query: "Cardano proof of stake", language: "en", embeddingModel: "task10-embedding" }, { db: app, embedder });
       expect(evidence[0]).toMatchObject({ sourceId, url: publicUrl, stale: false });
 
       const retrievalRequests: Array<Parameters<typeof retrieveEvidence>[0]> = [];
@@ -508,6 +501,7 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       await noPrivateMarkers(owner, [markers.caption, markers.fileName, markers.fileId, markers.fileUniqueId, extractedPhrase, answerMarker]);
       await noPrivatePlaintextMarkers(owner, ["U1"]);
     } finally {
+      if (jobId) await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
       if (!stopped) {
         stopped = true;
         await boss.stop().catch(() => undefined);
@@ -516,8 +510,16 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       await telegram.close().catch(() => undefined);
       telegramFetch.restore();
       await owner.query("DELETE FROM usage_ledger WHERE telegram_user_id = $1", [String(updateId)]).catch(() => undefined);
-      await owner.query("DELETE FROM retrieval_cache").catch(() => undefined);
+      await owner.query("DELETE FROM retrieval_cache WHERE query_hash = $1", [sha256Hex(markers.caption)]).catch(() => undefined);
       await owner.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await owner.query(
+        "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
+        [String(updateId), String(updateId)],
+      ).catch(() => undefined);
+      await owner.query(
+        "DELETE FROM knowledge_chunks WHERE version_id IN (SELECT id FROM source_versions WHERE source_id = $1)",
+        [sourceId],
+      ).catch(() => undefined);
       await owner.query("DELETE FROM source_versions WHERE source_id = $1", [sourceId]).catch(() => undefined);
       await owner.query("DELETE FROM knowledge_sources WHERE id = $1", [sourceId]).catch(() => undefined);
       await app.end().catch(() => undefined);
@@ -616,14 +618,16 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       fileUniqueId: `TASK10_RETRY_UNIQUE_${updateId}`,
       fileName: `TASK10_RETRY_FILENAME_${updateId}.md`,
     });
+    let jobId: string | undefined;
     try {
       await boss.start();
-      await clearPrivateJobs(boss);
       const queue = new PgBossPrivateComparisonQueue(boss, app, encryptionKey);
       await expect(queue.enqueue(job)).resolves.toBe(true);
+      const admitted = await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}`, queued: true });
+      jobId = admitted[0]?.id;
+      if (!jobId) throw new Error("Expected a queued private job");
       const active = await boss.fetch(PRIVATE_COMPARISON_QUEUE);
-      const jobId = active[0]?.id;
-      if (!jobId) throw new Error("Expected an active private job");
+      expect(active[0]?.id).toBe(jobId);
       await owner.query("UPDATE pgboss.job SET started_on = now() - interval '1801 seconds' WHERE id = $1", [jobId]);
       await waitFor(async () => {
         await boss.supervise(PRIVATE_COMPARISON_QUEUE);
@@ -647,13 +651,14 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       expect(retryJob.startAfter.getTime() - retryJob.createdOn.getTime()).toBeLessThanOrEqual(PRIVATE_COMPARISON_MAX_LIFETIME_SECONDS * 1_000);
       expect(PRIVATE_COMPARISON_MAX_LIFETIME_SECONDS).toBe(1_514);
       expect(PRIVATE_COMPARISON_MAX_LIFETIME_SECONDS).toBeLessThan(3_600);
-      await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
-      for (const remaining of await boss.findJobs(PRIVATE_COMPARISON_QUEUE, { key: `private:${updateId}` })) {
-        await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, remaining.id).catch(() => undefined);
-      }
     } finally {
+      if (jobId) await boss.deleteJob(PRIVATE_COMPARISON_QUEUE, jobId).catch(() => undefined);
       await boss.stop().catch(() => undefined);
       await owner.query("DELETE FROM telegram_updates WHERE update_id = $1", [updateId]).catch(() => undefined);
+      await owner.query(
+        "DELETE FROM telegram_admission_windows WHERE (subject_type = 'user' AND subject_id = $1) OR (subject_type = 'chat' AND subject_id = $2)",
+        [String(updateId), String(updateId)],
+      ).catch(() => undefined);
       await app.end().catch(() => undefined);
       await owner.end().catch(() => undefined);
     }
