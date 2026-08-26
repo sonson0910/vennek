@@ -1,5 +1,6 @@
 import * as https from "node:https";
 import type { ClientRequest, IncomingHttpHeaders, IncomingMessage, RequestOptions } from "node:http";
+import { PrivateDocumentClientError } from "@vennek/cardano-agent";
 import { sha256Hex, type CommandContext } from "@vennek/shared";
 import { FixedWindowRateLimiter, type RateLimiter } from "./accessControl.js";
 import { readTelegramOffset, writeTelegramOffset } from "./runtimeState.js";
@@ -540,13 +541,15 @@ function withTelegramFile(
           cleanBuffer();
           resolve();
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (settled) return;
           settled = true;
           clearDeadline();
           signal?.removeEventListener("abort", onAbort);
           cleanBuffer();
-          reject(new TelegramApiError(502, "Telegram file consumer failed"));
+          reject(error instanceof PrivateDocumentClientError
+            ? error
+            : new TelegramApiError(502, "Telegram file consumer failed"));
         })
         .finally(() => {
           cleanBuffer();

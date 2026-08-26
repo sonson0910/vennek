@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { ClientRequest } from "node:http";
 import { describe, expect, it, vi } from "vitest";
+import { PrivateDocumentClientError } from "@vennek/cardano-agent";
 import {
   createTelegramApi,
   TELEGRAM_FILE_PATH_MAX_BYTES,
@@ -210,6 +211,36 @@ describe("Telegram private document download", () => {
       received = buffer;
       throw new Error("TOKEN_SECRET documents/file.txt private metadata");
     })).rejects.not.toThrow(/TOKEN_SECRET|documents\/file\.txt|private metadata/);
+    expect(received?.every((value) => value === 0)).toBe(true);
+  });
+
+  it("preserves a bounded extractor rejection while still zeroing the buffer", async () => {
+    let received: Buffer | undefined;
+    const rejection = new PrivateDocumentClientError("Private extractor request failed", false, 422, false, "unsafe");
+    const api = createTelegramApi("TOKEN_SECRET", undefined, {
+      request(_requestOptions, callback) {
+        const request = new EventEmitter() as unknown as ClientRequest;
+        request.setTimeout = () => request;
+        request.destroy = () => request;
+        request.end = () => {
+          const response = new EventEmitter() as unknown as TelegramFileResponse & EventEmitter;
+          response.statusCode = 200;
+          response.headers = { "content-type": "application/octet-stream", "content-length": "3" };
+          queueMicrotask(() => {
+            response.emit("data", Buffer.from("abc"));
+            response.emit("end");
+          });
+          callback(response);
+          return request;
+        };
+        return request;
+      },
+    });
+
+    await expect(api.withDownloadedFile!("documents/file.txt", 3, undefined, (buffer) => {
+      received = buffer;
+      throw rejection;
+    })).rejects.toBe(rejection);
     expect(received?.every((value) => value === 0)).toBe(true);
   });
 
