@@ -197,7 +197,10 @@ The current 1,536-dimensional embedding alias is OpenAI
 `OPENAI_API_KEY` through LiteLLM's own mode-0600 secret file or secret manager;
 that key is not placed in either Vennek environment example. Anthropic and
 Gemini completion routes remain optional LiteLLM-side fallbacks, not evaluator
-credentials.
+credentials. The checked-in static Compose config reuses the required OpenAI
+key/model for an omitted fallback, so it never renders an empty provider route;
+operators supplying Anthropic or Gemini settings must provide the matching key
+and model aliases together.
 
 The public factual canary stays disabled until both
 `validate:registry:live` and `eval:cardano-rag:live` exit zero with real

@@ -49,7 +49,7 @@ git diff --check
 - [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4` is Cosign-verified and its read-only config contains only environment references.
 - [ ] Vennek receives only `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and the model aliases; provider keys do not enter Vennek, the evaluator, or reports.
 - [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file. The current 1,536-dimensional embedding alias is OpenAI `text-embedding-3-small`, so staging LiteLLM receives a real `OPENAI_API_KEY` only through its own mode-0600 secret file/manager; it is absent from Vennek environment examples.
-- [ ] Anthropic/Gemini completion routes are optional LiteLLM-side fallbacks, not evaluator credentials; optional `GITHUB_TOKEN` only increases worker GitHub ingestion rate capacity and never gates live RAG.
+- [ ] Anthropic/Gemini completion routes are optional LiteLLM-side fallbacks, not evaluator credentials; absent settings reuse the required OpenAI key/model in the static Compose route slots, while an enabled provider supplies its matching key and model aliases together. Optional `GITHUB_TOKEN` only increases worker GitHub ingestion rate capacity and never gates live RAG.
 - [ ] PostgreSQL health, migration completion, role provisioning, webhook health, worker startup, and LiteLLM readiness are recorded.
 - [ ] Telegram webhook is registered with HTTPS and `allowed_updates=["message"]`.
 - [ ] One authorized staging message is queued, answered, persisted encrypted, and delivered.
