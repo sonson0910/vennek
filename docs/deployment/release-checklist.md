@@ -58,11 +58,14 @@ git diff --check
 - [ ] Partition maintenance succeeds as the app role while direct `CREATE TABLE` fails.
 - [ ] `npm run validate:registry:live` passes for the staged official registry,
   with every source-specific failure recorded and investigated.
-- [ ] Live RAG evaluation runs with exactly the seven direct variables and a
-  reachable existing LiteLLM endpoint; use
-  `docker compose exec -T agent-worker npm run eval:cardano-rag:live` only after
-  the image includes the evaluation corpus, otherwise use a mode-0600
-  restricted environment without provider keys. It passes the same retrieval,
+- [ ] Live RAG evaluation starts after normal staging services are healthy with:
+  `docker compose --profile evaluation --env-file /secure/path/vennek.env run --name vennek-rag-evaluator rag-evaluator`.
+  Record its exit code; without `--rm`, copy reports even on failure with
+  `docker cp vennek-rag-evaluator:/app/reports/evaluation/. reports/evaluation/`
+  into a pre-created mode-0700 host directory, verify files are mode-0600 and
+  sanitized, then remove only `docker rm vennek-rag-evaluator`. An existing
+  same-name container must be handled explicitly; never use broad cleanup. The
+  run uses exactly the seven direct variables and passes the same retrieval,
   citation, freshness, and answer-property thresholds without replacing the
   approved offline baseline.
 - [ ] Live evaluation reports are sanitized, mode-0600, and contain no response bodies, tokens, provider errors, or credentials.

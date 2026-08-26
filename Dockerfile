@@ -6,6 +6,7 @@ COPY apps ./apps
 COPY packages ./packages
 COPY scripts ./scripts
 COPY config/cardano-sources.json ./config/cardano-sources.json
+COPY samples/evaluation/cardano-rag.jsonl ./samples/evaluation/cardano-rag.jsonl
 RUN npm ci
 RUN npm run build
 
@@ -19,5 +20,7 @@ COPY --from=build --chown=node:node /app/apps ./apps
 COPY --from=build --chown=node:node /app/packages ./packages
 COPY --from=build --chown=node:node /app/scripts ./scripts
 COPY --from=build --chown=node:node /app/config/cardano-sources.json ./config/cardano-sources.json
+COPY --from=build --chown=node:node /app/samples/evaluation/cardano-rag.jsonl ./samples/evaluation/cardano-rag.jsonl
+RUN install -d -o node -g node -m 700 /app/reports/evaluation
 USER node
 CMD ["node", "apps/telegram-bot/dist/main.js", "--health"]

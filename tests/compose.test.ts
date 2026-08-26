@@ -46,6 +46,8 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
         ports?: Array<{ host_ip?: string; target?: number; published?: string }>;
         expose?: string[];
         healthcheck?: { test?: string[] };
+        depends_on?: Record<string, { condition?: string }>;
+        profiles?: string[];
         networks?: Record<string, unknown>;
         mem_limit?: string;
         memswap_limit?: string;
@@ -64,6 +66,7 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     const appServices = ["migrate", "provision-app-role", "provision-knowledge-role", "telegram-webhook", "agent-worker", "knowledge-worker"];
     const images = appServices.map((name) => config.services[name]?.image);
 
+    expect(config.services["rag-evaluator"]).toBeUndefined();
     expect(new Set(images).size).toBe(1);
     expect(config.services.migrate?.build).toBeDefined();
     expect(appServices.filter((name) => config.services[name]?.build !== undefined)).toEqual(["migrate"]);
@@ -228,6 +231,58 @@ describe.skipIf(!hasDockerCompose)("rendered Compose contract", () => {
     ]) {
       expect(webhookEnvironment?.[name]).toBeUndefined();
     }
+  });
+});
+
+describe("RAG evaluator deployment contract", () => {
+  it("ships only the corpus and a node-owned private report directory", () => {
+    const dockerfile = readFileSync("Dockerfile", "utf8");
+    expect(dockerfile).toContain("COPY samples/evaluation/cardano-rag.jsonl ./samples/evaluation/cardano-rag.jsonl");
+    expect(dockerfile).toContain("COPY --from=build --chown=node:node /app/samples/evaluation/cardano-rag.jsonl ./samples/evaluation/cardano-rag.jsonl");
+    expect(dockerfile).toContain("RUN install -d -o node -g node -m 700 /app/reports/evaluation");
+    expect(dockerfile).toContain("USER node");
+  });
+
+  it.skipIf(!hasDockerCompose)("keeps the evaluator profile isolated with the direct runtime allowlist", () => {
+    const result = spawnSync(
+      "docker",
+      ["compose", "--profile", "evaluation", "--env-file", ".env.example", "config", "--format", "json"],
+      { cwd: process.cwd(), encoding: "utf8", env: composeTestEnv() },
+    );
+    expect(result.status).toBe(0);
+    const config = JSON.parse(result.stdout) as {
+      services: Record<string, {
+        image?: string;
+        command?: string[];
+        environment?: Record<string, string | null>;
+        depends_on?: Record<string, { condition?: string }>;
+        profiles?: string[];
+        ports?: unknown;
+        expose?: unknown;
+        restart?: string;
+      }>;
+    };
+    const evaluator = config.services["rag-evaluator"];
+    expect(evaluator).toBeDefined();
+    expect(evaluator?.profiles).toEqual(["evaluation"]);
+    expect(evaluator?.image).toBe(config.services["agent-worker"]?.image);
+    expect(evaluator?.command).toEqual(["npm", "run", "eval:cardano-rag:live"]);
+    expect(evaluator?.environment).toEqual({
+      DATABASE_URL: "postgresql://vennek_app:replace-with-a-long-app-password@postgres:5432/vennek",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_API_KEY: "replace-with-litellm-master-key",
+      VENNEK_MODEL_FAST: "cardano-fast",
+      VENNEK_MODEL_QUALITY: "cardano-quality",
+      VENNEK_MODEL_VERIFIER: "cardano-verifier",
+      VENNEK_EMBEDDING_MODEL: "cardano-embedding",
+    });
+    expect(evaluator?.depends_on).toEqual({
+      "provision-app-role": { condition: "service_completed_successfully", required: true },
+      litellm: { condition: "service_started", required: true },
+    });
+    expect(evaluator?.ports).toBeUndefined();
+    expect(evaluator?.expose).toBeUndefined();
+    expect(evaluator?.restart).toBe("no");
   });
 });
 

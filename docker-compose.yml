@@ -160,6 +160,25 @@ services:
       - default
       - pdf-sandbox
 
+  rag-evaluator:
+    image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
+    profiles: ["evaluation"]
+    environment:
+      DATABASE_URL: ${DATABASE_APP_URL:?DATABASE_APP_URL is required}
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_API_KEY:?LITELLM_API_KEY is required}
+      VENNEK_MODEL_FAST: ${VENNEK_MODEL_FAST:?VENNEK_MODEL_FAST is required}
+      VENNEK_MODEL_QUALITY: ${VENNEK_MODEL_QUALITY:?VENNEK_MODEL_QUALITY is required}
+      VENNEK_MODEL_VERIFIER: ${VENNEK_MODEL_VERIFIER:?VENNEK_MODEL_VERIFIER is required}
+      VENNEK_EMBEDDING_MODEL: ${VENNEK_EMBEDDING_MODEL:?VENNEK_EMBEDDING_MODEL is required}
+    command: ["npm", "run", "eval:cardano-rag:live"]
+    depends_on:
+      provision-app-role:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_started
+    restart: "no"
+
   pdf-extractor:
     image: "${VENNEK_IMAGE:?VENNEK_IMAGE is required}:${VENNEK_IMAGE_TAG:?VENNEK_IMAGE_TAG is required}"
     environment:

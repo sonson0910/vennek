@@ -208,22 +208,33 @@ not evaluator credentials. An OpenAI-only deployment requires a separate,
 reviewed removal of the unused static routes and their Compose requirements;
 never use empty or mismatched defaults.
 
-Run the evaluator with only its seven direct variables and a reachable existing
-LiteLLM endpoint. The preferred isolated command is:
+Start the required staging services normally, then run the evaluator as a
+profiled one-shot container with only its seven direct variables:
 
 ```bash
-docker compose exec -T agent-worker npm run eval:cardano-rag:live
+docker compose --env-file /secure/path/vennek.env up -d
+if docker container inspect vennek-rag-evaluator >/dev/null 2>&1; then
+  echo "vennek-rag-evaluator already exists; copy evidence and remove that exact container first" >&2
+  exit 2
+fi
+set +e
+docker compose --profile evaluation --env-file /secure/path/vennek.env run --name vennek-rag-evaluator rag-evaluator
+evaluation_status=$?
+set -e
+install -d -m 700 reports/evaluation
+docker cp vennek-rag-evaluator:/app/reports/evaluation/. reports/evaluation/
+find reports/evaluation -maxdepth 1 -type f -exec chmod 600 {} +
+test -z "$(find reports/evaluation -maxdepth 1 -type f ! -perm 600 -print)"
+docker rm vennek-rag-evaluator
+exit "$evaluation_status"
 ```
 
-The current image does not copy `samples/evaluation/cardano-rag.jsonl`, so that
-command is not compatible until the image is rebuilt with the evaluator corpus.
-Until then, use a mode-0600 restricted environment containing exactly
-`DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, the three
-`VENNEK_MODEL_*` aliases, and `VENNEK_EMBEDDING_MODEL`, with an already
-reachable LiteLLM endpoint; do not expose a LiteLLM host port solely for this
-check. Retrieve only the sanitized report path/status/metrics from
-`reports/evaluation` under its mode-0700 directory; never echo the environment
-or report bodies/tokens/provider errors.
+The command preserves the evaluator exit code, copies reports even on failure,
+and removes only the exact stopped evaluator container after evidence is
+copied. Do not use broad container or volume cleanup. Inspect only sanitized
+report status/metrics from the mode-0700 host directory; files must be mode
+0600 and contain no bodies, tokens, provider errors, or credentials. Never echo
+the environment or report contents.
 
 The public factual canary stays disabled until both
 `validate:registry:live` and `eval:cardano-rag:live` exit zero with real

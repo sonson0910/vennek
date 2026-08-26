@@ -805,17 +805,18 @@ API is healthy, and no required official family is failed.
 
 - [ ] **Step 3: Run managed-provider live RAG staging**
 
-Run the evaluator with exactly the seven direct runtime variables and a
-reachable existing LiteLLM endpoint. The preferred isolated command is:
+Start required staging services normally, then run the profiled one-shot
+evaluator with exactly the seven direct runtime variables:
 
 ```bash
-docker compose exec -T agent-worker npm run eval:cardano-rag:live
+docker compose --profile evaluation --env-file /secure/path/vennek.env run --name vennek-rag-evaluator rag-evaluator
 ```
 
-The current image does not copy `samples/evaluation/cardano-rag.jsonl`, so use
-a mode-0600 restricted environment without provider keys and a reachable
-LiteLLM endpoint until an evaluator-capable image is built. Do not expose a
-LiteLLM host port solely for this check.
+Record the exit code; omit `--rm` so reports survive. Even on failure, copy
+`docker cp vennek-rag-evaluator:/app/reports/evaluation/. reports/evaluation/`
+into a pre-created mode-0700 host directory, verify mode-0600 sanitized files,
+then remove only `docker rm vennek-rag-evaluator`. Handle an existing
+same-name container explicitly and never use broad cleanup.
 
 Expected: exit zero with a timestamped sanitized report meeting recall@10,
 citation precision, freshness, answer-property, unsupported-claim, and
