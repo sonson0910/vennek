@@ -407,7 +407,7 @@ describe.skipIf(!databaseUrl)("knowledge repository", () => {
       await repository.ensureSource(entry);
       const initial = await repository.getStackExchangeFetchState(sourceId);
       expect(initial).toBeNull();
-      const next = { checkedAt, quotaRemaining: 12 };
+      const next = { checkedAt, retryAt: "2026-08-24T00:05:00.000Z", quotaRemaining: 12 };
       await expect(repository.compareAndSetStackExchangeFetchState(sourceId, initial, next)).resolves.toBe(true);
       await expect(repository.compareAndSetStackExchangeFetchState(sourceId, initial, { checkedAt })).resolves.toBe(false);
       await expect(repository.getStackExchangeFetchState(sourceId)).resolves.toEqual(next);

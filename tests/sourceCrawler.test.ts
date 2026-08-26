@@ -373,7 +373,7 @@ describe("bounded source crawler", () => {
         has_more: false,
         quota_remaining: 99,
       }),
-      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&filter=withbody&site=cardano": json({
+      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&page=1&filter=withbody&site=cardano": json({
         items: [],
         has_more: false,
         quota_remaining: 98,
@@ -387,7 +387,7 @@ describe("bounded source crawler", () => {
     expect(result.documents[0]).toMatchObject({ sourceId: stackExchangeEntry.id, trustTier: "official" });
     expect(calls).toEqual([
       "/2.3/questions?order=desc&sort=activity&pagesize=100&page=1&filter=withbody&site=cardano",
-      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&filter=withbody&site=cardano",
+      "/2.3/questions/11/answers?order=desc&sort=activity&pagesize=100&page=1&filter=withbody&site=cardano",
     ]);
     expect(result.commitState).toBeTypeOf("function");
   });

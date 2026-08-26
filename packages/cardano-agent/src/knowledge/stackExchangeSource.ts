@@ -24,9 +24,8 @@ const CRAWL_TIMEOUT_MS = 120_000;
 const STATE_OPERATION_TIMEOUT_MS = 5_000;
 const MIN_RETRY_MS = 60_000;
 const MAX_RETRY_MS = 24 * 60 * 60 * 1_000;
-const MAX_BACKOFF_SECONDS = 300;
 const MAX_TITLE_CHARS = 300;
-const MAX_AUTHOR_CHARS = 200;
+const MAX_AUTHOR_CHARS = 120;
 const MAX_DOCUMENT_CHARS = 2_000_000;
 
 export type StackExchangeSourceInput = {
@@ -83,12 +82,18 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
   }
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime())) throw new Error("Retrieval time must be a valid date.");
-  await input.repository.ensureSource(validated);
-  const originalState = await input.repository.getStackExchangeFetchState(validated.id);
+  const crawlSignal = AbortSignal.any([input.signal, AbortSignal.timeout(CRAWL_TIMEOUT_MS)]);
+  const repositoryOptions: RepositoryOperationOptions = {
+    signal: crawlSignal,
+    deadlineAt: Date.now() + CRAWL_TIMEOUT_MS,
+  };
+  await input.repository.ensureSource(validated, repositoryOptions);
+  crawlSignal.throwIfAborted();
+  const originalState = await input.repository.getStackExchangeFetchState(validated.id, repositoryOptions);
+  crawlSignal.throwIfAborted();
   const storedDeferral = futureRetryAt(originalState, now);
   if (storedDeferral) return { documents: [], unchanged: 0, deferredUntil: storedDeferral };
 
-  const crawlSignal = AbortSignal.any([input.signal, AbortSignal.timeout(CRAWL_TIMEOUT_MS)]);
   let consumedBytes = 0;
   let lastQuota = 0;
   const questions = new Map<number, Question>();
@@ -115,11 +120,10 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
       addConsumedBytes: (bytes) => { consumedBytes += bytes; },
     });
     lastQuota = response.quotaRemaining;
-    if (lastQuota === 0) {
-      const deferredUntil = await deferFetch(input, validated.id, originalState, now, response.backoffSeconds, crawlSignal);
+    if (response.backoffSeconds !== undefined || lastQuota === 0) {
+      const deferredUntil = await deferFetch(input, validated.id, originalState, now, response.quotaRemaining, response.backoffSeconds, crawlSignal);
       return { documents: [], unchanged: 0, deferredUntil };
     }
-    let nextBackoffSeconds = response.backoffSeconds;
 
     if (response.items.length > 100) throw new Error("Stack Exchange question page is too large.");
     const pageQuestions: Question[] = [];
@@ -137,16 +141,14 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
       let answerPage = 1;
       let hasMoreAnswers = true;
       while (hasMoreAnswers && answerPage <= MAX_ANSWER_PAGES && documents.length < MAX_DOCUMENTS) {
-        await waitBackoff(nextBackoffSeconds, crawlSignal);
-        nextBackoffSeconds = undefined;
         const answerParams: Array<[string, string]> = [
           ["order", "desc"],
           ["sort", "activity"],
           ["pagesize", "100"],
+          ["page", String(answerPage)],
           ["filter", "withbody"],
           ["site", "cardano"],
         ];
-        if (answerPage > 1) answerParams.splice(3, 0, ["page", String(answerPage)]);
         const answers = await fetchApiPage({
           path: `/2.3/questions/${answerIds}/answers`,
           params: answerParams,
@@ -156,11 +158,10 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
           addConsumedBytes: (bytes) => { consumedBytes += bytes; },
         });
         lastQuota = answers.quotaRemaining;
-        if (lastQuota === 0) {
-          const deferredUntil = await deferFetch(input, validated.id, originalState, now, answers.backoffSeconds, crawlSignal);
+        if (answers.backoffSeconds !== undefined || lastQuota === 0) {
+          const deferredUntil = await deferFetch(input, validated.id, originalState, now, answers.quotaRemaining, answers.backoffSeconds, crawlSignal);
           return { documents: [], unchanged: 0, deferredUntil };
         }
-        nextBackoffSeconds = answers.backoffSeconds;
         if (answers.items.length > 100) throw new Error("Stack Exchange answer page is too large.");
         for (const item of answers.items) {
           const answer = parseAnswer(item, new Set(pageQuestions.map((question) => question.id)));
@@ -176,9 +177,6 @@ export async function fetchStackExchangeSource(input: StackExchangeSourceInput):
     }
 
     hasMoreQuestions = response.hasMore;
-    if (hasMoreQuestions && documents.length < MAX_DOCUMENTS) {
-      await waitBackoff(nextBackoffSeconds, crawlSignal);
-    }
     questionPage += 1;
   }
 
@@ -241,7 +239,6 @@ function parseApiResponse(value: unknown): ApiResponse {
   let backoffSeconds: number | undefined;
   if ("backoff" in value) {
     backoffSeconds = safeNonNegativeInteger(value.backoff, "backoff");
-    if (backoffSeconds > MAX_BACKOFF_SECONDS) throw new Error("Stack Exchange API backoff is too large.");
   }
   return { items: value.items, hasMore: value.has_more, quotaRemaining, ...(backoffSeconds === undefined ? {} : { backoffSeconds }) };
 }
@@ -331,7 +328,7 @@ async function buildText(body: string, author: Author, license: string, canonica
     `Source: ${canonicalUrl}`,
   ].join("\n");
   const text = `${extracted.text}\n\n${attribution}`.replace(/\r\n?/g, "\n").normalize("NFC").trim();
-  if (Array.from(text).length > MAX_DOCUMENT_CHARS) throw new Error("Stack Exchange document content is too large.");
+  if (text.length > MAX_DOCUMENT_CHARS) throw new Error("Stack Exchange document content is too large.");
   return text;
 }
 
@@ -397,16 +394,18 @@ async function deferFetch(
   sourceId: string,
   expectedState: StackExchangeFetchState | null,
   now: Date,
+  quotaRemaining: number,
   backoffSeconds: number | undefined,
   signal: AbortSignal,
 ): Promise<Date> {
-  const retryMs = Math.min(MAX_RETRY_MS, Math.max(MIN_RETRY_MS, (backoffSeconds ?? 0) * 1_000));
+  const retrySeconds = Math.min(MAX_RETRY_MS / 1_000, backoffSeconds ?? 0);
+  const retryMs = Math.max(MIN_RETRY_MS, retrySeconds * 1_000);
   const retryAt = new Date(now.getTime() + retryMs);
   const options: RepositoryOperationOptions = { signal, timeoutMs: STATE_OPERATION_TIMEOUT_MS };
   const nextState: StackExchangeFetchState = {
     checkedAt: now.toISOString(),
     retryAt: retryAt.toISOString(),
-    quotaRemaining: 0,
+    quotaRemaining,
   };
   const persisted = await input.repository.compareAndSetStackExchangeFetchState(sourceId, expectedState, nextState, options);
   if (persisted) return retryAt;
@@ -414,18 +413,4 @@ async function deferFetch(
   const currentRetryAt = futureRetryAt(current, now);
   if (currentRetryAt) return currentRetryAt;
   throw new Error("Stack Exchange fetch state concurrency conflict.");
-}
-
-async function waitBackoff(seconds: number | undefined, signal: AbortSignal): Promise<void> {
-  if (!seconds) return;
-  const delay = Math.min(MAX_BACKOFF_SECONDS, seconds) * 1_000;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, delay);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new Error("Stack Exchange retrieval aborted."));
-    };
-    if (signal.aborted) return abort();
-    signal.addEventListener("abort", abort, { once: true });
-  });
 }
