@@ -214,6 +214,31 @@ async function noPrivateMarkers(db: ReturnType<typeof createDatabase>, markers: 
   }
 }
 
+async function noPrivatePlaintextMarkers(db: ReturnType<typeof createDatabase>, markers: readonly string[]): Promise<void> {
+  const patterns = markers.map((marker) => `%${marker}%`);
+  const surfaces = [
+    ["public.telegram_users", ["surface.telegram_user_id::text"]],
+    ["public.telegram_updates", ["surface.status::text"]],
+    ["public.usage_ledger", ["surface.telegram_user_id::text", "surface.model::text"]],
+    ["public.knowledge_sources", ["surface.id::text", "surface.owner::text", "surface.trust_tier::text", "surface.registry::text"]],
+    ["public.source_versions", ["surface.source_id::text", "surface.canonical_url::text", "surface.title::text", "surface.content::text"]],
+    ["public.knowledge_chunks", ["surface.version_id::text", "surface.heading::text", "surface.content::text", "surface.embedding_model::text"]],
+    ["public.retrieval_cache", ["surface.language::text", "surface.embedding_model::text", "surface.chunk_ids::text", "surface.scores::text"]],
+    ["public.knowledge_promotion_requests", ["surface.caller_id::text", "surface.state::text", "surface.outcome::text"]],
+    ["pgboss.job", ["surface.name::text", "(surface.data - 'encrypted')::text", "surface.output::text", "surface.singleton_key::text"]],
+    ["pgboss.job_common", ["surface.name::text", "(surface.data - 'encrypted')::text", "surface.output::text", "surface.singleton_key::text"]],
+    ["pgboss.bam", ["surface.name::text", "surface.status::text", "surface.queue::text", "surface.table_name::text", "surface.command::text", "surface.error::text"]],
+  ] as const;
+  for (const [relation, expressions] of surfaces) {
+    const predicate = expressions.map((expression) => `${expression} LIKE ANY($1::text[])`).join(" OR ");
+    const result = await db.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM ${relation} AS surface WHERE ${predicate}`,
+      [patterns],
+    );
+    expect(result.rows[0]?.count, relation).toBe("0");
+  }
+}
+
 async function expectNoPrivateConversationState(
   db: ReturnType<typeof createDatabase>,
   updateId: number,
@@ -481,6 +506,7 @@ runIntegration("private comparison PostgreSQL/PgBoss lifecycle", () => {
       expect(update.rows).toEqual([{ update_id: String(updateId), status: "processed" }]);
       await expectNoPrivateConversationState(owner, updateId, markers.caption);
       await noPrivateMarkers(owner, [markers.caption, markers.fileName, markers.fileId, markers.fileUniqueId, extractedPhrase, answerMarker]);
+      await noPrivatePlaintextMarkers(owner, ["U1"]);
     } finally {
       if (!stopped) {
         stopped = true;
