@@ -551,6 +551,14 @@ Implementation commits: `0c86270`, `f15e4c6`, `3cab4aa`, `0b61a42`, `6193469`, `
 
 Verified with the full test suite (`606` passed, `1` credential-gated Blockfrost live test skipped), typecheck, build, import-boundary check, registry validation (`20/20`), production dependency audit (`0` vulnerabilities), Compose validation, fresh PostgreSQL migrations and role provisioning, and a compiled-process signed-request/replay/tamper smoke test. Independent correctness and security reviews passed.
 
+### Task 8c: Compare one private user file with Cardano evidence
+
+- [x] **R8c complete (2026-08-26)**
+
+Approved design and execution plan: `docs/superpowers/specs/2026-08-26-cardano-private-file-comparison-design.md` and `docs/superpowers/plans/2026-08-26-cardano-private-file-comparison.md`. The implementation range is `8a056f3..985024d`; final review remediations are `fa3131b`, `4a7a485`, and `985024d`.
+
+Verified with targeted private-path suites (`129` passed before final remediation; final focused remediation suite `125` passed), the full PostgreSQL suite (`762` passed, `1` credential-gated Blockfrost live test skipped), typecheck, build, compiled imports, registry validation (`20/20`), production dependency audit (`0` vulnerabilities), Compose validation, the isolated extractor Docker smoke, and a compiled `main.js --worker` smoke covering safe DOCX, exact `2,000,000`-code-point Unicode TXT, localized terminal rejection, retry without duplicate delivery, persisted-envelope tamper rejection, and zero retained private markers. Independent correctness and security reviews passed after all findings were resolved.
+
 ### Task 9: Add the Cardano RAG Evaluation Harness
 
 **Files:**
