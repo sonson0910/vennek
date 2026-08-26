@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgePromotionHandler } from "../apps/telegram-bot/src/main.js";
 import {
@@ -154,10 +157,30 @@ describe("knowledge worker contract", () => {
   it("rejects stale monitor-only jobs before synchronization", async () => {
     const boss = fakeBoss();
     const sync = vi.fn(async () => undefined);
-    await registerKnowledgeWorker({ boss: boss as unknown as KnowledgeBoss, sync });
+    const directory = mkdtempSync(join(tmpdir(), "vennek-knowledge-worker-"));
+    const registryPath = join(directory, "cardano-sources.json");
+    const registry = JSON.parse(readFileSync(new URL("../config/cardano-sources.json", import.meta.url), "utf8")) as {
+      official: Array<Record<string, unknown>>;
+      community: Array<Record<string, unknown>>;
+    };
+    const foundation = registry.official.find((entry) => entry.id === "cardano-foundation")!;
+    foundation.ingestionMode = "scheduled";
+    delete foundation.liveFallbackIds;
+    writeFileSync(registryPath, JSON.stringify(registry));
 
-    await expect(boss.invoke({ sourceId: "cardano-foundation" })).rejects.toThrow("Source is monitor-only and cannot be synchronized.");
-    expect(sync).not.toHaveBeenCalled();
+    try {
+      await registerKnowledgeWorker({ boss: boss as unknown as KnowledgeBoss, sync, registryPath });
+      foundation.ingestionMode = "monitor-only";
+      foundation.liveFallbackIds = ["cardano-foundation-github"];
+      writeFileSync(registryPath, JSON.stringify(registry));
+
+      const error = await boss.invoke({ sourceId: "cardano-foundation" }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Source is monitor-only and cannot be synchronized.");
+      expect(sync).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("passes pg-boss job cancellation to source synchronization", async () => {
@@ -198,8 +221,10 @@ describe("knowledge worker contract", () => {
   it("rejects monitor-only sources before queue lookup or enqueue", async () => {
     const boss = fakeBoss();
 
-    await expect(enqueueKnowledgeSource(boss as unknown as Pick<KnowledgeBoss, "send" | "findJobs">, "cardano-foundation"))
-      .rejects.toThrow("Source is monitor-only and cannot be synchronized.");
+    const error = await enqueueKnowledgeSource(boss as unknown as Pick<KnowledgeBoss, "send" | "findJobs">, "cardano-foundation")
+      .catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Source is monitor-only and cannot be synchronized.");
     expect(boss.findJobs).not.toHaveBeenCalled();
     expect(boss.send).not.toHaveBeenCalled();
   });
