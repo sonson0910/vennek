@@ -346,6 +346,13 @@ describe("Cardano source registry", () => {
     }]);
   });
 
+  it("rejects an HTML Stack Exchange success response", async () => {
+    const results = await runLiveValidation([cardanoStackExchange], {
+      request: async (input) => response(input.url, 200, "text/html; charset=utf-8")
+    });
+    expect(results[0]).toEqual(expect.objectContaining({ status: "failed", blocking: false, reason: "unsupported content type" }));
+  });
+
   it("uses only the first raw-healthy declared fallback", async () => {
     const entries = validateSourceRegistry([
       { ...official, id: "family-primary", ingestionMode: "monitor-only", liveFallbackIds: ["first-fallback", "second-fallback"] },

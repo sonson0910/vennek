@@ -227,7 +227,7 @@ async function checkStackExchangeLive(entry: SourceRegistryEntry, signal: AbortS
       headers: { "user-agent": "vennek-source-registry/1.0" },
       signal
     });
-    const accepted = isAcceptedResponse(response);
+    const accepted = isSuccessful(response.statusCode) && contentType(response) === "application/json";
     response.cancel();
     if (accepted) {
       return undefined;
