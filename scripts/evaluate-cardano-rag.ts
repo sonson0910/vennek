@@ -9,7 +9,6 @@ import {
   selectModelProfile,
   validateSourceRegistry,
   validateSourceRegistryEnvelope,
-  type CompletionOutput,
   type Evidence,
 } from "@vennek/cardano-agent";
 import {
@@ -61,7 +60,10 @@ export function evaluateOffline(): EvaluationMetrics {
   return metrics;
 }
 
-export async function evaluateLive(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Promise<EvaluationMetrics> {
+export async function evaluateLive(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  evaluationAt = new Date(),
+): Promise<EvaluationMetrics> {
   const missing = missingLiveCredentials(env);
   if (missing.length > 0) throw new Error(`Live Cardano RAG evaluation requires: ${missing.join(", ")}`);
   const { cases, sourceTiers } = readEvaluationCorpus();
@@ -74,7 +76,7 @@ export async function evaluateLive(env: NodeJS.ProcessEnv | Record<string, strin
     for (const item of cases) {
       liveCases.push(await evaluateLiveCase(item, env, database, embedder, llm));
     }
-    const metrics = calculateEvaluationMetrics(liveCases, sourceTiers);
+    const metrics = calculateEvaluationMetrics(liveCases, sourceTiers, { evaluationAt });
     validateEvaluationThresholds(metrics);
     return metrics;
   } finally {
@@ -95,7 +97,6 @@ async function evaluateLiveCase(
       query: item.question,
       language: item.language,
       embeddingModel: env.VENNEK_EMBEDDING_MODEL!.trim(),
-      now: new Date(`${item.validAt}T00:00:00.000Z`),
     }, { db: database, embedder });
   } catch {
     throw new Error(`Live Cardano RAG evaluation failed during retrieval for ${item.id}.`);
@@ -122,20 +123,63 @@ async function evaluateLiveCase(
   const verifiedClaims = new Set(verified.claims);
   return {
     ...item,
-    retrieval: evidence.slice(0, 10).map((entry, index) => ({ sourceId: entry.sourceId, rank: index + 1, excerpt: entry.excerpt })),
+    retrieval: evidence.slice(0, 10).map((entry, index) => ({
+      sourceId: entry.sourceId,
+      rank: index + 1,
+      excerpt: entry.excerpt,
+      locator: entry.url,
+      retrievedAt: entry.retrievedAt,
+      stale: entry.stale,
+    })),
     answer: {
-      claims: generated.claims.map((claim, index) => ({ id: `live-${index + 1}`, goldSourceIds, supported: verifiedClaims.has(claim) })),
+      claims: generated.claims.map((claim, index) => ({ id: `live-${index + 1}`, text: claim.text, goldSourceIds, supported: verifiedClaims.has(claim), resolution: liveResolution(claim, evidence) })),
       citations: generated.claims.flatMap((claim, index) => claim.citationIds.map((citationId) => ({ claimId: `live-${index + 1}`, sourceId: evidence.find((entry) => entry.id === citationId)!.sourceId }))),
     },
   };
 }
 
-export function writeLiveReport(metrics: EvaluationMetrics, now = new Date()): string {
+function liveResolution(claim: { citationIds: readonly string[] }, evidence: readonly Evidence[]): "official" | "community" | "conflict" {
+  const cited = claim.citationIds.map((id) => evidence.find((entry) => entry.id === id)).filter((entry): entry is Evidence => entry !== undefined);
+  if (cited.some((entry) => entry.trustTier === "official")) return "official";
+  if (cited.some((entry) => entry.trustTier === "community")) return "community";
+  return "conflict";
+}
+
+export type LiveEvaluationReport = {
+  status: "passed" | "failed";
+  metrics?: EvaluationMetrics;
+  failure?: string;
+};
+
+export function writeLiveReport(input: LiveEvaluationReport, now = new Date(), reportDirectory = REPORT_DIRECTORY): string {
+  if (input.status === "passed" && input.metrics === undefined) throw new Error("Successful live reports require metrics.");
+  if (input.status === "failed" && input.failure === undefined) throw new Error("Failed live reports require a failure reason.");
   const timestamp = now.toISOString().replace(/[:.]/gu, "-");
-  const path = resolve(REPORT_DIRECTORY, `cardano-rag-${timestamp}.json`);
-  mkdirSync(REPORT_DIRECTORY, { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify({ generatedAt: now.toISOString(), mode: "live", metrics }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const path = resolve(reportDirectory, `cardano-rag-${timestamp}.json`);
+  mkdirSync(reportDirectory, { recursive: true, mode: 0o700 });
+  const report = {
+    generatedAt: now.toISOString(),
+    mode: "live" as const,
+    status: input.status,
+    ...(input.metrics ? { metrics: input.metrics } : {}),
+    ...(input.failure ? { failure: sanitizeLiveFailure(input.failure) } : {}),
+  };
+  writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
   return path;
+}
+
+function sanitizeLiveFailure(value: string): string {
+  if (value.startsWith("Live Cardano RAG evaluation requires:")) {
+    const names = value.slice(value.indexOf(":") + 1).match(/[A-Z][A-Z0-9_]+/gu) ?? [];
+    const allowedNames = new Set<string>(LIVE_CREDENTIALS);
+    const allowed = [...new Set(names)].filter((name) => allowedNames.has(name));
+    return allowed.length > 0 ? `missing credentials: ${allowed.join(", ")}` : "missing live credentials";
+  }
+  if (/threshold|recall|precision|freshness|answer property|override/iu.test(value)) return "live evaluation threshold gate failed";
+  if (/retrieval/iu.test(value)) return "live retrieval failed";
+  if (/generation|grounded answer/iu.test(value)) return "live answer generation failed";
+  if (/verification/iu.test(value)) return "live claim verification failed";
+  return "live evaluation failed";
 }
 
 export async function main(argv = process.argv.slice(2), env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Promise<number> {
@@ -146,10 +190,20 @@ export async function main(argv = process.argv.slice(2), env: NodeJS.ProcessEnv 
     return 0;
   }
   if (mode === "--live") {
-    const metrics = await evaluateLive(env);
-    const report = writeLiveReport(metrics);
-    console.log(JSON.stringify({ report, metrics }, null, 2));
-    return 0;
+    const evaluationAt = new Date();
+    try {
+      const metrics = await evaluateLive(env, evaluationAt);
+      const report = writeLiveReport({ status: "passed", metrics }, evaluationAt);
+      console.log(JSON.stringify({ report, metrics }, null, 2));
+      return 0;
+    } catch (error) {
+      const rawFailure = error instanceof Error ? error.message : "live evaluation failed";
+      const failure = sanitizeLiveFailure(rawFailure);
+      const report = writeLiveReport({ status: "failed", failure: rawFailure }, evaluationAt);
+      console.error(failure);
+      console.error(`Live evaluation report: ${report}`);
+      return 1;
+    }
   }
   console.error("Usage: evaluate-cardano-rag.ts --offline|--live");
   return 2;
