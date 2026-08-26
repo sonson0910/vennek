@@ -1,3 +1,5 @@
+import { hostMatches } from "@vennek/cardano-governance-skills";
+
 export const EVALUATION_CATEGORIES = [
   "fundamentals",
   "consensus",
@@ -16,7 +18,13 @@ export const EVALUATION_CATEGORIES = [
 export type EvaluationCategory = (typeof EVALUATION_CATEGORIES)[number];
 export type EvaluationLanguage = "en" | "vi";
 export type EvaluationTrustTier = "official" | "community";
-export type EvaluationSourceTiers = ReadonlyMap<string, EvaluationTrustTier>;
+export type EvaluationSourceCatalogEntry = {
+  id: string;
+  trustTier: EvaluationTrustTier;
+  url: string;
+  allowedDomains: string[];
+};
+export type EvaluationSourceCatalog = ReadonlyMap<string, EvaluationSourceCatalogEntry>;
 
 export type EvaluationRetrievalFixture = {
   sourceId: string;
@@ -65,6 +73,8 @@ export type LanguageEvaluationMetrics = {
   communityOverridesOfficial: number;
   answerPropertyFailureCount: number;
   freshnessViolationCount: number;
+  passedCases: number;
+  passRate: number;
   pass: boolean;
 };
 
@@ -108,7 +118,7 @@ const MAX_CLAIM_TEXT_LENGTH = 2_048;
 const MAX_CURRENT_EVIDENCE_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const RESOLUTIONS = ["official", "community", "conflict"] as const;
 
-export function parseEvaluationCorpus(text: string, sourceTiers: EvaluationSourceTiers): EvaluationCase[] {
+export function parseEvaluationCorpus(text: string, sourceCatalog: EvaluationSourceCatalog): EvaluationCase[] {
   if (typeof text !== "string" || text.trim().length === 0) throw new Error("Evaluation corpus must not be empty.");
   const rows = text.split(/\r?\n/u).filter((line) => line.trim().length > 0).map((line, index) => {
     try {
@@ -117,16 +127,16 @@ export function parseEvaluationCorpus(text: string, sourceTiers: EvaluationSourc
       throw new Error(`Evaluation corpus line ${index + 1} is invalid JSON.`);
     }
   });
-  return validateEvaluationCorpus(rows, sourceTiers);
+  return validateEvaluationCorpus(rows, sourceCatalog);
 }
 
-export function validateEvaluationCorpus(input: unknown, sourceTiers: EvaluationSourceTiers): EvaluationCase[] {
+export function validateEvaluationCorpus(input: unknown, sourceCatalog: EvaluationSourceCatalog): EvaluationCase[] {
   if (!Array.isArray(input) || input.length === 0 || input.length > MAX_CASES) {
     throw new Error("Evaluation corpus must contain between 1 and 256 cases.");
   }
   const ids = new Set<string>();
   return input.map((candidate, index) => {
-    const item = validateCase(candidate, index, sourceTiers);
+    const item = validateCase(candidate, index, sourceCatalog);
     if (ids.has(item.id)) throw new Error(`Duplicate evaluation case id: ${item.id}`);
     ids.add(item.id);
     return item;
@@ -147,22 +157,22 @@ export function validateEvaluationCoverage(cases: readonly EvaluationCase[]): tr
 
 export function calculateEvaluationMetrics(
   cases: readonly EvaluationCase[],
-  sourceTiers: EvaluationSourceTiers,
+  sourceCatalog: EvaluationSourceCatalog,
   options: { evaluationAt?: Date } = {},
 ): EvaluationMetrics {
   if (!Array.isArray(cases) || cases.length === 0) throw new Error("At least one evaluation case is required.");
   const languages = new Map<EvaluationLanguage, EvaluationCase[]>([["en", []], ["vi", []]]);
   for (const item of cases) languages.get(item.language)!.push(item);
-  const aggregate = calculateAggregateMetrics(cases, sourceTiers, options);
+  const aggregate = calculateAggregateMetrics(cases, sourceCatalog, options);
   const perLanguage = Object.fromEntries([...languages.entries()].map(([language, languageCases]) => {
-    return [language, calculateEvaluationMetricsForCases(languageCases, sourceTiers, options)];
+    return [language, calculateEvaluationMetricsForCases(languageCases, sourceCatalog, options)];
   })) as Record<EvaluationLanguage, LanguageEvaluationMetrics>;
   return { ...aggregate, perLanguage };
 }
 
 function calculateAggregateMetrics(
   cases: readonly EvaluationCase[],
-  sourceTiers: EvaluationSourceTiers,
+  sourceCatalog: EvaluationSourceCatalog,
   options: { evaluationAt?: Date },
 ): Omit<EvaluationMetrics, "perLanguage"> {
   let requiredSources = 0;
@@ -189,14 +199,15 @@ function calculateAggregateMetrics(
       citationsByClaim.set(citation.claimId, citations);
     }
     unsupportedClaimCount += item.answer.claims.filter((claim) => !claim.supported).length;
-    answerPropertyFailureCount += item.answer.claims.filter((claim) => !answerPropertiesHold(claim.text, item.requiredTerms, item.forbiddenTerms)).length;
+    const claimText = item.answer.claims.map((claim) => claim.text).join(" ");
+    answerPropertyFailureCount += answerPropertiesHold(claimText, item.requiredTerms, item.forbiddenTerms) ? 0 : 1;
     freshnessViolationCount += countFreshnessViolations(item, options.evaluationAt);
     for (const claim of item.answer.claims) {
-      const hasOfficialGold = claim.goldSourceIds.some((sourceId) => sourceTiers.get(sourceId) === "official");
+      const hasOfficialGold = claim.goldSourceIds.some((sourceId) => sourceCatalog.get(sourceId)?.trustTier === "official");
       if (!hasOfficialGold) continue;
       const citations = citationsByClaim.get(claim.id) ?? [];
-      const hasOfficialCitation = citations.some((citation) => sourceTiers.get(citation.sourceId) === "official");
-      if (citations.some((citation) => sourceTiers.get(citation.sourceId) === "community") &&
+      const hasOfficialCitation = citations.some((citation) => sourceCatalog.get(citation.sourceId)?.trustTier === "official");
+      if (citations.some((citation) => sourceCatalog.get(citation.sourceId)?.trustTier === "community") &&
           (!hasOfficialCitation || claim.resolution === "community")) {
         communityOverridesOfficial += 1;
       }
@@ -227,13 +238,14 @@ export function validateEvaluationThresholds(metrics: EvaluationMetrics): true {
 
 function calculateEvaluationMetricsForCases(
   cases: readonly EvaluationCase[],
-  sourceTiers: EvaluationSourceTiers,
+  sourceCatalog: EvaluationSourceCatalog,
   options: { evaluationAt?: Date },
 ): LanguageEvaluationMetrics {
   if (cases.length === 0) {
-    return { caseCount: 0, recallAt10: 0, citationPrecision: 0, unsupportedClaimCount: 0, communityOverridesOfficial: 0, answerPropertyFailureCount: 0, freshnessViolationCount: 0, pass: false };
+    return { caseCount: 0, recallAt10: 0, citationPrecision: 0, unsupportedClaimCount: 0, communityOverridesOfficial: 0, answerPropertyFailureCount: 0, freshnessViolationCount: 0, passedCases: 0, passRate: 0, pass: false };
   }
-  const metrics = calculateAggregateMetrics(cases, sourceTiers, options);
+  const metrics = calculateAggregateMetrics(cases, sourceCatalog, options);
+  const passedCases = cases.filter((item) => evaluationCasePassed(item, sourceCatalog, options)).length;
   return {
     caseCount: metrics.caseCount,
     recallAt10: metrics.recallAt10,
@@ -242,39 +254,57 @@ function calculateEvaluationMetricsForCases(
     communityOverridesOfficial: metrics.communityOverridesOfficial,
     answerPropertyFailureCount: metrics.answerPropertyFailureCount,
     freshnessViolationCount: metrics.freshnessViolationCount,
-    pass: metrics.recallAt10 >= EVALUATION_THRESHOLDS.recallAt10 && metrics.citationPrecision >= EVALUATION_THRESHOLDS.citationPrecision && metrics.communityOverridesOfficial === 0 && metrics.answerPropertyFailureCount === 0 && metrics.freshnessViolationCount === 0,
+    passedCases,
+    passRate: passedCases / cases.length,
+    pass: passedCases === cases.length,
   };
 }
 
-function validateCase(candidate: unknown, index: number, sourceTiers: EvaluationSourceTiers): EvaluationCase {
+function evaluationCasePassed(
+  item: EvaluationCase,
+  sourceCatalog: EvaluationSourceCatalog,
+  options: { evaluationAt?: Date },
+): boolean {
+  const metrics = calculateAggregateMetrics([item], sourceCatalog, options);
+  return metrics.recallAt10 === 1 &&
+    metrics.citationPrecision >= EVALUATION_THRESHOLDS.citationPrecision &&
+    metrics.unsupportedClaimCount === 0 &&
+    metrics.communityOverridesOfficial === 0 &&
+    metrics.answerPropertyFailureCount === 0 &&
+    metrics.freshnessViolationCount === 0;
+}
+
+function validateCase(candidate: unknown, index: number, sourceCatalog: EvaluationSourceCatalog): EvaluationCase {
   const value = record(candidate, `Evaluation case ${index}`);
   exactKeys(value, CASE_KEYS, `Evaluation case ${index}`);
   const id = boundedId(value.id, `Evaluation case ${index} id`);
   const category = enumValue(value.category, EVALUATION_CATEGORIES, `Evaluation case ${id} category`);
   const language = enumValue(value.language, ["en", "vi"] as const, `Evaluation case ${id} language`);
   const question = boundedString(value.question, MAX_QUESTION_LENGTH, `Evaluation case ${id} question`);
-  const requiredSourceIds = sourceIds(value.requiredSourceIds, sourceTiers, `Evaluation case ${id} requiredSourceIds`, true);
+  const requiredSourceIds = sourceIds(value.requiredSourceIds, sourceCatalog, `Evaluation case ${id} requiredSourceIds`, true);
   const requiredTerms = terms(value.requiredTerms, `Evaluation case ${id} requiredTerms`);
   const forbiddenTerms = terms(value.forbiddenTerms, `Evaluation case ${id} forbiddenTerms`);
   const validAt = validateCalendarDate(value.validAt, `Evaluation case ${id} validAt`);
   if (typeof value.currentEvidenceRequired !== "boolean") throw new Error(`Evaluation case ${id} currentEvidenceRequired is invalid.`);
   if (!Array.isArray(value.retrieval) || value.retrieval.length === 0 || value.retrieval.length > MAX_RETRIEVAL_FIXTURES) throw new Error(`Evaluation case ${id} retrieval fixture is invalid.`);
-  const retrieval = value.retrieval.map((fixture, fixtureIndex) => validateRetrievalFixture(fixture, id, fixtureIndex, sourceTiers));
+  const retrieval = value.retrieval.map((fixture, fixtureIndex) => validateRetrievalFixture(fixture, id, fixtureIndex, sourceCatalog));
   const ranks = new Set(retrieval.map((fixture) => fixture.rank));
   if (ranks.size !== retrieval.length) throw new Error(`Evaluation case ${id} retrieval ranks must be unique.`);
-  const answer = validateAnswer(value.answer, id, sourceTiers);
+  const answer = validateAnswer(value.answer, id, sourceCatalog);
   return { id, category, language, question, requiredSourceIds, requiredTerms, forbiddenTerms, validAt, currentEvidenceRequired: value.currentEvidenceRequired, retrieval, answer };
 }
 
-function validateRetrievalFixture(candidate: unknown, caseId: string, index: number, sourceTiers: EvaluationSourceTiers): EvaluationRetrievalFixture {
+function validateRetrievalFixture(candidate: unknown, caseId: string, index: number, sourceCatalog: EvaluationSourceCatalog): EvaluationRetrievalFixture {
   const value = record(candidate, `Evaluation case ${caseId} retrieval ${index}`);
   exactKeys(value, RETRIEVAL_KEYS, `Evaluation case ${caseId} retrieval ${index}`);
-  const sourceId = sourceIds([value.sourceId], sourceTiers, `Evaluation case ${caseId} retrieval ${index} sourceId`, false)[0]!;
+  const sourceId = sourceIds([value.sourceId], sourceCatalog, `Evaluation case ${caseId} retrieval ${index} sourceId`, false)[0]!;
   if (typeof value.rank !== "number" || !Number.isSafeInteger(value.rank) || value.rank < 1 || value.rank > 10) throw new Error(`Evaluation case ${caseId} retrieval ${index} rank must be between 1 and 10.`);
   const excerpt = boundedString(value.excerpt, MAX_EXCERPT_LENGTH, `Evaluation case ${caseId} retrieval ${index} excerpt`);
   const locator = boundedString(value.locator, MAX_LOCATOR_LENGTH, `Evaluation case ${caseId} retrieval ${index} locator`);
   try {
-    if (new URL(locator).protocol !== "https:") throw new Error("HTTPS required");
+    const parsedLocator = new URL(locator);
+    const source = sourceCatalog.get(sourceId);
+    if (parsedLocator.protocol !== "https:" || parsedLocator.username || parsedLocator.password || !source || !hostMatches(parsedLocator.hostname, source.allowedDomains)) throw new Error("Locator rejected");
   } catch {
     throw new Error(`Evaluation case ${caseId} retrieval ${index} locator must use HTTPS.`);
   }
@@ -283,7 +313,7 @@ function validateRetrievalFixture(candidate: unknown, caseId: string, index: num
   return { sourceId, rank: value.rank, excerpt, locator, retrievedAt, stale: value.stale };
 }
 
-function validateAnswer(candidate: unknown, caseId: string, sourceTiers: EvaluationSourceTiers): EvaluationCase["answer"] {
+function validateAnswer(candidate: unknown, caseId: string, sourceCatalog: EvaluationSourceCatalog): EvaluationCase["answer"] {
   const value = record(candidate, `Evaluation case ${caseId} answer`);
   exactKeys(value, ANSWER_KEYS, `Evaluation case ${caseId} answer`);
   if (!Array.isArray(value.claims) || value.claims.length === 0 || value.claims.length > MAX_CLAIMS) throw new Error(`Evaluation case ${caseId} claims are invalid.`);
@@ -296,7 +326,7 @@ function validateAnswer(candidate: unknown, caseId: string, sourceTiers: Evaluat
     if (claimIds.has(id)) throw new Error(`Duplicate claim id in evaluation case ${caseId}: ${id}`);
     claimIds.add(id);
     const text = boundedString(claim.text, MAX_CLAIM_TEXT_LENGTH, `Evaluation case ${caseId} claim ${id} text`);
-    const goldSourceIds = sourceIds(claim.goldSourceIds, sourceTiers, `Evaluation case ${caseId} claim ${id} goldSourceIds`, true);
+    const goldSourceIds = sourceIds(claim.goldSourceIds, sourceCatalog, `Evaluation case ${caseId} claim ${id} goldSourceIds`, true);
     if (typeof claim.supported !== "boolean") throw new Error(`Evaluation case ${caseId} claim ${id} supported is invalid.`);
     const resolution = enumValue(claim.resolution, RESOLUTIONS, `Evaluation case ${caseId} claim ${id} resolution`);
     return { id, text, goldSourceIds, supported: claim.supported, resolution };
@@ -307,7 +337,7 @@ function validateAnswer(candidate: unknown, caseId: string, sourceTiers: Evaluat
     exactKeys(citation, CITATION_KEYS, `Evaluation case ${caseId} citation ${index}`);
     const claimId = boundedId(citation.claimId, `Evaluation case ${caseId} citation ${index} claimId`);
     if (!claimIds.has(claimId)) throw new Error(`Evaluation case ${caseId} citation references unknown claim ${claimId}.`);
-    const sourceId = sourceIds([citation.sourceId], sourceTiers, `Evaluation case ${caseId} citation ${index} sourceId`, false)[0]!;
+    const sourceId = sourceIds([citation.sourceId], sourceCatalog, `Evaluation case ${caseId} citation ${index} sourceId`, false)[0]!;
     const pair = `${claimId}\u0000${sourceId}`;
     if (citationPairs.has(pair)) throw new Error(`Duplicate citation in evaluation case ${caseId}.`);
     citationPairs.add(pair);
@@ -316,14 +346,14 @@ function validateAnswer(candidate: unknown, caseId: string, sourceTiers: Evaluat
   return { claims, citations };
 }
 
-function sourceIds(value: unknown, sourceTiers: EvaluationSourceTiers, label: string, multiple: boolean): string[] {
+function sourceIds(value: unknown, sourceCatalog: EvaluationSourceCatalog, label: string, multiple: boolean): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_REQUIRED_SOURCES || (!multiple && value.length !== 1)) throw new Error(`${label} is invalid.`);
   const result: string[] = [];
   const seen = new Set<string>();
   for (const candidate of value) {
     const sourceId = boundedId(candidate, label);
     if (seen.has(sourceId)) throw new Error(`${label} contains duplicate source ${sourceId}.`);
-    if (!sourceTiers.has(sourceId)) throw new Error(`${label} references unknown source ${sourceId}.`);
+    if (!sourceCatalog.has(sourceId)) throw new Error(`${label} references unknown source ${sourceId}.`);
     seen.add(sourceId);
     result.push(sourceId);
   }

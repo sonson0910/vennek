@@ -18,6 +18,8 @@ import {
   validateEvaluationThresholds,
   type EvaluationCase,
   type EvaluationMetrics,
+  type EvaluationSourceCatalog,
+  type EvaluationSourceCatalogEntry,
 } from "../packages/cardano-agent/src/evaluation/metrics.js";
 import { buildGroundedMessages, parseGeneratedAnswer, type GroundedEvidence } from "../packages/cardano-agent/src/agent/groundedPrompt.js";
 import { verifyClaims } from "../packages/cardano-agent/src/agent/verifyClaims.js";
@@ -42,20 +44,25 @@ export function missingLiveCredentials(env: NodeJS.ProcessEnv | Record<string, s
   return LIVE_CREDENTIALS.filter((name) => !env[name]?.trim());
 }
 
-export function readEvaluationCorpus(): { cases: EvaluationCase[]; sourceTiers: Map<string, "official" | "community"> } {
+export function readEvaluationCorpus(): { cases: EvaluationCase[]; sourceCatalog: EvaluationSourceCatalog } {
   const registry = validateSourceRegistryEnvelope(JSON.parse(readFileSync(REGISTRY_URL, "utf8")));
   const entries = validateSourceRegistry([...registry.official, ...registry.community]);
-  const sourceTiers = new Map<string, "official" | "community">([
-    ...entries.map((entry) => [entry.id, entry.trustTier === "official" ? "official" : "community"] as const),
-  ]);
-  const cases = parseEvaluationCorpus(readFileSync(CORPUS_URL, "utf8"), sourceTiers);
+  const sourceCatalog: EvaluationSourceCatalog = new Map(
+    entries.map((entry): readonly [string, EvaluationSourceCatalogEntry] => [entry.id, {
+      id: entry.id,
+      trustTier: entry.trustTier === "official" ? "official" : "community",
+      url: entry.url,
+      allowedDomains: entry.allowedDomains,
+    }]),
+  );
+  const cases = parseEvaluationCorpus(readFileSync(CORPUS_URL, "utf8"), sourceCatalog);
   validateEvaluationCoverage(cases);
-  return { cases, sourceTiers };
+  return { cases, sourceCatalog };
 }
 
 export function evaluateOffline(): EvaluationMetrics {
-  const { cases, sourceTiers } = readEvaluationCorpus();
-  const metrics = calculateEvaluationMetrics(cases, sourceTiers);
+  const { cases, sourceCatalog } = readEvaluationCorpus();
+  const metrics = calculateEvaluationMetrics(cases, sourceCatalog);
   validateEvaluationThresholds(metrics);
   return metrics;
 }
@@ -66,7 +73,7 @@ export async function evaluateLive(
 ): Promise<EvaluationMetrics> {
   const missing = missingLiveCredentials(env);
   if (missing.length > 0) throw new Error(`Live Cardano RAG evaluation requires: ${missing.join(", ")}`);
-  const { cases, sourceTiers } = readEvaluationCorpus();
+  const { cases, sourceCatalog } = readEvaluationCorpus();
   const database = createDatabase(env.DATABASE_URL!.trim());
   const baseUrl = new URL(env.LITELLM_BASE_URL!.trim());
   const llm = new LiteLlmClient(baseUrl, env.LITELLM_API_KEY!.trim());
@@ -76,7 +83,7 @@ export async function evaluateLive(
     for (const item of cases) {
       liveCases.push(await evaluateLiveCase(item, env, database, embedder, llm));
     }
-    const metrics = calculateEvaluationMetrics(liveCases, sourceTiers, { evaluationAt });
+    const metrics = calculateEvaluationMetrics(liveCases, sourceCatalog, { evaluationAt });
     validateEvaluationThresholds(metrics);
     return metrics;
   } finally {
@@ -132,16 +139,23 @@ async function evaluateLiveCase(
       stale: entry.stale,
     })),
     answer: {
-      claims: generated.claims.map((claim, index) => ({ id: `live-${index + 1}`, text: claim.text, goldSourceIds, supported: verifiedClaims.has(claim), resolution: liveResolution(claim, evidence) })),
+      claims: generated.claims.map((claim, index) => ({ id: `live-${index + 1}`, text: claim.text, goldSourceIds, supported: verifiedClaims.has(claim), resolution: resolveLiveResolution(claim, evidence) })),
       citations: generated.claims.flatMap((claim, index) => claim.citationIds.map((citationId) => ({ claimId: `live-${index + 1}`, sourceId: evidence.find((entry) => entry.id === citationId)!.sourceId }))),
     },
   };
 }
 
-function liveResolution(claim: { citationIds: readonly string[] }, evidence: readonly Evidence[]): "official" | "community" | "conflict" {
-  const cited = claim.citationIds.map((id) => evidence.find((entry) => entry.id === id)).filter((entry): entry is Evidence => entry !== undefined);
-  if (cited.some((entry) => entry.trustTier === "official")) return "official";
+export function resolveLiveResolution(
+  claim: { kind: "fact" | "caveat" | "conflict"; citationIds: readonly string[] },
+  evidence: readonly Pick<Evidence, "id" | "trustTier">[],
+): "official" | "community" | "conflict" {
+  const cited = claim.citationIds.map((id) => evidence.find((entry) => entry.id === id)).filter(
+    (entry): entry is Pick<Evidence, "id" | "trustTier"> => entry !== undefined,
+  );
+  const officialCount = cited.filter((entry) => entry.trustTier === "official").length;
+  if (claim.kind === "conflict" && officialCount >= 2) return "conflict";
   if (cited.some((entry) => entry.trustTier === "community")) return "community";
+  if (officialCount > 0) return "official";
   return "conflict";
 }
 

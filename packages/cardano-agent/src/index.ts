@@ -203,5 +203,6 @@ export type {
   EvaluationLanguage,
   EvaluationMetrics,
   EvaluationRetrievalFixture,
-  EvaluationSourceTiers,
+  EvaluationSourceCatalog,
+  EvaluationSourceCatalogEntry,
 } from "./evaluation/metrics.js";
