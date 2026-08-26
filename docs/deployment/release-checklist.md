@@ -5,6 +5,9 @@
 - [ ] Public Telegram natural-language path is enabled only behind authenticated webhooks and the worker.
 - [ ] Foundation returns the explicit insufficient-evidence response for factual Cardano questions until the knowledge/RAG plan is complete.
 - [ ] Approved official Cardano sources are ingested and evaluated before factual-answer canary.
+- [ ] The public factual canary remains disabled until both `npm run validate:registry:live` and `npm run eval:cardano-rag:live` exit zero with real credentials; fixture/offline runs do not satisfy this gate.
+- [ ] Cardano Foundation monitor failures are recorded as `degraded-with-fallback` when its registered official GitHub fallback passes, never as healthy; monitor-only sources are neither scheduled nor manually syncable, and fallback citations retain the GitHub source's provenance.
+- [ ] Stack Exchange ingestion uses its official API; citations retain the author, constructed post URL, and exact `content_license`/CC BY-SA. An HTML homepage challenge is not evidence.
 - [ ] Wallet secrets are rejected before persistence/provider calls; no keys, signing, or transaction submission path exists.
 - [ ] Financial information remains general and cited; no personalized buy/sell advice is enabled.
 - [ ] Conversation history remains encrypted at rest, with the first-use retention notice and administrator-only deletion policy.
@@ -44,7 +47,9 @@ git diff --check
 - [ ] Encryption key is generated with `umask 077` and `openssl rand -base64 32`, stored outside the repository, and loaded without echoing.
 - [ ] Owner and application database credentials are distinct; only the migration/provisioning services receive owner access.
 - [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4` is Cosign-verified and its read-only config contains only environment references.
-- [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file.
+- [ ] Vennek receives only `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and the model aliases; provider keys do not enter Vennek, the evaluator, or reports.
+- [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file. The current 1,536-dimensional embedding alias is OpenAI `text-embedding-3-small`, so staging LiteLLM receives a real `OPENAI_API_KEY` only through its own mode-0600 secret file/manager; it is absent from Vennek environment examples.
+- [ ] Anthropic/Gemini completion routes are optional LiteLLM-side fallbacks, not evaluator credentials; optional `GITHUB_TOKEN` only increases worker GitHub ingestion rate capacity and never gates live RAG.
 - [ ] PostgreSQL health, migration completion, role provisioning, webhook health, worker startup, and LiteLLM readiness are recorded.
 - [ ] Telegram webhook is registered with HTTPS and `allowed_updates=["message"]`.
 - [ ] One authorized staging message is queued, answered, persisted encrypted, and delivered.
@@ -56,6 +61,7 @@ git diff --check
 - [ ] `npm run eval:cardano-rag:live` passes the same retrieval, citation,
   freshness, and answer-property thresholds without replacing the approved
   offline baseline.
+- [ ] Live evaluation reports are sanitized, mode-0600, and contain no response bodies, tokens, provider errors, or credentials.
 - [ ] At least one hourly (`0 * * * *`) and one daily (`15 2 * * *`) source
   synchronization cycle completes; unchanged content skips embedding and a
   failed refresh retains the previous valid indexed version.

@@ -186,11 +186,20 @@ describe("Cardano RAG evaluation corpus and metrics", () => {
     }), sourceCatalog)).toThrow(/text/i);
   });
 
-  it("reports every missing live credential by name without exposing values", () => {
+  it("reports only direct live credentials in dependency order", () => {
     expect(missingLiveCredentials({})).toEqual([
       "DATABASE_URL", "LITELLM_BASE_URL", "LITELLM_API_KEY", "VENNEK_MODEL_FAST",
-      "VENNEK_MODEL_QUALITY", "VENNEK_MODEL_VERIFIER", "VENNEK_EMBEDDING_MODEL", "GITHUB_TOKEN",
+      "VENNEK_MODEL_QUALITY", "VENNEK_MODEL_VERIFIER", "VENNEK_EMBEDDING_MODEL",
     ]);
+    expect(missingLiveCredentials({
+      DATABASE_URL: "postgresql://db",
+      LITELLM_BASE_URL: "http://litellm",
+      LITELLM_API_KEY: "litellm-key",
+      VENNEK_MODEL_FAST: "fast",
+      VENNEK_MODEL_QUALITY: "quality",
+      VENNEK_MODEL_VERIFIER: "verifier",
+      VENNEK_EMBEDDING_MODEL: "embedding",
+    })).toEqual([]);
   });
 
   it("writes sanitized failure reports atomically without overwriting", () => {

@@ -50,6 +50,21 @@ community-overrides-official cases.
    reloads it again for every queued job. Queue payloads contain only the exact
    `sourceId`, never a caller-supplied URL.
 
+## Machine-Access Status and Provenance
+
+The Cardano Foundation canonical monitor may be reported as
+`degraded-with-fallback` when its own endpoint fails and its registered
+official GitHub fallback passes. It must never be labelled healthy in that
+state. A `monitor-only` source is probeable but is neither scheduled nor
+manually syncable; the fallback remains its own registered source with its own
+GitHub provenance and citation.
+
+Cardano Stack Exchange ingestion uses the official Stack Exchange API rather
+than its challenge-protected HTML homepage. The homepage challenge is an
+availability signal, not evidence. Every citation retains the post author,
+the constructed question/answer URL, and the exact `content_license` (CC
+BY-SA); returned links are not treated as fetch instructions.
+
 ## Legacy Governance Proposal Sources
 
 This section describes the older proposal pre-submit tooling, not the shared
@@ -168,6 +183,27 @@ stays unverified. The whole operation has a 45-second deadline, records only a
 safe aggregate audit outcome, and returns no source content or provider error.
 If discovery fails, the existing evidence is retained and the agent returns an
 insufficient/stale-evidence response rather than fabricating an answer.
+
+## Managed Provider and Live Gates
+
+Vennek receives only `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and
+the `VENNEK_MODEL_FAST`, `VENNEK_MODEL_QUALITY`, `VENNEK_MODEL_VERIFIER`, and
+`VENNEK_EMBEDDING_MODEL` aliases. Provider keys never enter Vennek, the live
+evaluator, or its reports. `GITHUB_TOKEN` is optional worker-only ingestion
+capacity for GitHub rate limits; it is never a live RAG gate.
+
+The current 1,536-dimensional embedding alias is OpenAI
+`text-embedding-3-small`. Staging LiteLLM therefore needs a real
+`OPENAI_API_KEY` through LiteLLM's own mode-0600 secret file or secret manager;
+that key is not placed in either Vennek environment example. Anthropic and
+Gemini completion routes remain optional LiteLLM-side fallbacks, not evaluator
+credentials.
+
+The public factual canary stays disabled until both
+`validate:registry:live` and `eval:cardano-rag:live` exit zero with real
+credentials. Fixture and offline runs do not satisfy this gate. Live reports
+are sanitized and mode `0600`, containing no response bodies, tokens, provider
+errors, or credentials.
 
 ## Cache Invalidation and Volatile Evidence
 

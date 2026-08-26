@@ -35,7 +35,6 @@ const LIVE_CREDENTIALS = [
   "VENNEK_MODEL_QUALITY",
   "VENNEK_MODEL_VERIFIER",
   "VENNEK_EMBEDDING_MODEL",
-  "GITHUB_TOKEN",
 ] as const;
 
 export type EvaluationMode = "offline" | "live";
