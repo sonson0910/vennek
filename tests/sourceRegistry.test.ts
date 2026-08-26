@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkLive,
   liveValidationSucceeded,
+  readSourceConfig,
   runLiveValidation,
   validateRequiredRefreshPolicies,
   validateSourceConfig
@@ -27,6 +28,15 @@ const official: SourceRegistryEntry = {
   networks: ["mainnet", "preprod", "preview"],
   refresh: "daily"
 };
+
+const checkedInEntries = validateSourceConfig(readSourceConfig());
+const cardanoFoundation = checkedInEntries.find((entry) => entry.id === "cardano-foundation")!;
+const cardanoFoundationGithub = checkedInEntries.find((entry) => entry.id === "cardano-foundation-github")!;
+const cardanoStackExchange = checkedInEntries.find((entry) => entry.id === "cardano-stack-exchange")!;
+
+function response(url: string, statusCode = 200, contentType = "text/plain") {
+  return { url, statusCode, headers: { "content-type": contentType }, body: {} as never, cancel: () => undefined };
+}
 
 describe("Cardano source registry", () => {
   it("validates the exact tiered registry envelope before flattening", () => {
@@ -239,7 +249,7 @@ describe("Cardano source registry", () => {
     expect(() => validateRequiredRefreshPolicies(entries.filter((entry) => entry.id !== "cardano-org"))).toThrow(/cardano-org.*missing/i);
   });
 
-  it("uses one source deadline across HEAD and GET fallback and aggregates failures", async () => {
+  it("uses one source deadline across HEAD and GET fallback", async () => {
     const calls: string[] = [];
     const request = async (input: { method?: string; signal: AbortSignal }) => {
       calls.push(input.method ?? "GET");
@@ -258,20 +268,81 @@ describe("Cardano source registry", () => {
     expect(calls).toEqual(["HEAD", "GET"]);
     expect(JSON.stringify(official)).toBe(before);
 
-    const failingRequest = async () => ({
-      url: official.url,
-      statusCode: 503,
-      headers: { "content-type": "text/plain" },
-      body: {} as never,
-      cancel: () => undefined
+  });
+
+  it("resolves a rate-limited Cardano Foundation primary through its healthy declared fallback", async () => {
+    const calls: string[] = [];
+    const results = await runLiveValidation([cardanoFoundation, cardanoFoundationGithub], {
+      request: async (input) => {
+        calls.push(`${input.method}:${input.url}`);
+        return input.url === cardanoFoundation.url ? response(input.url, 429) : response(input.url);
+      }
     });
-    const results = await runLiveValidation([official, { ...official, id: "second-source" }], {
-      request: failingRequest,
-      sourceTimeoutMs: 100,
-      overallTimeoutMs: 1_000
+    expect(results).toEqual([
+      expect.objectContaining({ id: "cardano-foundation", status: "degraded-with-fallback", fallbackId: "cardano-foundation-github", blocking: true, reason: expect.stringMatching(/429/) }),
+      expect.objectContaining({ id: "cardano-foundation-github", status: "healthy", blocking: true })
+    ]);
+    expect(calls).toHaveLength(3);
+    expect(calls).toEqual(expect.arrayContaining([
+      `HEAD:${cardanoFoundation.url}`, `GET:${cardanoFoundation.url}`,
+      `HEAD:${cardanoFoundationGithub.url}`
+    ]));
+    expect(liveValidationSucceeded(results)).toBe(true);
+  });
+
+  it("fails a required family when both the primary and its fallback fail", async () => {
+    const results = await runLiveValidation([cardanoFoundation, cardanoFoundationGithub], {
+      request: async (input) => response(input.url, 503)
     });
-    expect(results).toHaveLength(2);
-    expect(results.every((result) => !result.ok)).toBe(true);
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "cardano-foundation", status: "failed", blocking: true }),
+      expect.objectContaining({ id: "cardano-foundation-github", status: "failed", blocking: true })
+    ]));
     expect(liveValidationSucceeded(results)).toBe(false);
+  });
+
+  it("keeps a failed community Stack Exchange probe visible but nonblocking", async () => {
+    const results = await runLiveValidation([cardanoFoundationGithub, cardanoStackExchange], {
+      request: async (input) => response(input.url, input.url.includes("stackexchange") ? 503 : 200)
+    });
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "cardano-foundation-github", status: "healthy", blocking: true }),
+      expect.objectContaining({ id: "cardano-stack-exchange", status: "failed", blocking: false })
+    ]));
+    expect(liveValidationSucceeded(results)).toBe(true);
+  });
+
+  it("probes Stack Exchange once with its fixed hardened API query", async () => {
+    const calls: Array<{ url: string; method?: string; allowedDomains: string[] }> = [];
+    await expect(checkLive({ ...cardanoStackExchange, url: "https://evil.example/query?site=evil" }, undefined, async (input) => {
+      calls.push({ url: input.url, method: input.method, allowedDomains: input.allowedDomains });
+      return response(input.url, 200, "application/json; charset=utf-8");
+    })).resolves.toBeUndefined();
+    expect(calls).toEqual([{
+      url: "https://api.stackexchange.com/2.3/questions?filter=default&pagesize=1&site=cardano",
+      method: "GET",
+      allowedDomains: ["api.stackexchange.com"]
+    }]);
+  });
+
+  it("uses only the first raw-healthy declared fallback", async () => {
+    const entries = validateSourceRegistry([
+      { ...official, id: "family-primary", ingestionMode: "monitor-only", liveFallbackIds: ["first-fallback", "second-fallback"] },
+      { ...official, id: "first-fallback", url: "https://docs.cardano.org/first", ingestionMode: "scheduled" },
+      { ...official, id: "second-fallback", url: "https://docs.cardano.org/second", ingestionMode: "scheduled" }
+    ]);
+    const results = await runLiveValidation(entries, {
+      request: async (input) => response(input.url, input.url.endsWith("/second") ? 200 : 503)
+    });
+    expect(results.find((result) => result.id === "family-primary")).toMatchObject({ status: "degraded-with-fallback", fallbackId: "second-fallback" });
+  });
+
+  it("fails empty results and never exposes response bodies or URLs in safe state", async () => {
+    const results = await runLiveValidation([official], {
+      request: async () => { throw new Error("https://secret.example/path response body: private"); }
+    });
+    expect(liveValidationSucceeded([])).toBe(false);
+    expect(results[0]).toEqual(expect.objectContaining({ status: "failed", reason: expect.stringMatching(/HTTPS is required/) }));
+    expect(JSON.stringify(results)).not.toMatch(/secret|private|https:/i);
   });
 });

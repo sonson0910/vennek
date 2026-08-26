@@ -51,10 +51,14 @@ const SUPPORTED_CONTENT_TYPES = new Set([
 
 type SourceConfig = { official: unknown[]; community: unknown[] };
 
+export type LiveSourceStatus = "healthy" | "degraded-with-fallback" | "failed";
+
 export type LiveCheckResult = {
   id: string;
-  ok: boolean;
+  status: LiveSourceStatus;
+  blocking: boolean;
   reason?: string;
+  fallbackId?: string;
 };
 type LiveRequest = typeof requestPublicHttps;
 
@@ -92,6 +96,9 @@ export async function checkLive(
   signal: AbortSignal = AbortSignal.timeout(LIVE_SOURCE_TIMEOUT_MS),
   requestImpl: LiveRequest = requestPublicHttps
 ): Promise<string | undefined> {
+  if (entry.kind === "stackexchange") {
+    return checkStackExchangeLive(entry, signal, requestImpl);
+  }
   if (!urlMatchesSourceScope(entry.url, entry)) {
     return "URL rejected (outside the declared source scope).";
   }
@@ -128,7 +135,7 @@ export async function runLiveValidation(
 ): Promise<LiveCheckResult[]> {
   const overallTimeout = AbortSignal.timeout(input.overallTimeoutMs ?? LIVE_OVERALL_TIMEOUT_MS);
   const overallSignal = input.signal ? AbortSignal.any([input.signal, overallTimeout]) : overallTimeout;
-  const results: LiveCheckResult[] = new Array(entries.length);
+  const rawResults: Array<{ id: string; reason?: string }> = new Array(entries.length);
   let nextIndex = 0;
 
   async function worker(): Promise<void> {
@@ -150,9 +157,9 @@ export async function runLiveValidation(
       }
       try {
         const reason = await checkLive(entry, sourceController.signal, input.request);
-        results[index] = { id: entry.id, ok: reason === undefined, ...(reason ? { reason } : {}) };
+        rawResults[index] = { id: entry.id, ...(reason ? { reason } : {}) };
       } catch (error) {
-        results[index] = { id: entry.id, ok: false, reason: safeReason(error) };
+        rawResults[index] = { id: entry.id, reason: safeReason(error) };
       } finally {
         clearTimeout(sourceTimeout);
         overallSignal.removeEventListener("abort", abortSource);
@@ -161,11 +168,12 @@ export async function runLiveValidation(
   }
 
   await Promise.all(Array.from({ length: Math.min(LIVE_WORKERS, entries.length) }, () => worker()));
-  return results;
+  const rawById = new Map(rawResults.map((result) => [result.id, result] as const));
+  return entries.map((entry) => resolveLiveResult(entry, rawById));
 }
 
 export function liveValidationSucceeded(results: LiveCheckResult[]): boolean {
-  return results.length > 0 && results.every((result) => result.ok);
+  return results.length > 0 && results.every((result) => !result.blocking || result.status !== "failed");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,6 +200,45 @@ async function requestLive(
   } catch (error) {
     return { error };
   }
+}
+
+async function checkStackExchangeLive(entry: SourceRegistryEntry, signal: AbortSignal, requestImpl: LiveRequest): Promise<string | undefined> {
+  const url = new URL("https://api.stackexchange.com/2.3/questions");
+  url.search = new URLSearchParams({ filter: "default", pagesize: "1", site: "cardano" }).toString();
+  if (!urlMatchesSourceScope(url.toString(), entry)) {
+    return "URL rejected (outside the declared source scope).";
+  }
+  try {
+    const response = await requestImpl({
+      url: url.toString(),
+      allowedDomains: ["api.stackexchange.com"],
+      method: "GET",
+      signal
+    });
+    const accepted = isAcceptedResponse(response);
+    response.cancel();
+    if (accepted) {
+      return undefined;
+    }
+    return isSuccessful(response.statusCode) ? "unsupported content type" : `HTTP ${response.statusCode}`;
+  } catch (error) {
+    return safeReason(error);
+  }
+}
+
+function resolveLiveResult(
+  entry: SourceRegistryEntry,
+  rawById: ReadonlyMap<string, { id: string; reason?: string }>
+): LiveCheckResult {
+  const raw = rawById.get(entry.id)!;
+  const blocking = REQUIRED_OFFICIAL_SOURCE_IDS.includes(entry.id as (typeof REQUIRED_OFFICIAL_SOURCE_IDS)[number]);
+  if (!raw.reason) {
+    return { id: entry.id, status: "healthy", blocking };
+  }
+  const fallbackId = entry.liveFallbackIds?.find((id) => !rawById.get(id)?.reason);
+  return fallbackId
+    ? { id: entry.id, status: "degraded-with-fallback", blocking, fallbackId, reason: raw.reason }
+    : { id: entry.id, status: "failed", blocking, reason: raw.reason };
 }
 
 function isAcceptedResponse(response?: PublicHttpsResponse): boolean {
@@ -250,7 +297,12 @@ async function main(): Promise<void> {
     if (process.argv.includes("--live")) {
       const results = await runLiveValidation(entries);
       for (const result of results) {
-        console.log(`${result.id}: ${result.ok ? "ok" : result.reason ?? "failed"}`);
+        const status = result.status === "healthy"
+          ? "healthy"
+          : result.status === "degraded-with-fallback"
+            ? `degraded-with-fallback (${result.fallbackId}): ${result.reason ?? "failed"}`
+            : `failed: ${result.reason ?? "unknown failure"}`;
+        console.log(`${result.id}: ${status}`);
       }
       if (!liveValidationSucceeded(results)) {
         process.exitCode = 1;
