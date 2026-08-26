@@ -259,7 +259,7 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
 }
 
 function supportsDirectPromotion(entry: SourceRegistryEntry): boolean {
-  return sourceIsScheduled(entry) && (entry.kind === "page" || entry.kind === "sitemap");
+  return sourceIsScheduled(entry) && entry.kind !== "stackexchange";
 }
 
 type PromotionDeadline = { signal: AbortSignal; deadlineAt: number };

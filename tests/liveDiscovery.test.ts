@@ -51,6 +51,16 @@ const stackExchangeEntry: SourceRegistryEntry = {
   stackExchange: { site: "cardano" },
 };
 
+const githubEntry: SourceRegistryEntry = {
+  ...entry,
+  id: "iog-github",
+  owner: "Input Output Global",
+  kind: "github",
+  url: "https://github.com/IntersectMBO/cardano-node",
+  allowedDomains: ["github.com", "raw.githubusercontent.com", "api.github.com"],
+  github: { owner: "IntersectMBO", repository: "cardano-node" },
+};
+
 function result(url: string, title = "Result"): { title: string; content: string; url: string } {
   return { title, content: "Cardano documentation", url };
 }
@@ -260,6 +270,19 @@ describe("SearXNG live discovery", () => {
     expect(repository.storeVersion).not.toHaveBeenCalled();
     expect(repository.replaceChunks).not.toHaveBeenCalled();
     expect(embed).not.toHaveBeenCalled();
+  });
+
+  it("keeps scheduled GitHub sources available to live discovery", async () => {
+    const search = vi.fn(async () => [result("https://github.com/IntersectMBO/cardano-node/releases")]);
+
+    await expect(discoverLiveSources({
+      query: "Cardano node release",
+      registry: [githubEntry],
+      search: { search },
+    })).resolves.toEqual([
+      expect.objectContaining({ matchedSourceId: "iog-github" }),
+    ]);
+    expect(search).toHaveBeenCalledOnce();
   });
 
   it("rejects wallet recovery phrases before calling live search", async () => {
