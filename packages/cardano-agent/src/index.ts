@@ -89,16 +89,19 @@ export type {
 
 export {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  sourceIsScheduled,
   urlMatchesSourceScope,
   validateSourceRegistry,
 } from "./knowledge/sourceRegistry.js";
 export type {
   CardanoNetwork,
   GithubScope,
+  IngestionMode,
   RefreshRate,
   SourceKind,
   SourceRegistryEntry,
   SourceRegistryEnvelope,
+  StackExchangeScope,
   TrustTier,
 } from "./knowledge/sourceRegistry.js";
 export { validateSourceRegistryEnvelope } from "./knowledge/sourceRegistry.js";

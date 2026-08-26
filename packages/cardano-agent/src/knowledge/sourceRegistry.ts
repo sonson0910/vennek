@@ -2,7 +2,9 @@ import { isIP } from "node:net";
 import { hostMatches } from "@vennek/cardano-governance-skills";
 
 export type TrustTier = "official" | "community" | "unverified";
-export type SourceKind = "sitemap" | "github" | "page";
+export type IngestionMode = "scheduled" | "monitor-only";
+export type StackExchangeScope = { site: "cardano" };
+export type SourceKind = "sitemap" | "github" | "page" | "stackexchange";
 export type RefreshRate = "hourly" | "daily";
 export type CardanoNetwork = "mainnet" | "preprod" | "preview";
 export type GithubScope = {
@@ -19,11 +21,14 @@ type SourceRegistryEntryBase = {
   topics: string[];
   networks: CardanoNetwork[];
   refresh: RefreshRate;
+  ingestionMode?: IngestionMode;
+  liveFallbackIds?: string[];
 };
 
 export type SourceRegistryEntry = SourceRegistryEntryBase & (
-  | { kind: "github"; github: GithubScope }
-  | { kind: Exclude<SourceKind, "github">; github?: never }
+  | { kind: "github"; github: GithubScope; stackExchange?: never }
+  | { kind: "stackexchange"; github?: never; stackExchange: StackExchangeScope }
+  | { kind: Exclude<SourceKind, "github" | "stackexchange">; github?: never; stackExchange?: never }
 );
 
 export type SourceRegistryEnvelope = {
@@ -62,10 +67,14 @@ const ENTRY_FIELDS = new Set([
   "topics",
   "networks",
   "refresh",
-  "github"
+  "github",
+  "ingestionMode",
+  "liveFallbackIds",
+  "stackExchange"
 ]);
 const TRUST_TIERS = new Set<TrustTier>(["official", "community", "unverified"]);
-const SOURCE_KINDS = new Set<SourceKind>(["sitemap", "github", "page"]);
+const SOURCE_KINDS = new Set<SourceKind>(["sitemap", "github", "page", "stackexchange"]);
+const INGESTION_MODES = new Set<IngestionMode>(["scheduled", "monitor-only"]);
 const REFRESH_RATES = new Set<RefreshRate>(["hourly", "daily"]);
 const NETWORKS = new Set<CardanoNetwork>(["mainnet", "preprod", "preview"]);
 
@@ -88,15 +97,16 @@ export function validateSourceRegistry(input: unknown): SourceRegistryEntry[] {
     throw new Error("Source registry exceeds its maximum length.");
   }
 
+  const entries = input.map((candidate, index) => validateEntry(candidate, index));
   const ids = new Set<string>();
-  return input.map((candidate, index) => {
-    const entry = validateEntry(candidate, index);
+  for (const entry of entries) {
     if (ids.has(entry.id)) {
       throw new Error(`Duplicate source id: ${entry.id}`);
     }
     ids.add(entry.id);
-    return entry;
-  });
+  }
+  validateLiveFallbacks(entries);
+  return entries;
 }
 
 /** Validate the on-disk registry envelope before flattening its tiered entries. */
@@ -139,6 +149,10 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
   const topics = validateTopics(candidate.topics, index);
   const networks = validateNetworks(candidate.networks, index);
   const refresh = enumValue(candidate.refresh, REFRESH_RATES, "refresh", index);
+  const ingestionMode = candidate.ingestionMode === undefined
+    ? undefined
+    : enumValue(candidate.ingestionMode, INGESTION_MODES, "ingestionMode", index);
+  const liveFallbackIds = validateLiveFallbackIds(candidate.liveFallbackIds, index);
   const github = validateGithubScope(candidate.github, kind, index);
 
   let parsedUrl: URL;
@@ -160,6 +174,7 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
   if (kind === "github" && github?.repository === undefined && requiresGithubRepository(parsedUrl)) {
     throw new Error(`Source entry ${index} github repository is required for repository or release URLs.`);
   }
+  const stackExchange = validateStackExchangeScope(candidate.stackExchange, kind, url, allowedDomains, index);
   const common = {
     id,
     owner,
@@ -168,15 +183,75 @@ function validateEntry(candidate: unknown, index: number): SourceRegistryEntry {
     allowedDomains,
     topics,
     networks,
-    refresh
+    refresh,
+    ...(ingestionMode === undefined ? {} : { ingestionMode }),
+    ...(liveFallbackIds === undefined ? {} : { liveFallbackIds })
   };
   const entry: SourceRegistryEntry = kind === "github"
     ? { ...common, kind, github: github! }
-    : { ...common, kind };
+    : kind === "stackexchange"
+      ? { ...common, kind, stackExchange: stackExchange! }
+      : { ...common, kind };
   if (!urlMatchesSourceScope(url, entry)) {
     throw new Error(`Source entry ${index} url is outside the allowed domain or declared source scope.`);
   }
   return entry;
+}
+
+/** Returns whether a source participates in scheduled ingestion. */
+export function sourceIsScheduled(entry: SourceRegistryEntry): boolean {
+  return entry.ingestionMode !== "monitor-only";
+}
+
+function validateLiveFallbackIds(value: unknown, index: number): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const ids = nonEmptyArray(value, "liveFallbackIds", index, 16) as string[];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== "string" || id.length > MAX_ID_LENGTH || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+      throw new Error(`Source entry ${index} liveFallbackIds contains an invalid lowercase hyphenated id.`);
+    }
+    if (seen.has(id)) {
+      throw new Error(`Duplicate live fallback id in source entry ${index}: ${id}`);
+    }
+    seen.add(id);
+  }
+  return ids;
+}
+
+function validateLiveFallbacks(entries: SourceRegistryEntry[]): void {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  for (const entry of entries) {
+    if (entry.liveFallbackIds === undefined) {
+      continue;
+    }
+    if (entry.trustTier !== "official" || entry.ingestionMode !== "monitor-only") {
+      throw new Error(`Source entry ${entry.id} liveFallbackIds require an official monitor-only source.`);
+    }
+    for (const fallbackId of entry.liveFallbackIds) {
+      if (fallbackId === entry.id) {
+        throw new Error(`Source entry ${entry.id} live fallback cannot reference itself.`);
+      }
+      const fallback = byId.get(fallbackId);
+      if (!fallback) {
+        throw new Error(`Source entry ${entry.id} live fallback does not exist: ${fallbackId}`);
+      }
+      if (fallback.trustTier !== "official") {
+        throw new Error(`Source entry ${entry.id} live fallback must be official: ${fallbackId}`);
+      }
+      if (!sourceIsScheduled(fallback)) {
+        throw new Error(`Source entry ${entry.id} live fallback must be scheduled: ${fallbackId}`);
+      }
+      if (fallback.owner !== entry.owner) {
+        throw new Error(`Source entry ${entry.id} live fallback owner must match: ${fallbackId}`);
+      }
+      if (fallback.liveFallbackIds !== undefined) {
+        throw new Error(`Source entry ${entry.id} live fallback cannot declare fallbacks: ${fallbackId}`);
+      }
+    }
+  }
 }
 
 function validateGithubScope(value: unknown, kind: SourceKind, index: number): GithubScope | undefined {
@@ -203,6 +278,38 @@ function validateGithubScope(value: unknown, kind: SourceKind, index: number): G
     throw new Error(`Source entry ${index} github repository is invalid.`);
   }
   return repository === undefined ? { owner } : { owner, repository };
+}
+
+function validateStackExchangeScope(
+  value: unknown,
+  kind: SourceKind,
+  url: string,
+  allowedDomains: string[],
+  index: number
+): StackExchangeScope | undefined {
+  if (kind !== "stackexchange") {
+    if (value !== undefined) {
+      throw new Error(`Source entry ${index} stackExchange metadata is only valid for stackexchange sources.`);
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Source entry ${index} stackExchange metadata must be an object.`);
+  }
+  if (Object.keys(value).some((key) => key !== "site")) {
+    throw new Error(`Unknown field in source entry ${index} stackExchange metadata.`);
+  }
+  if (value.site !== "cardano") {
+    throw new Error(`Source entry ${index} stackExchange site must be cardano.`);
+  }
+  if (url !== "https://api.stackexchange.com/2.3/questions") {
+    throw new Error(`Source entry ${index} stackexchange URL must be exact.`);
+  }
+  const expectedDomains = ["api.stackexchange.com", "cardano.stackexchange.com"];
+  if (allowedDomains.length !== expectedDomains.length || expectedDomains.some((domain) => !allowedDomains.includes(domain))) {
+    throw new Error(`Source entry ${index} stackexchange allowedDomains must be exact.`);
+  }
+  return value as StackExchangeScope;
 }
 
 function validateDomains(value: unknown, index: number): string[] {

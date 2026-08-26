@@ -9,6 +9,7 @@ import {
 } from "../scripts/validate-source-registry";
 import {
   REQUIRED_OFFICIAL_SOURCE_IDS,
+  sourceIsScheduled,
   validateSourceRegistryEnvelope,
   urlMatchesSourceScope,
   validateSourceRegistry,
@@ -41,6 +42,55 @@ describe("Cardano source registry", () => {
   it("rejects duplicate ids and non-HTTPS sources", () => {
     expect(() => validateSourceRegistry([official, official])).toThrow(/duplicate/i);
     expect(() => validateSourceRegistry([{ ...official, url: "http://docs.cardano.org" }])).toThrow(/https/i);
+  });
+
+  it("validates monitor-only official fallbacks and scheduling metadata", () => {
+    const fallback: SourceRegistryEntry = { ...official, id: "official-fallback", ingestionMode: "scheduled" };
+    const monitor: SourceRegistryEntry = {
+      ...official,
+      id: "official-monitor",
+      ingestionMode: "monitor-only",
+      liveFallbackIds: [fallback.id]
+    };
+    expect(validateSourceRegistry([monitor, fallback])).toMatchObject([
+      { id: monitor.id, ingestionMode: "monitor-only", liveFallbackIds: [fallback.id] },
+      { id: fallback.id, ingestionMode: "scheduled" }
+    ]);
+    expect(sourceIsScheduled(monitor)).toBe(false);
+    expect(sourceIsScheduled(fallback)).toBe(true);
+
+    expect(() => validateSourceRegistry([{ ...official, ingestionMode: "on-demand" }])).toThrow(/ingestionMode/i);
+    expect(() => validateSourceRegistry([{ ...monitor, liveFallbackIds: ["missing-source"] }])).toThrow(/fallback.*missing|does not exist/i);
+    expect(() => validateSourceRegistry([{ ...monitor, liveFallbackIds: [monitor.id] }, fallback])).toThrow(/self/i);
+    expect(() => validateSourceRegistry([
+      { ...monitor, liveFallbackIds: ["community-fallback"] },
+      { ...fallback, id: "community-fallback", trustTier: "community" }
+    ])).toThrow(/official/i);
+    expect(() => validateSourceRegistry([
+      { ...monitor, liveFallbackIds: ["monitor-fallback"] },
+      { ...fallback, id: "monitor-fallback", ingestionMode: "monitor-only" }
+    ])).toThrow(/scheduled/i);
+    expect(() => validateSourceRegistry([
+      { ...monitor, liveFallbackIds: ["other-owner"] },
+      { ...fallback, id: "other-owner", owner: "Other Owner" }
+    ])).toThrow(/owner/i);
+    expect(() => validateSourceRegistry([
+      { ...monitor, liveFallbackIds: Array.from({ length: 17 }, (_, index) => `fallback-${index}`) },
+      ...Array.from({ length: 17 }, (_, index) => ({ ...fallback, id: `fallback-${index}` }))
+    ])).toThrow(/maximum length|16/i);
+    expect(() => validateSourceRegistry([
+      { ...monitor, liveFallbackIds: ["fallback-one"] },
+      { ...fallback, id: "fallback-one", liveFallbackIds: ["fallback-two"], ingestionMode: "monitor-only" },
+      { ...fallback, id: "fallback-two" }
+    ])).toThrow(/scheduled|fallback/i);
+  });
+
+  it("rejects invalid fallback lists", () => {
+    const monitor: SourceRegistryEntry = { ...official, id: "official-monitor", ingestionMode: "monitor-only" };
+    expect(() => validateSourceRegistry([{ ...monitor, liveFallbackIds: [] }])).toThrow(/non-empty/i);
+    expect(() => validateSourceRegistry([{ ...monitor, liveFallbackIds: ["bad_ID"] }])).toThrow(/lowercase hyphenated/i);
+    expect(() => validateSourceRegistry([{ ...monitor, liveFallbackIds: ["fallback", "fallback"] }])).toThrow(/duplicate/i);
+    expect(() => validateSourceRegistry([{ ...official, liveFallbackIds: ["official-monitor"] }, monitor])).toThrow(/official.*monitor-only|monitor-only.*official/i);
   });
 
   it("requires every URL host to be in allowedDomains", () => {
@@ -84,6 +134,30 @@ describe("Cardano source registry", () => {
     expect(urlMatchesSourceScope("https://github.com/cardano-foundation%2FCIPs", repo)).toBe(false);
     expect(urlMatchesSourceScope("https://github.com/cardano-foundation\\CIPs", repo)).toBe(false);
     expect(urlMatchesSourceScope("https://evil.github.com/input-output-hk/cardano-node", org)).toBe(false);
+  });
+
+  it("validates the fixed Cardano Stack Exchange source tuple", () => {
+    const stackExchange: SourceRegistryEntry = {
+      id: "cardano-stack-exchange",
+      owner: "Cardano Stack Exchange",
+      trustTier: "community",
+      kind: "stackexchange",
+      url: "https://api.stackexchange.com/2.3/questions",
+      allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com"],
+      stackExchange: { site: "cardano" },
+      topics: ["community", "developer", "fundamentals"],
+      networks: ["mainnet", "preprod", "preview"],
+      refresh: "daily"
+    };
+    expect(validateSourceRegistry([stackExchange])).toEqual([stackExchange]);
+    expect(validateSourceRegistry([{ ...stackExchange, allowedDomains: [...stackExchange.allowedDomains].reverse() }])).toMatchObject([
+      { allowedDomains: ["cardano.stackexchange.com", "api.stackexchange.com"] }
+    ]);
+    expect(() => validateSourceRegistry([{ ...stackExchange, url: "https://api.stackexchange.com/2.3/questions/" }])).toThrow(/stack exchange.*url|exact/i);
+    expect(() => validateSourceRegistry([{ ...stackExchange, allowedDomains: ["cardano.stackexchange.com"] }])).toThrow(/stack exchange.*domain|exact/i);
+    expect(() => validateSourceRegistry([{ ...stackExchange, allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com", "example.com"] }])).toThrow(/stack exchange.*domain|exact/i);
+    expect(() => validateSourceRegistry([{ ...stackExchange, stackExchange: { site: "ethereum" } }])).toThrow(/site|cardano/i);
+    expect(() => validateSourceRegistry([{ ...stackExchange, stackExchange: { site: "cardano", extra: true } }])).toThrow(/unknown|metadata/i);
   });
 
   it("requires strict GitHub metadata and repository scope fields", () => {
@@ -131,6 +205,20 @@ describe("Cardano source registry", () => {
     expect(REQUIRED_OFFICIAL_SOURCE_IDS).toContain("cardano-org");
     expect(REQUIRED_OFFICIAL_SOURCE_IDS.every((id) => ids.has(id))).toBe(true);
     expect(config.official.find((entry) => entry.id === "cardano-foundation")?.url).toBe("https://cardanofoundation.org/");
+    expect(config.official.find((entry) => entry.id === "cardano-foundation")).toMatchObject({
+      ingestionMode: "monitor-only",
+      liveFallbackIds: ["cardano-foundation-github"]
+    });
+    expect(config.official.find((entry) => entry.id === "cardano-foundation-github")).toMatchObject({
+      trustTier: "official",
+      ingestionMode: "scheduled"
+    });
+    expect(config.community.find((entry) => entry.id === "cardano-stack-exchange")).toMatchObject({
+      kind: "stackexchange",
+      url: "https://api.stackexchange.com/2.3/questions",
+      allowedDomains: ["api.stackexchange.com", "cardano.stackexchange.com"],
+      stackExchange: { site: "cardano" }
+    });
     expect(config.community.length).toBeGreaterThanOrEqual(2);
     expect(validateSourceRegistry([...config.official, ...config.community])).toHaveLength(
       config.official.length + config.community.length
