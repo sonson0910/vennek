@@ -48,8 +48,8 @@ git diff --check
 - [ ] Owner and application database credentials are distinct; only the migration/provisioning services receive owner access.
 - [ ] LiteLLM `ghcr.io/berriai/litellm:v1.98.0@sha256:20b5044b619055374061a6d5b7b08754cad75aeabbf82ddf4f69cc0cf80ddaf4` is Cosign-verified and its read-only config contains only environment references.
 - [ ] Vennek receives only `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and the model aliases; provider keys do not enter Vennek, the evaluator, or reports.
-- [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file. The current 1,536-dimensional embedding alias is OpenAI `text-embedding-3-small`, so staging LiteLLM receives a real `OPENAI_API_KEY` only through its own mode-0600 secret file/manager; it is absent from Vennek environment examples.
-- [ ] The checked-in static LiteLLM/Compose template declares all OpenAI, Anthropic, and Gemini completion routes, so every provider key/model pair is a deployment prerequisite; partial pairs are invalid. Provider routes remain LiteLLM-side only, not evaluator credentials. An OpenAI-only deployment requires a separate reviewed removal of unused routes and Compose requirements; never use empty or mismatched defaults. Optional `GITHUB_TOKEN` only increases worker GitHub ingestion rate capacity and never gates live RAG.
+- [ ] Provider keys, LiteLLM master key, Telegram token, webhook secret, and database URLs come from a secret manager or mode-0600 file. The current 1,536-dimensional embedding alias is OpenAI `text-embedding-3-small`, so staging LiteLLM receives a real `OPENAI_API_KEY` only through its own mode-0600 secret file/manager; the real key is never committed, the shared `.env.example` has only a placeholder, and Vennek service environments omit it.
+- [ ] The checked-in static LiteLLM/Compose template declares all OpenAI, Anthropic, and Gemini completion routes, so every provider key/model pair is a deployment prerequisite; partial pairs are invalid. `.env.example` is shared Compose input and contains provider placeholders for LiteLLM, while `deploy/vennek.env.example` and Vennek service environments omit provider keys. Provider routes remain LiteLLM-side only, not evaluator credentials. An OpenAI-only deployment requires a separate reviewed removal of unused routes and Compose requirements; never use empty or mismatched defaults. Optional `GITHUB_TOKEN` only increases worker GitHub ingestion rate capacity and never gates live RAG.
 - [ ] PostgreSQL health, migration completion, role provisioning, webhook health, worker startup, and LiteLLM readiness are recorded.
 - [ ] Telegram webhook is registered with HTTPS and `allowed_updates=["message"]`.
 - [ ] One authorized staging message is queued, answered, persisted encrypted, and delivered.
@@ -58,9 +58,13 @@ git diff --check
 - [ ] Partition maintenance succeeds as the app role while direct `CREATE TABLE` fails.
 - [ ] `npm run validate:registry:live` passes for the staged official registry,
   with every source-specific failure recorded and investigated.
-- [ ] `npm run eval:cardano-rag:live` passes the same retrieval, citation,
-  freshness, and answer-property thresholds without replacing the approved
-  offline baseline.
+- [ ] Live RAG evaluation runs with exactly the seven direct variables and a
+  reachable existing LiteLLM endpoint; use
+  `docker compose exec -T agent-worker npm run eval:cardano-rag:live` only after
+  the image includes the evaluation corpus, otherwise use a mode-0600
+  restricted environment without provider keys. It passes the same retrieval,
+  citation, freshness, and answer-property thresholds without replacing the
+  approved offline baseline.
 - [ ] Live evaluation reports are sanitized, mode-0600, and contain no response bodies, tokens, provider errors, or credentials.
 - [ ] At least one hourly (`0 * * * *`) and one daily (`15 2 * * *`) source
   synchronization cycle completes; unchanged content skips embedding and a

@@ -188,20 +188,42 @@ insufficient/stale-evidence response rather than fabricating an answer.
 
 Vennek receives only `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and
 the `VENNEK_MODEL_FAST`, `VENNEK_MODEL_QUALITY`, `VENNEK_MODEL_VERIFIER`, and
-`VENNEK_EMBEDDING_MODEL` aliases. Provider keys never enter Vennek, the live
-evaluator, or its reports. `GITHUB_TOKEN` is optional worker-only ingestion
-capacity for GitHub rate limits; it is never a live RAG gate.
+`VENNEK_EMBEDDING_MODEL` aliases in its service environment. `.env.example` is
+a shared Compose input template and therefore contains provider placeholders
+for LiteLLM. `deploy/vennek.env.example` and the Vennek service environment
+blocks omit provider keys; Compose injects them only into `litellm`. Provider
+keys never enter the Vennek service, evaluator process, or reports.
+`GITHUB_TOKEN` is optional worker-only ingestion capacity for GitHub rate
+limits; it is never a live RAG gate.
 
 The current 1,536-dimensional embedding alias is OpenAI
 `text-embedding-3-small`. Staging LiteLLM therefore needs a real
 `OPENAI_API_KEY` through LiteLLM's own mode-0600 secret file or secret manager;
-that key is not placed in either Vennek environment example. The checked-in
+the real key is never committed; the shared example contains only a placeholder
+and the Vennek deployment example omits it. The checked-in
 static LiteLLM/Compose template declares all OpenAI, Anthropic, and Gemini
 completion routes, so every provider key/model pair is a deployment prerequisite
 and partial pairs are invalid. These provider routes remain LiteLLM-side only,
 not evaluator credentials. An OpenAI-only deployment requires a separate,
 reviewed removal of the unused static routes and their Compose requirements;
 never use empty or mismatched defaults.
+
+Run the evaluator with only its seven direct variables and a reachable existing
+LiteLLM endpoint. The preferred isolated command is:
+
+```bash
+docker compose exec -T agent-worker npm run eval:cardano-rag:live
+```
+
+The current image does not copy `samples/evaluation/cardano-rag.jsonl`, so that
+command is not compatible until the image is rebuilt with the evaluator corpus.
+Until then, use a mode-0600 restricted environment containing exactly
+`DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`, the three
+`VENNEK_MODEL_*` aliases, and `VENNEK_EMBEDDING_MODEL`, with an already
+reachable LiteLLM endpoint; do not expose a LiteLLM host port solely for this
+check. Retrieve only the sanitized report path/status/metrics from
+`reports/evaluation` under its mode-0700 directory; never echo the environment
+or report bodies/tokens/provider errors.
 
 The public factual canary stays disabled until both
 `validate:registry:live` and `eval:cardano-rag:live` exit zero with real

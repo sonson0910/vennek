@@ -269,6 +269,35 @@ describe("LiteLLM embedding route contract", () => {
     expect(compose).toContain("OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}");
   });
 
+  it("keeps static provider settings required and isolated to LiteLLM", () => {
+    const config = readFileSync("config/litellm.example.yaml", "utf8");
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const section = (name: string, next: string): string => {
+      const start = compose.indexOf(`  ${name}:`);
+      const end = compose.indexOf(`  ${next}:`, start + 1);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return compose.slice(start, end);
+    };
+    const litellm = section("litellm", "telegram-webhook");
+    const providerKeys = ["OPENAI_API_KEY", "PRIVATE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"];
+    const providerModels = [
+      "OPENAI_EMBEDDING_MODEL", "OPENAI_FAST_MODEL", "OPENAI_QUALITY_MODEL", "OPENAI_VERIFIER_MODEL",
+      "PRIVATE_OPENAI_QUALITY_MODEL", "PRIVATE_OPENAI_VERIFIER_MODEL",
+      "ANTHROPIC_FAST_MODEL", "ANTHROPIC_QUALITY_MODEL", "ANTHROPIC_VERIFIER_MODEL",
+      "GEMINI_FAST_MODEL", "GEMINI_QUALITY_MODEL", "GEMINI_VERIFIER_MODEL",
+    ];
+    for (const name of [...providerKeys, ...providerModels]) {
+      expect(litellm).toContain(`${name}: \${${name}:?${name} is required}`);
+    }
+    for (const name of providerKeys) expect(config).toContain(`os.environ/${name}`);
+    for (const service of ["telegram-webhook", "agent-worker", "knowledge-worker"]) {
+      const next = service === "knowledge-worker" ? "pdf-extractor" : service === "telegram-webhook" ? "agent-worker" : "knowledge-worker";
+      const environment = section(service, next);
+      for (const name of providerKeys) expect(environment).not.toContain(`${name}:`);
+    }
+  });
+
 });
 
 describe("LiteLLM private route contract", () => {

@@ -177,10 +177,15 @@ not require a Stack Exchange access token for the bounded public read path.
 ## Managed LiteLLM Gate
 
 Keep LiteLLM as the only model endpoint exposed to Vennek. OpenAI is the
-required primary provider for the current 1,536-dimension embedding contract;
-the existing Anthropic and Gemini completion routes remain optional fallbacks.
-Provider credentials stay inside LiteLLM and are never passed to the evaluator
-or persisted in reports.
+required primary provider for the current 1,536-dimension embedding contract.
+The checked-in static LiteLLM/Compose template declares all OpenAI, Anthropic,
+and Gemini completion routes, so every provider key/model pair is a deployment
+prerequisite for this template; partial pairs are invalid. These provider
+credentials stay inside LiteLLM and are never passed to the evaluator or
+persisted in reports. An OpenAI-only deployment requires a separate reviewed
+removal of the unused static routes and Compose requirements; empty or
+mismatched defaults are not safe. This corrects the earlier optional-fallback
+assumption based on the rendered Compose evidence.
 
 The live evaluator requires only what it directly consumes:
 
@@ -195,7 +200,9 @@ The live evaluator requires only what it directly consumes:
 `GITHUB_TOKEN` becomes optional. It remains available to the ingestion worker
 for higher GitHub rate limits but cannot block evaluation of an already-built
 index. The LiteLLM deployment still needs a real `OPENAI_API_KEY`; that secret
-is an operator prerequisite, not a repository default.
+is an operator prerequisite, not a repository default. `.env.example` is a
+shared Compose input and contains provider placeholders for LiteLLM;
+`deploy/vennek.env.example` and Vennek service environments omit provider keys.
 
 ## Failure and Security Policy
 

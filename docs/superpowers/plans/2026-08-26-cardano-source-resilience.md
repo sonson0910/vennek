@@ -4,7 +4,7 @@
 
 **Goal:** Keep challenge-protected Cardano sources visible without blocking safe ingestion, ingest Cardano Stack Exchange through its official API, and make live release gates depend only on real runtime requirements.
 
-**Architecture:** Extend the existing strict source registry with monitor-only and explicit same-publisher fallback metadata. Reuse the hardened HTTPS reader, immutable indexing pipeline, and `knowledge_sources.fetch_state`; add one bounded Stack Exchange adapter and resolve source-family health only inside the live validator. Keep LiteLLM managed-provider credentials outside the repository and remove only the unused GitHub credential from live evaluation.
+**Architecture:** Extend the existing strict source registry with monitor-only and explicit same-publisher fallback metadata. Reuse the hardened HTTPS reader, immutable indexing pipeline, and `knowledge_sources.fetch_state`; add one bounded Stack Exchange adapter and resolve source-family health only inside the live validator. Keep LiteLLM managed-provider credentials outside Vennek and remove only the unused GitHub credential from live evaluation. The checked-in static LiteLLM/Compose template requires complete OpenAI, Anthropic, and Gemini key/model pairs; an OpenAI-only deployment needs a separately reviewed static-route removal, never empty or mismatched defaults.
 
 **Tech Stack:** TypeScript, Vitest, native HTTPS, Cheerio, PostgreSQL JSONB fetch state, pg-boss, LiteLLM, Stack Exchange API v2.3
 
@@ -736,6 +736,9 @@ Document these exact boundaries:
 - `GITHUB_TOKEN` is optional and affects GitHub rate capacity only;
 - staging LiteLLM must receive a real `OPENAI_API_KEY` through its secret file or
   manager because the current embedding alias requires it;
+- the shared `.env.example` contains provider placeholders for LiteLLM, while
+  `deploy/vennek.env.example` and Vennek service environments omit provider
+  keys; the static Compose template requires every provider key/model pair;
 - Vennek receives only `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and model aliases;
 - Cardano Foundation may be degraded-with-fallback without being called healthy;
 - monitor-only sources are not scheduled or manually syncable;
@@ -802,12 +805,17 @@ API is healthy, and no required official family is failed.
 
 - [ ] **Step 3: Run managed-provider live RAG staging**
 
-From a mode-0600 staging environment containing the real database, LiteLLM
-master key, provider key, and model aliases, run:
+Run the evaluator with exactly the seven direct runtime variables and a
+reachable existing LiteLLM endpoint. The preferred isolated command is:
 
 ```bash
-npm run eval:cardano-rag:live
+docker compose exec -T agent-worker npm run eval:cardano-rag:live
 ```
+
+The current image does not copy `samples/evaluation/cardano-rag.jsonl`, so use
+a mode-0600 restricted environment without provider keys and a reachable
+LiteLLM endpoint until an evaluator-capable image is built. Do not expose a
+LiteLLM host port solely for this check.
 
 Expected: exit zero with a timestamped sanitized report meeting recall@10,
 citation precision, freshness, answer-property, unsupported-claim, and
