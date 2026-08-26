@@ -69,6 +69,13 @@ const githubOrganizationEntry: SourceRegistryEntry = {
   github: { owner: "input-output-hk" },
 };
 
+const githubParentOrganizationEntry: SourceRegistryEntry = {
+  ...githubEntry,
+  id: "intersect-github",
+  url: "https://github.com/IntersectMBO",
+  github: { owner: "IntersectMBO" },
+};
+
 function result(url: string, title = "Result"): { title: string; content: string; url: string } {
   return { title, content: "Cardano documentation", url };
 }
@@ -291,6 +298,23 @@ describe("SearXNG live discovery", () => {
       expect.objectContaining({ matchedSourceId: "iog-github" }),
     ]);
     expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("promotes a safe repository release despite an overlapping organization source", async () => {
+    const url = "https://github.com/IntersectMBO/cardano-node/releases";
+    const repository = fakeRepository();
+    const promoted = await promoteDiscoveredLink({
+      link: { url, title: "Release", content: "text", trustTier: "unverified", matchedSourceId: githubEntry.id },
+      registry: [githubParentOrganizationEntry, githubEntry],
+      repository,
+      embedder: { embed: vi.fn(async () => [{ index: 0, embedding: Array.from({ length: 1_536 }, () => 0) }]) },
+      embeddingModel: "cardano-embedding",
+      request: fakeRequest("<html><body><h1>Release</h1><p>Maintainer release notes.</p></body></html>"),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 as const }],
+    });
+
+    expect(promoted).toMatchObject({ sourceId: githubEntry.id, trustTier: "official", url });
+    expect(repository.ensureSource).toHaveBeenCalledWith(githubEntry, expect.any(Object));
   });
 
   it("keeps contributor-controlled GitHub pages out of official promotion", async () => {

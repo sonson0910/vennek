@@ -186,7 +186,7 @@ export async function promoteDiscoveredLink(input: PromoteDiscoveredLinkInput): 
   if (!isRecord(input.link)) throw new Error("Discovery link is invalid");
   const url = normalizeDiscoveredUrl(input.link.url);
   if (!url) throw new Error("Discovery link is invalid");
-  const matches = entries.filter((entry) => urlMatchesSourceScope(url, entry));
+  const matches = entries.filter((entry) => supportsDirectPromotionUrl(url, entry));
   const title = boundedText(input.link.title, 300);
   const content = boundedContent(input.link.content, 1_000);
   if (!title || content === undefined) throw new Error("Discovery link is invalid");
