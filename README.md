@@ -1,8 +1,16 @@
 # Vennek
 
-Vennek is the foundation for a public, multilingual Cardano AI agent. Telegram users can ask natural-language questions and receive same-language responses through a queued webhook/worker runtime, encrypted PostgreSQL conversation history, and a LiteLLM gateway.
+Vennek is the release candidate for a public, multilingual Cardano AI agent.
+Telegram users can ask natural-language questions and receive same-language,
+citation-grounded responses through a queued webhook/worker runtime, encrypted
+PostgreSQL conversation history, a LiteLLM gateway, and the registry-backed
+knowledge pipeline described in [Data Sources](docs/architecture/data-sources.md).
 
-The foundation intentionally refuses factual Cardano answers until the approved Cardano knowledge/RAG plan is complete. It does not accept wallet secrets, retain them, call a provider with them, sign transactions, submit transactions, or give personalized buy/sell advice.
+The factual path remains release-gated until every live check in the release
+checklist passes. It answers only from approved evidence; when evidence is
+missing, stale, or conflicting, it says so instead of guessing. It does not accept
+wallet secrets, retain them, call a provider with them, sign transactions,
+submit transactions, or give personalized buy/sell advice.
 
 ## Local verification
 
@@ -12,6 +20,8 @@ npm test -- --run
 npm run typecheck
 npm run build
 npm run verify:imports
+npm run validate:registry
+npm run eval:cardano-rag
 npm audit --audit-level=moderate
 ```
 
@@ -30,10 +40,23 @@ The migration owner URL is used only by the one-shot migration/provisioning serv
 
 - `--webhook` acknowledges authenticated `POST /telegram/webhook` updates quickly and queues them.
 - `--worker` consumes `telegram-answer` jobs and schedules daily partition maintenance.
+- `--knowledge-worker` owns source synchronization and the authenticated,
+  question-only live-discovery boundary.
+- `--sync-source <source-id>` queues one exact registry source for an
+  administrator-triggered refresh.
 - `--poll` remains a local-development transport using the same public question boundary.
 - `--health` performs the lightweight process health check without external credentials.
 
-Register the webhook only after staging health checks pass. Use the release checklist for internal staging, canary, 1,000-DAU, and 10,000-DAU gates, citation/retrieval thresholds, rollback, and incident handling.
+The knowledge worker refreshes sources hourly (`0 * * * *`) or daily at
+`15 2 * * *` UTC according to the registry. Live discovery searches official
+domains first and registered community domains only as a fallback; it accepts
+only the authenticated question, promotes at most three registry-approved
+sources, and never accepts an arbitrary URL from Telegram.
+
+Register the webhook only after staging health checks and the knowledge release
+gates pass. Use the [release checklist](docs/deployment/release-checklist.md)
+for internal staging, canary, 1,000-DAU, and 10,000-DAU gates,
+citation/retrieval thresholds, rollback, and incident handling.
 
 ## Safety contract
 
