@@ -63,4 +63,3 @@ export function validatePdfInput(bytes: Uint8Array): void {
     throw new PdfExtractorError("PDF body must be between 1 byte and 8 MiB", 413);
   }
 }
-

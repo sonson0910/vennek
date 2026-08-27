@@ -1,6 +1,6 @@
 # Cardano Source Resilience and Managed Live-Gate Design
 
-**Date:** 2026-08-26  
+**Date:** 2026-08-26
 **Status:** Implemented; credential-backed live RAG staging remains open
 **Scope:** Resolve machine-access failures for registered Cardano sources and
 make the live RAG credential gate reflect the dependencies it actually uses.
