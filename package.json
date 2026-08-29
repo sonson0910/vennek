@@ -35,7 +35,7 @@
     "verify:private-worker-smoke": "tsx scripts/verify-private-worker-smoke.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.3.0",
     "@types/pg": "^8.15.0",
     "@types/yauzl": "2.10.3",
     "tsx": "^4.16.2",
