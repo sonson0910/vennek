@@ -20,7 +20,7 @@
     "file-type": "22.0.2",
     "marked": "18.0.11",
     "mammoth": "1.12.1",
-    "pdfjs-dist": "5.4.624",
+    "pdfjs-dist": "6.2.108",
     "pg": "^8.16.0",
     "pg-boss": "^12.0.0",
     "yauzl": "3.4.0"
